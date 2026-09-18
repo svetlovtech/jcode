@@ -8,6 +8,7 @@ mod client;
 mod manager;
 pub mod pool;
 mod protocol;
+mod remote;
 pub mod schema_cache;
 mod tool;
 
