@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use urlencoding::encode as urlencode;
 
 /// Payload shapes mirror the chat service contract (see pi-telegram-bridge
 /// `src/api.ts`).
@@ -208,6 +209,140 @@ impl ChatServiceClient {
             .and_then(|first| first.answer.clone())
             .or(parsed.answer)
             .unwrap_or_default())
+    }
+}
+
+// ── Inbox (files the user sent to the bot) ──────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxFileInfo {
+    #[serde(rename = "file_id")]
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    #[serde(default)]
+    pub uploaded_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxListInfo {
+    #[serde(default, rename = "files_count")]
+    pub count: u32,
+    #[serde(default)]
+    pub files: Vec<InboxFileInfo>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// Downloaded inbox file: raw bytes plus the server-provided metadata.
+pub struct InboxDownload {
+    pub name: String,
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl ChatServiceClient {
+    /// List files waiting in the chat-service inbox.
+    pub async fn inbox_list(&self) -> Result<InboxListInfo> {
+        let response = self
+            .http
+            .get(format!("{}/api/chat-service/inbox", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        response
+            .json::<InboxListInfo>()
+            .await
+            .context("chat service returned a malformed inbox listing")
+    }
+
+    /// Download one inbox file by id. Returns the server-provided file name,
+    /// MIME type, and raw bytes.
+    pub async fn inbox_download(&self, file_id: &str) -> Result<InboxDownload> {
+        let id = urlencode(file_id);
+        let response = self
+            .http
+            .get(format!(
+                "{}/api/chat-service/inbox/files/{}",
+                self.base_url, id
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        let mime_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .split(';')
+            .next()
+            .unwrap_or("application/octet-stream")
+            .trim()
+            .to_string();
+        // Attachment filename from Content-Disposition when present, else the
+        // final URL segment.
+        let name = response
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|cd| {
+                cd.split(';').find_map(|part| {
+                    let part = part.trim();
+                    part.strip_prefix("filename=\"")
+                        .map(|rest| rest.trim_end_matches('"').to_string())
+                        .or_else(|| part.strip_prefix("filename=").map(str::to_string))
+                })
+            })
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("{file_id}.bin"));
+        let bytes = response
+            .bytes()
+            .await
+            .context("chat service closed the connection mid-download")?;
+        Ok(InboxDownload {
+            name,
+            mime_type,
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    /// Remove every file from the inbox. Returns how many were removed.
+    pub async fn inbox_claim(&self) -> Result<u32> {
+        let response = self
+            .http
+            .post(format!("{}/api/chat-service/inbox/claim", self.base_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        #[derive(Deserialize)]
+        struct ClaimResponse {
+            #[serde(default, rename = "files_removed")]
+            removed: u32,
+        }
+        let parsed: ClaimResponse = response
+            .json()
+            .await
+            .context("chat service returned a malformed claim response")?;
+        Ok(parsed.removed)
     }
 }
 
