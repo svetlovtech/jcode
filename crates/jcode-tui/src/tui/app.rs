@@ -889,6 +889,9 @@ pub struct App {
     // cached context after compaction, prompt rebuilds, tool-definition refreshes, or message edits.
     context_revision: u64,
     // Track last streaming activity for "stale" detection
+    /// Fork: pending ask_user stdin prompt (daemon ask surfaced to the TUI).
+    /// Some((request_id, prompt)) while waiting for the user's typed answer.
+    pub pending_stdin: Option<(String, String)>,
     last_stream_activity: Option<Instant>,
     // When the user last pressed a key, mouse-scrolled, or pasted.
     //

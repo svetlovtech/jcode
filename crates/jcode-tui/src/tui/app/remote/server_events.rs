@@ -616,6 +616,11 @@ pub(in crate::tui::app) fn handle_server_event(
 
     match event {
         ServerEvent::TextDelta { text } => {
+            // The turn continued -> the pending ask_user was answered elsewhere
+            // (e.g. Telegram) or timed out; stop intercepting typed input.
+            if app.pending_stdin.take().is_some() {
+                app.set_status_notice("Вопрос закрыт (ответ принят в Telegram)");
+            }
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
@@ -2894,9 +2899,16 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
-        ServerEvent::StdinRequest { prompt, .. } => {
-            // Fork: surface the prompt text (ask_user questions arrive here),
-            // flattened to one status-bar line.
+        ServerEvent::StdinRequest {
+            request_id, prompt, ..
+        } => {
+            // Fork: ask_user surfaces its question in the chat and remembers
+            // the pending request so the user's next typed message is
+            // delivered as the answer (Request::StdinResponse).
+            app.pending_stdin = Some((request_id.clone(), prompt.clone()));
+            app.push_display_message(DisplayMessage::system(format!(
+                "❓ Вопрос от агента (ваше следующее сообщение станет ответом):\n{prompt}"
+            )));
             let flat: String = prompt
                 .lines()
                 .map(str::trim)

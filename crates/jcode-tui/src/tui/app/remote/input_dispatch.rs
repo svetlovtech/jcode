@@ -107,6 +107,22 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
     remote: &mut RemoteConnection,
     prepared: input::PreparedInput,
 ) -> Result<()> {
+    // Fork: a pending ask_user prompt intercepts the next typed message and
+    // delivers it as the answer (Request::StdinResponse).
+    if let Some((request_id, prompt)) = app.pending_stdin.clone() {
+        let answer = prepared.raw_input.trim().to_string();
+        if let Err(e) = remote.send_stdin_response(&request_id, &answer).await {
+            app.pending_stdin = Some((request_id, prompt));
+            app.set_status_notice(format!("Не удалось отправить ответ: {e}"));
+            return Ok(());
+        }
+        app.pending_stdin = None;
+        app.push_display_message(DisplayMessage::system(format!(
+            "Ответ отправлен агенту: {answer}"
+        )));
+        return Ok(());
+    }
+
     if app.remote_model_switch_in_flight || app.auth_catalog_refresh_pending {
         app.pending_prompt_after_model_switch = Some(prepared);
         app.set_status_notice(if app.auth_catalog_refresh_pending {
