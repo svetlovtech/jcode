@@ -289,6 +289,19 @@ impl Tool for AskUserTool {
         let total = specs.len();
         let mut answers: Vec<String> = Vec::new();
 
+        // The chat service keys question sessions by session_id with a UNIQUE
+        // constraint (one row per id, rows are never deleted). pi-style
+        // callers therefore mint a fresh id per call - do the same, otherwise
+        // the SECOND ask_user in a session collides with the first.
+        let ask_session = format!(
+            "jcode-ask-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            &ctx.session_id[ctx.session_id.len().saturating_sub(6)..]
+        );
+
         for (index, spec) in specs.iter().enumerate() {
             let header = if total > 1 {
                 format!("{} ({} из {})", spec.header, index + 1, total)
