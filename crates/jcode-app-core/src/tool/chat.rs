@@ -277,6 +277,12 @@ impl Tool for AskUserTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: AskInput = serde_json::from_value(input)?;
+        let specs = question_specs(&params)?;
+        for spec in &specs {
+            if spec.options.len() > 4 {
+                return Err(anyhow!("at most 4 options per question are supported"));
+            }
+        }
         let client = client_from_config()?;
 
         let timeout = params
@@ -289,20 +295,18 @@ impl Tool for AskUserTool {
         let total = specs.len();
         let mut answers: Vec<String> = Vec::new();
 
-        // The chat service keys question sessions by session_id with a UNIQUE
-        // constraint (one row per id, rows are never deleted). pi-style
-        // callers therefore mint a fresh id per call - do the same, otherwise
-        // the SECOND ask_user in a session collides with the first.
-        let ask_session = format!(
-            "jcode-ask-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            &ctx.session_id[ctx.session_id.len().saturating_sub(6)..]
-        );
-
         for (index, spec) in specs.iter().enumerate() {
+            // Fresh unique chat-session id per question: rows in
+            // chat_question_sessions are never deleted, so reusing an id
+            // collides with the unique constraint (issue seen as HTTP 500).
+            let ask_session = format!(
+                "jcode-ask-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+                index
+            );
             let header = if total > 1 {
                 format!("{} ({} из {})", spec.header, index + 1, total)
             } else {
@@ -351,7 +355,7 @@ impl Tool for AskUserTool {
                     response_tx: answer_tx,
                 });
 
-                let tg_session = ctx.session_id.clone();
+                let tg_session = ask_session.clone();
                 let tg_question = spec.text.clone();
                 let tg_options = spec.options.clone();
                 let tg = {
@@ -402,7 +406,7 @@ impl Tool for AskUserTool {
                 // service to close it so the user sees the resolution.
                 if surface == "TUI" {
                     let _ = client
-                        .stop_question(&ctx.session_id, Some(&format!("Отвечено в TUI: {answer}")))
+                        .stop_question(&ask_session, Some(&format!("Отвечено в TUI: {answer}")))
                         .await;
                 }
 
@@ -413,7 +417,7 @@ impl Tool for AskUserTool {
             // Headless / no TUI channel: Telegram card only.
             let answer = ask_with_stale_recovery(
                 &client,
-                &ctx.session_id,
+                &ask_session,
                 &header,
                 &spec.text,
                 &spec.options,
