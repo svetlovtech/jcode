@@ -4,33 +4,7 @@ This fork of `jcode` carries four features ported from the maintainer's pi
 setup (svetlovtech). Each is opt-in or additive; upstream behavior is the
 default.
 
-## 1. `/goal` — pi-style goal contracts
-
-Set a goal contract on the session; it is injected into the system prompt on
-every turn until completed, blocked, or cleared.
-
-```
-/goal ship the MCP HTTP transport end-to-end   # set (prints goal_id)
-/goal                                          # or /goal status
-/goal clear                                    # clear (aliases: off, stop, cancel)
-```
-
-The agent sees a `# Goal Contract` block (objective + goal_id + rules) each
-turn and gets three tools:
-
-- `goal_complete { goal_id, summary }` — only after verified completion
-- `goal_blocked { goal_id, reason, evidence, repeated_turns }` — requires the
-  same external blocker to have recurred for 3+ consecutive turns
-- `goal_wait { goal_id, reason, resume_after_ms }` — arranged external wake
-
-State is per session, persisted under `<jcode-dir>/goals/<session>.json`, and
-survives daemon restarts. Replacing a goal mints a new goal_id; stale
-goal_ids cannot mutate the new contract.
-
-Note: `/goals` (initiatives) is a separate, pre-existing feature and is
-untouched.
-
-## 2. Permissions with chat integration
+## 1. Permissions with chat integration
 
 pi-style allow/ask/deny rules evaluated inside `ToolRegistry::execute`
 (before the `pre_tool` hook). Fully opt-in:
@@ -73,7 +47,7 @@ service (`kind: "permission"`, Allow/Deny options) and blocks the tool call
 until the user answers or the timeout hits. Without `chat`, `ask` denies
 (fail closed), as do transport errors and unrecognized answers.
 
-## 3. MCP over HTTP / SSE
+## 2. MCP over HTTP / SSE
 
 Remote MCP servers now connect instead of being skipped. All previously
 documented config shapes work in `~/.jcode/mcp.json` (and Claude Code
@@ -99,7 +73,7 @@ header, concurrent in-flight requests, SSE response bodies correlated by id.
 Legacy SSE: GET stream with `endpoint` event resolution. stdio servers are
 unchanged.
 
-## 4. pi-style footer
+## 3. pi-style footer
 
 ```toml
 [display]
@@ -113,11 +87,27 @@ Renders the overscroll status line as
 omitting unavailable spans (e.g. cost on quota providers, git branch outside
 a repository).
 
+## 4. Chat integration tools (`chat_notify` / `ask_user`)
+
+```toml
+[chat]
+url = "https://services.aabee.tech"
+token_env = "OPENCODE_CHAT_SERVICE_TOKEN"
+timeout_secs = 600
+```
+
+- `chat_notify { title, body }` - fire-and-forget Telegram notification.
+- `ask_user { question, header?, options?(1-4), timeout_seconds? }` - blocking
+  question rendered as a Telegram card; the tool returns the user's answer.
+  Without `options` the user types a free-form answer.
+
+Permission `ask` actions fall back to `[chat]` when `[permissions] chat` is
+unset, so one section can serve both.
+
 ## Building and testing
 
 ```bash
 cargo check -p jcode-base -p jcode-app-core -p jcode-tui
-cargo test -p jcode-base --lib goal_contract
 cargo test -p jcode-base --lib chat::
 cargo test -p jcode-base --lib mcp::
 cargo test -p jcode-app-core --lib permissions::
