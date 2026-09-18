@@ -248,34 +248,15 @@ impl Tool for AskUserTool {
             let tg = {
                 let client = client.clone();
                 tokio::spawn(async move {
-                    let mut result = client
-                        .ask_question(
-                            &tg_session,
-                            &header,
-                            &tg_question,
-                            &tg_options,
-                            timeout,
-                            "question",
-                        )
-                        .await;
-                    // The service rejects overlapping questions with a bare
-                    // HTTP 500; one short retry absorbs races with the TUI.
-                    if let Err(err) = &result
-                        && err.to_string().contains("500 Internal Server Error")
-                    {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        result = client
-                            .ask_question(
-                                &tg_session,
-                                &header,
-                                &tg_question,
-                                &tg_options,
-                                timeout,
-                                "question",
-                            )
-                            .await;
-                    }
-                    result
+                    ask_with_stale_recovery(
+                        &client,
+                        &tg_session,
+                        &header,
+                        &tg_question,
+                        &tg_options,
+                        timeout,
+                    )
+                    .await
                 })
             };
 
@@ -324,16 +305,15 @@ impl Tool for AskUserTool {
 
         // Headless / no TUI channel: Telegram card only.
         let _ask_guard = ASK_USER_LOCK.lock().await;
-        let answer = client
-            .ask_question(
-                &ctx.session_id,
-                &header,
-                &params.question,
-                &options,
-                timeout,
-                "question",
-            )
-            .await?;
+        let answer = ask_with_stale_recovery(
+            &client,
+            &ctx.session_id,
+            &header,
+            &params.question,
+            &options,
+            timeout,
+        )
+        .await?;
 
         let answer = answer.trim().to_string();
         if answer.is_empty() {
@@ -348,6 +328,35 @@ impl Tool for AskUserTool {
 }
 
 // ── chat_send ───────────────────────────────────────────────────────────────
+
+/// Ask over the chat service with stale-session recovery: an interrupted turn
+/// can leave an old question active for this session, and the service then
+/// answers new questions with HTTP 500. Stop the stale question and retry once.
+async fn ask_with_stale_recovery(
+    client: &crate::chat::ChatServiceClient,
+    session_id: &str,
+    header: &str,
+    question: &str,
+    options: &[(String, String)],
+    timeout: u64,
+) -> Result<String> {
+    let mut result = client
+        .ask_question(session_id, header, question, options, timeout, "question")
+        .await;
+    if let Err(err) = &result
+        && err.to_string().contains("500")
+    {
+        crate::logging::warn(&format!(
+            "ask_user: HTTP 500 (stale question?) - stopping the stale question and retrying"
+        ));
+        let _ = client.stop_question(session_id, None).await;
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        result = client
+            .ask_question(session_id, header, question, options, timeout, "question")
+            .await;
+    }
+    result
+}
 
 pub struct ChatSendTool;
 
