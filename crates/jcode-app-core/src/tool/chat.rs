@@ -325,6 +325,47 @@ struct ChatSendInput {
     caption: Option<String>,
 }
 
+/// Image pixel dimensions for the formats Telegram photo delivery cares
+/// about (PNG via IHDR, JPEG via SOF markers). None when unknown.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") && &bytes[12..16] == b"IHDR" {
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Some((width, height));
+    }
+    if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        let mut i = 2;
+        while i + 9 < bytes.len() {
+            if bytes[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = bytes[i + 1];
+            if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+                let height = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+                let width = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
+                return Some((width, height));
+            }
+            let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+            i += 2 + len;
+        }
+    }
+    None
+}
+
+/// Telegram rejects photos whose width+height exceed 10000 or whose size
+/// exceeds 10 MB; documents allow 50 MB with no dimension limits. Such
+/// images are routed as documents so delivery actually succeeds.
+fn should_send_as_document(mime_image: bool, bytes: &[u8]) -> bool {
+    if !mime_image {
+        return true;
+    }
+    if bytes.len() > 10 * 1024 * 1024 {
+        return true;
+    }
+    matches!(image_dimensions(bytes), Some((w, h)) if w as u64 + h as u64 > 10_000)
+}
+
 #[async_trait]
 impl Tool for ChatSendTool {
     fn name(&self) -> &str {
@@ -369,28 +410,61 @@ impl Tool for ChatSendTool {
         }
 
         let lower = path.to_string_lossy().to_lowercase();
-        let image = ["png", "jpg", "jpeg", "webp", "gif"]
+        let looks_image = ["png", "jpg", "jpeg", "webp", "gif"]
             .iter()
             .any(|ext| lower.ends_with(&format!(".{ext}")));
-        let endpoint = if image { "send-photo" } else { "send-file" };
+        let bytes = std::fs::read(&path)?;
+        let as_document = should_send_as_document(looks_image, &bytes);
+        let endpoint = if looks_image && !as_document {
+            "send-photo"
+        } else {
+            "send-file"
+        };
 
         client
             .send_attachment(endpoint, &path, params.caption.as_deref())
             .await?;
-        Ok(
-            ToolOutput::new(format!("Delivered {} to Telegram.", path.display())).with_title(
-                format!(
-                    "sent {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ),
-            ),
-        )
+        let note = if as_document && looks_image {
+            " (sent as document: exceeds Telegram photo limits)"
+        } else {
+            ""
+        };
+        Ok(ToolOutput::new(format!(
+            "Uploaded {} to the chat service; queued for Telegram delivery.{note}",
+            path.display()
+        ))
+        .with_title(
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+        ))
     }
 }
 
+/// (tests)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_dimensions_parsed() {
+        // Синтетический PNG: подпись + IHDR с width=10664, height=1340.
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0, 0, 0, 13]); // IHDR length
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&10664u32.to_be_bytes());
+        bytes.extend_from_slice(&1340u32.to_be_bytes());
+        assert_eq!(image_dimensions(&bytes), Some((10664, 1340)));
+        // Ширина+высота > 10000 -> документом.
+        assert!(should_send_as_document(true, &bytes));
+        // Обычный размер -> фото.
+        let mut small = bytes.clone();
+        small[16..20].copy_from_slice(&4000u32.to_be_bytes());
+        assert!(!should_send_as_document(true, &small));
+        // Не-картинка -> всегда документ.
+        assert!(should_send_as_document(false, &bytes));
+    }
 
     #[test]
     fn schemas_shape() {
