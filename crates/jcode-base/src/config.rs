@@ -10,10 +10,9 @@ pub use jcode_config_types::{
     HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry,
     LaunchHotkeysConfig, MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig,
     NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig, NotificationsConfig,
-    OverscrollStatusMode, PermissionRule, PermissionsChatConfig, PermissionsConfig, PowerConfig,
-    ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig,
-    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
-    WebSearchEngine,
+    OverscrollStatusMode, PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig,
+    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
+    UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -526,9 +525,6 @@ pub struct Config {
     /// AABEE chat integration for chat_notify / ask_user agent tools (and the
     /// fallback source for permission "ask" when [permissions] chat is unset)
     pub chat: ChatConfig,
-
-    /// pi-style tool permission gate (opt-in; see PermissionsConfig)
-    pub permissions: PermissionsConfig,
 
     /// Desktop notifications for interactive sessions (e.g. turn completion)
     pub notifications: NotificationsConfig,

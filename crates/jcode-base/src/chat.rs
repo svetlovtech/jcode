@@ -71,73 +71,6 @@ impl ChatServiceClient {
         })
     }
 
-    /// Ask the user to approve or deny an action and wait for the answer.
-    ///
-    /// Returns `Ok(true)` when approved, `Ok(false)` when denied or the answer
-    /// is unrecognizable (fail closed), and `Err` on transport/HTTP failure.
-    pub async fn ask_permission(
-        &self,
-        session_id: &str,
-        header: &str,
-        question: &str,
-        detail: Option<&str>,
-        timeout_secs: u64,
-    ) -> Result<bool> {
-        let mut text = question.to_string();
-        if let Some(detail) = detail.map(str::trim)
-            && !detail.is_empty()
-        {
-            text.push_str("\n\n");
-            text.push_str(detail);
-        }
-        let payload = QuestionPayload {
-            session_id: session_id.to_string(),
-            questions: vec![Question {
-                header: header.to_string(),
-                question: text,
-                options: vec![
-                    QuestionOption {
-                        label: "Allow".to_string(),
-                        description: "Approve this action for the current call".to_string(),
-                    },
-                    QuestionOption {
-                        label: "Deny".to_string(),
-                        description: "Reject this action".to_string(),
-                    },
-                ],
-                kind: "permission".to_string(),
-            }],
-            timeout_seconds: timeout_secs.max(60),
-        };
-
-        let response = self
-            .http
-            .post(format!("{}/api/chat-service/question", self.base_url))
-            .bearer_auth(&self.token)
-            .json(&payload)
-            .send()
-            .await
-            .context("chat service request failed")?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
-        }
-        let parsed: QuestionResponse = response
-            .json()
-            .await
-            .context("chat service returned a malformed answer")?;
-
-        let answer = parsed
-            .results
-            .as_ref()
-            .and_then(|results| results.first())
-            .and_then(|first| first.answer.clone())
-            .or(parsed.answer)
-            .unwrap_or_default();
-        Ok(answer_is_approval(&answer))
-    }
-
     /// Fire-and-forget notification relayed to Telegram by the chat service.
     pub async fn notify(&self, title: &str, body: &str) -> Result<()> {
         let response = self
@@ -346,35 +279,9 @@ impl ChatServiceClient {
     }
 }
 
-/// Interpret a free-form chat answer. Matching mirrors the pi bridge: the
-/// permission card resolves to allow/deny wordings (English or Russian).
-/// Anything unrecognized denies (fail closed).
-pub fn answer_is_approval(answer: &str) -> bool {
-    let normalized = answer.trim().to_lowercase();
-    normalized.contains("allow") || normalized.contains("разреш") || normalized.contains("yes")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn approvals_recognized_across_wordings() {
-        assert!(answer_is_approval("Allow"));
-        assert!(answer_is_approval("  разрешено "));
-        assert!(answer_is_approval("✅ разрешено"));
-        assert!(answer_is_approval("yes"));
-    }
-
-    #[test]
-    fn denials_and_garbage_fail_closed() {
-        assert!(!answer_is_approval("Deny"));
-        assert!(!answer_is_approval("❌ отклонено"));
-        assert!(!answer_is_approval(""));
-        assert!(!answer_is_approval("hmm idk"));
-        // "allow" appearing inside a denial sentence still approves; the chat
-        // card answer is one of the two option labels, so this is acceptable.
-    }
 
     /// Minimal HTTP/1.1 fake server driving one request, like the MCP tests.
     /// Builds Content-Length from the body so any payload size works.
@@ -411,24 +318,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ask_permission_maps_allow_answer() {
+    async fn ask_question_maps_allow_answer() {
         let addr = spawn_fake_once("{\"status\":\"ok\",\"answer\":\"Allow\"}\n").await;
         let client = ChatServiceClient::new(&format!("http://{addr}"), "test-token", 60).unwrap();
-        let approved = client
-            .ask_permission("sess", "Permission", "run rm -rf /tmp/x", None, 3600)
+        let answer = client
+            .ask_question(
+                "sess",
+                "Permission",
+                "run rm -rf /tmp/x",
+                &[
+                    ("Allow".to_string(), String::new()),
+                    ("Deny".to_string(), String::new()),
+                ],
+                3600,
+                "permission",
+            )
             .await
             .unwrap();
-        assert!(approved);
+        assert_eq!(answer, "Allow");
     }
 
     #[tokio::test]
-    async fn ask_permission_maps_deny_answer() {
-        let addr = spawn_fake_once("{\"status\":\"ok\",\"answer\":\"❌ отклонено\"}\n").await;
+    async fn ask_question_maps_deny_answer() {
+        let addr = spawn_fake_once("{\"status\":\"ok\",\"answer\":\"Deny\"}\n").await;
         let client = ChatServiceClient::new(&format!("http://{addr}"), "test-token", 60).unwrap();
-        let approved = client
-            .ask_permission("sess", "Permission", "run something risky", None, 3600)
+        let answer = client
+            .ask_question(
+                "sess",
+                "Permission",
+                "run something risky",
+                &[
+                    ("Allow".to_string(), String::new()),
+                    ("Deny".to_string(), String::new()),
+                ],
+                3600,
+                "permission",
+            )
             .await
             .unwrap();
-        assert!(!approved);
+        assert_eq!(answer, "Deny");
     }
 }

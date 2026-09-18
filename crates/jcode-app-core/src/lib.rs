@@ -37,7 +37,6 @@ pub mod network_retry;
 pub mod notifications;
 pub mod overnight;
 pub mod perf;
-pub mod permissions;
 pub mod replay;
 pub mod restart_snapshot;
 pub mod server;

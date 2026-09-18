@@ -9,13 +9,15 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::client::{
-    DEFAULT_MCP_REQUEST_TIMEOUT, McpClient, McpHandle, correlate_pending, request_timeout_for,
+    DEFAULT_MCP_REQUEST_TIMEOUT, McpHandle, correlate_pending, request_timeout_for,
 };
 use super::protocol::*;
+
+#[cfg(test)]
+use super::client::McpClient;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum RemoteKind {

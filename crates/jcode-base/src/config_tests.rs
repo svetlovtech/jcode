@@ -181,54 +181,6 @@ fn swarm_spawn_mode_rejects_invalid_values() {
 }
 
 #[test]
-fn permissions_section_parses_rules_and_chat() {
-    let cfg: Config = toml::from_str(
-        r#"
-[permissions]
-enabled = true
-default_action = "ask"
-
-[[permissions.rules]]
-tool = "bash"
-pattern = "git *"
-action = "allow"
-
-[[permissions.rules]]
-tool = "mcp:*"
-action = "ask"
-
-[permissions.chat]
-url = "https://services.aabee.tech"
-token_env = "OPENCODE_CHAT_SERVICE_TOKEN"
-timeout_secs = 600
-"#,
-    )
-    .expect("permissions config should parse");
-    assert!(cfg.permissions.enabled);
-    assert_eq!(cfg.permissions.resolved_default_action(), "ask");
-    assert_eq!(cfg.permissions.rules.len(), 2);
-    assert_eq!(cfg.permissions.rules[0].tool, "bash");
-    assert_eq!(cfg.permissions.rules[0].action, "allow");
-    assert_eq!(cfg.permissions.rules[1].tool, "mcp:*");
-    let chat = cfg.permissions.chat.clone().expect("chat config");
-    assert_eq!(chat.url, "https://services.aabee.tech");
-    assert_eq!(
-        chat.token_env.as_deref(),
-        Some("OPENCODE_CHAT_SERVICE_TOKEN")
-    );
-    assert_eq!(cfg.permissions.chat_timeout_secs(), 600);
-}
-
-#[test]
-fn permissions_default_is_disabled_and_allowing() {
-    let cfg = Config::default();
-    assert!(!cfg.permissions.enabled);
-    assert_eq!(cfg.permissions.resolved_default_action(), "allow");
-    assert!(cfg.permissions.chat.is_none());
-    assert_eq!(cfg.permissions.chat_timeout_secs(), 3600);
-}
-
-#[test]
 fn swarm_spawn_mode_as_str_round_trips() {
     for mode in [
         SwarmSpawnMode::Visible,

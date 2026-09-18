@@ -4,50 +4,7 @@ This fork of `jcode` carries four features ported from the maintainer's pi
 setup (svetlovtech). Each is opt-in or additive; upstream behavior is the
 default.
 
-## 1. Permissions with chat integration
-
-pi-style allow/ask/deny rules evaluated inside `ToolRegistry::execute`
-(before the `pre_tool` hook). Fully opt-in:
-
-```toml
-[permissions]
-enabled = true                 # default false: no gating at all
-default_action = "allow"       # for calls no rule matches: allow | ask | deny
-ask_timeout_secs = 3600
-
-[[permissions.rules]]
-tool = "bash"
-pattern = "git *"
-action = "allow"
-
-[[permissions.rules]]
-tool = "bash"
-pattern = "rm -rf *"
-action = "ask"
-
-[[permissions.rules]]
-tool = "mcp:*"
-action = "ask"
-
-[[permissions.rules]]
-tool = "write"
-pattern = "/etc/*"
-action = "deny"
-
-[permissions.chat]
-url = "https://services.aabee.tech"
-token_env = "OPENCODE_CHAT_SERVICE_TOKEN"   # or token = "..."
-timeout_secs = 3600
-```
-
-Rule matching: first match wins. `tool` is an exact name, `prefix*`, or `*`.
-`pattern` globs the call's primary value (bash `command`, file `path`,
-`url`, MCP target). `ask` sends an execution-permission card through the chat
-service (`kind: "permission"`, Allow/Deny options) and blocks the tool call
-until the user answers or the timeout hits. Without `chat`, `ask` denies
-(fail closed), as do transport errors and unrecognized answers.
-
-## 2. MCP over HTTP / SSE
+## 1. MCP over HTTP / SSE
 
 Remote MCP servers now connect instead of being skipped. All previously
 documented config shapes work in `~/.jcode/mcp.json` (and Claude Code
@@ -73,7 +30,7 @@ header, concurrent in-flight requests, SSE response bodies correlated by id.
 Legacy SSE: GET stream with `endpoint` event resolution. stdio servers are
 unchanged.
 
-## 3. pi-style footer
+## 2. pi-style footer
 
 ```toml
 [display]
@@ -87,7 +44,7 @@ Renders the overscroll status line as
 omitting unavailable spans (e.g. cost on quota providers, git branch outside
 a repository).
 
-## 4. Chat integration tools (`chat_notify` / `ask_user`)
+## 3. Chat integration tools (`chat_notify` / `ask_user`)
 
 ```toml
 [chat]
@@ -101,8 +58,10 @@ timeout_secs = 600
   question rendered as a Telegram card; the tool returns the user's answer.
   Without `options` the user types a free-form answer.
 
-Permission `ask` actions fall back to `[chat]` when `[permissions] chat` is
-unset, so one section can serve both.
+- `inbox_list` / `inbox_read { file_id }` / `inbox_claim` - read files and
+  images the user sent to the Telegram bot. Images attach to the tool result
+  so vision models see them inline; text files return a preview plus the
+  saved path under `<jcode-dir>/inbox/`.
 
 ## Building and testing
 
