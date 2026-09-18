@@ -199,13 +199,24 @@ impl Tool for AskUserTool {
             .unwrap_or("Question")
             .to_string();
 
-        let mut prompt_text = format!("❓ {header}: {}", params.question);
+        let mut prompt_text = format!("❓ {header}: {}\n", params.question);
         if !options.is_empty() {
-            prompt_text.push_str(" Варианты:");
-            for (index, (label, _)) in options.iter().enumerate() {
-                prompt_text.push_str(&format!(" [{}] {}", index + 1, label));
+            for (index, (label, description)) in options.iter().enumerate() {
+                if description.trim().is_empty() {
+                    prompt_text.push_str(&format!("  [{}] {}\n", index + 1, label));
+                } else {
+                    prompt_text.push_str(&format!(
+                        "  [{}] {} — {}\n",
+                        index + 1,
+                        label,
+                        description
+                    ));
+                }
             }
-            prompt_text.push_str(" — ответь в Telegram или здесь.");
+            prompt_text.push_str("\nОтветь цифрой варианта или своим текстом — ваше следующее сообщение станет ответом.");
+        } else {
+            prompt_text
+                .push_str("\nВаше следующее сообщение станет ответом (или ответьте в Telegram).\n");
         }
 
         // Interactive questions are serialized process-wide.
