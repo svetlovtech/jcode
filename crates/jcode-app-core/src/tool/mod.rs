@@ -18,7 +18,6 @@ mod edit;
 mod feedback;
 mod gmail;
 mod goal;
-mod goal_contract;
 pub mod inflight;
 mod invalid;
 mod jcode_docs;
@@ -396,24 +395,6 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "goal_complete",
-                goal_contract::GoalCompleteTool::new,
-            );
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "goal_blocked",
-                goal_contract::GoalBlockedTool::new,
-            );
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "goal_wait",
-                goal_contract::GoalWaitTool::new,
-            );
             let nonzero: Vec<String> = timings
                 .iter()
                 .filter(|(_, ms)| *ms > 0)

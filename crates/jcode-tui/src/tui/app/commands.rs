@@ -2566,86 +2566,16 @@ pub(super) fn handle_goals_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn handle_disabled_mission_command(app: &mut App, trimmed: &str) -> bool {
-    if slash_command_rest(trimmed, "/mission").is_some() {
-        app.push_display_message(DisplayMessage::system(
-            "The /mission command is disabled in this build.".to_string(),
-        ));
-        return true;
-    }
-    handle_goal_command(app, trimmed)
-}
-
-fn goal_usage() -> String {
-    "Usage: /goal <objective> | /goal status | /goal clear".to_string()
-}
-
-/// pi-style `/goal`: set a goal contract for this session, show its status, or
-/// clear it. The contract is injected into the system prompt every turn and
-/// comes with goal_complete / goal_blocked / goal_wait tools for the agent.
-pub(super) fn handle_goal_command(app: &mut App, trimmed: &str) -> bool {
-    let Some(rest) = slash_command_rest(trimmed, "/goal") else {
+    if slash_command_rest(trimmed, "/mission").is_none()
+        && slash_command_rest(trimmed, "/goal").is_none()
+    {
         return false;
-    };
-
-    let arg = rest.trim();
-    if matches!(arg, "help" | "--help" | "-h") {
-        app.push_display_message(DisplayMessage::system(goal_usage()));
-        return true;
     }
 
-    let Some(session_id) = app.active_client_session_id().map(str::to_string) else {
-        app.push_display_message(DisplayMessage::error(
-            "/goal requires an active session.".to_string(),
-        ));
-        return true;
-    };
-    if app.is_remote {
-        app.push_display_message(DisplayMessage::error(
-            "/goal is not supported for remote sessions yet.".to_string(),
-        ));
-        return true;
-    }
-
-    match arg {
-        "" | "status" | "show" => {
-            match crate::goal_contract::get_goal(&session_id) {
-                Some(goal) => app.push_display_message(DisplayMessage::system(format!(
-                    "Active goal {} ({}):\n{}",
-                    goal.goal_id,
-                    goal.status.as_label(),
-                    goal.objective
-                ))),
-                None => app.push_display_message(DisplayMessage::system(
-                    "No active goal. Set one with /goal <objective>.".to_string(),
-                )),
-            }
-            true
-        }
-        "clear" | "off" | "stop" | "cancel" => {
-            if crate::goal_contract::clear_goal(&session_id) {
-                app.push_display_message(DisplayMessage::system(
-                    "Goal cleared. The agent is no longer in goal mode.".to_string(),
-                ));
-            } else {
-                app.push_display_message(DisplayMessage::system(
-                    "No active goal to clear.".to_string(),
-                ));
-            }
-            true
-        }
-        objective => {
-            if objective.len() < 3 {
-                app.push_display_message(DisplayMessage::error(goal_usage()));
-                return true;
-            }
-            let goal = crate::goal_contract::set_goal(&session_id, objective);
-            app.push_display_message(DisplayMessage::system(format!(
-                "Goal mode is active (goal_id: {}). The objective is now injected into every turn; the agent can complete it with goal_complete, or flag goal_blocked / goal_wait.",
-                goal.goal_id
-            )));
-            true
-        }
-    }
+    app.push_display_message(DisplayMessage::system(
+        "The /mission and /goal commands are disabled in this build.".to_string(),
+    ));
+    true
 }
 
 pub(super) fn handle_test_command(app: &mut App, trimmed: &str) -> bool {
