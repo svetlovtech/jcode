@@ -185,17 +185,110 @@ impl Tool for AskUserTool {
         let timeout = params
             .timeout_seconds
             .unwrap_or_else(|| config().chat.resolved_timeout_secs());
-        let header = params
+        let header: String = params
             .header
             .as_deref()
             .map(str::trim)
             .filter(|h| !h.is_empty())
-            .unwrap_or("Question");
+            .unwrap_or("Question")
+            .to_string();
 
+        let mut prompt_text = format!("❓ {header}: {}", params.question);
+        if !options.is_empty() {
+            prompt_text.push_str(" Варианты:");
+            for (index, (label, _)) in options.iter().enumerate() {
+                prompt_text.push_str(&format!(" [{}] {}", index + 1, label));
+            }
+            prompt_text.push_str(" — ответь в Telegram или здесь.");
+        }
+
+        // Dual-surface: when the TUI stdin channel is available, surface the
+        // question there AND deliver the Telegram card; first answer wins.
+        if let Some(stdin_tx) = ctx.stdin_request_tx.as_ref() {
+            use tokio::sync::oneshot;
+
+            let request_id = format!(
+                "ask-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
+            let (answer_tx, answer_rx) = oneshot::channel::<String>();
+            let _ = stdin_tx.send(super::StdinInputRequest {
+                request_id: request_id.clone(),
+                prompt: prompt_text,
+                is_password: false,
+                response_tx: answer_tx,
+            });
+
+            let tg_session = ctx.session_id.clone();
+            let tg_question = params.question.clone();
+            let tg_options = options.clone();
+            let tg = {
+                let client = client.clone();
+                tokio::spawn(async move {
+                    client
+                        .ask_question(
+                            &tg_session,
+                            &header,
+                            &tg_question,
+                            &tg_options,
+                            timeout,
+                            "question",
+                        )
+                        .await
+                })
+            };
+
+            tokio::pin!(tg);
+            let (answer, surface) = tokio::select! {
+                answer = answer_rx => match answer {
+                    Ok(text) => (text, "TUI"),
+                    Err(_) => {
+                        // Stdin channel closed without an answer; fall back to Telegram.
+                        match &mut tg {
+                            tg_result => match (&mut **tg_result).await {
+                                Ok(Ok(text)) => (text, "Telegram"),
+                                Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
+                                Err(e) => return Err(anyhow!("ask_user failed: {e}")),
+                            },
+                        }
+                    }
+                },
+                tg_result = &mut tg => match tg_result {
+                    Ok(Ok(text)) => (text, "Telegram"),
+                    Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
+                    Err(e) => return Err(anyhow!("ask_user failed: {e}")),
+                },
+            };
+
+            let answer = answer.trim().to_string();
+            if answer.is_empty() {
+                return Err(anyhow!(
+                    "No answer arrived within {timeout}s. Continue with the best default                      assumption and say so, or ask again later."
+                ));
+            }
+
+            // The losing surface may still show a pending card/prompt: tell the
+            // service to close it so the user sees the resolution.
+            if surface == "TUI" {
+                let _ = client
+                    .stop_question(&ctx.session_id, Some(&format!("Отвечено в TUI: {answer}")))
+                    .await;
+            }
+
+            return Ok(
+                ToolOutput::new(format!("User answered ({surface}): {answer}"))
+                    .with_title("ask_user answered"),
+            );
+        }
+
+        // Headless / no TUI channel: Telegram card only.
         let answer = client
             .ask_question(
                 &ctx.session_id,
-                header,
+                &header,
                 &params.question,
                 &options,
                 timeout,
@@ -203,7 +296,8 @@ impl Tool for AskUserTool {
             )
             .await?;
 
-        if answer.trim().is_empty() {
+        let answer = answer.trim().to_string();
+        if answer.is_empty() {
             return Err(anyhow!(
                 "No answer arrived within {timeout}s (the question expired). Continue with the \
                  best default assumption and say so, or ask again later."
@@ -211,6 +305,86 @@ impl Tool for AskUserTool {
         }
 
         Ok(ToolOutput::new(format!("User answered: {answer}")).with_title("ask_user answered"))
+    }
+}
+
+// ── chat_send ───────────────────────────────────────────────────────────────
+
+pub struct ChatSendTool;
+
+impl ChatSendTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatSendInput {
+    path: String,
+    #[serde(default)]
+    caption: Option<String>,
+}
+
+#[async_trait]
+impl Tool for ChatSendTool {
+    fn name(&self) -> &str {
+        "chat_send"
+    }
+
+    fn description(&self) -> &str {
+        "Send a local file or image to the user's Telegram through the chat integration. Images (png/jpg/webp/gif) are delivered as photos, everything else as documents. Use for delivering reports, screenshots, archives and other artifacts the user asked for. Never read credential files to send things manually - this tool already handles delivery."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Local file path (relative paths resolve against the session working directory)."
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "Optional caption shown with the file."
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        let params: ChatSendInput = serde_json::from_value(input)?;
+        let client = client_from_config()?;
+
+        let path = ctx.resolve_path(std::path::Path::new(&params.path));
+        if !path.is_file() {
+            return Err(anyhow!("file not found: {}", path.display()));
+        }
+        let size = std::fs::metadata(&path)?.len();
+        if size > 50 * 1024 * 1024 {
+            return Err(anyhow!(
+                "file is {} MB; the chat service accepts attachments up to 50 MB",
+                size / (1024 * 1024)
+            ));
+        }
+
+        let lower = path.to_string_lossy().to_lowercase();
+        let image = ["png", "jpg", "jpeg", "webp", "gif"]
+            .iter()
+            .any(|ext| lower.ends_with(&format!(".{ext}")));
+        let endpoint = if image { "send-photo" } else { "send-file" };
+
+        client
+            .send_attachment(endpoint, &path, params.caption.as_deref())
+            .await?;
+        Ok(
+            ToolOutput::new(format!("Delivered {} to Telegram.", path.display())).with_title(
+                format!(
+                    "sent {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+            ),
+        )
     }
 }
 

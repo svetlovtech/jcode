@@ -427,6 +427,7 @@ impl Registry {
         // setup guidance instead of being absent from the tool list).
         Self::insert_tool(&mut tools, "chat_notify", chat::ChatNotifyTool::new());
         Self::insert_tool(&mut tools, "ask_user", chat::AskUserTool::new());
+        Self::insert_tool(&mut tools, "chat_send", chat::ChatSendTool::new());
         Self::insert_tool(&mut tools, "inbox_list", inbox::InboxListTool::new());
         Self::insert_tool(&mut tools, "inbox_read", inbox::InboxReadTool::new());
         Self::insert_tool(&mut tools, "inbox_claim", inbox::InboxClaimTool::new());

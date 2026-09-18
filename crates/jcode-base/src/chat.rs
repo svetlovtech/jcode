@@ -71,6 +71,80 @@ impl ChatServiceClient {
         })
     }
 
+    /// Upload a file (or image) to the chat service, which relays it to
+    /// Telegram. `endpoint` selects the service route: "send-photo" renders
+    /// the file as a photo, "send-file" as a document. Uses multipart/form-data
+    /// with the raw bytes in the "file" field, like the pi bridge.
+    pub async fn send_attachment(
+        &self,
+        endpoint: &str,
+        path: &std::path::Path,
+        caption: Option<&str>,
+    ) -> Result<()> {
+        let bytes =
+            std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file.bin".to_string());
+
+        let file_part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str("application/octet-stream")
+            .context("invalid mime for attachment")?;
+        let mut form = reqwest::multipart::Form::new().part("file", file_part);
+        if let Some(caption) = caption.map(str::trim).filter(|c| !c.is_empty()) {
+            form = form.text("caption", caption.to_string());
+        }
+
+        let response = self
+            .http
+            .post(format!("{}/api/chat-service/{}", self.base_url, endpoint))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        Ok(())
+    }
+
+    /// Best-effort cancel of a pending question session. The server closes
+    /// the pending card and edits the original Telegram message in place.
+    /// Used when another surface (e.g. the TUI) answered first.
+    pub async fn stop_question(&self, session_id: &str, note: Option<&str>) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct StopResponse {
+            #[serde(default)]
+            stopped: bool,
+        }
+        let response = self
+            .http
+            .post(format!("{}/api/chat-service/question/stop", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({
+                "session_id": session_id,
+                "note": note.filter(|n| !n.trim().is_empty()),
+            }))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        let parsed: StopResponse = response
+            .json()
+            .await
+            .unwrap_or(StopResponse { stopped: false });
+        Ok(parsed.stopped)
+    }
+
     /// Fire-and-forget notification relayed to Telegram by the chat service.
     pub async fn notify(&self, title: &str, body: &str) -> Result<()> {
         let response = self

@@ -2894,8 +2894,21 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
-        ServerEvent::StdinRequest { .. } => {
-            app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
+        ServerEvent::StdinRequest { prompt, .. } => {
+            // Fork: surface the prompt text (ask_user questions arrive here),
+            // flattened to one status-bar line.
+            let flat: String = prompt
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let flat = if flat.chars().count() > 110 {
+                format!("{}…", flat.chars().take(110).collect::<String>())
+            } else {
+                flat
+            };
+            app.set_status_notice(format!("⌨ {flat}"));
             false
         }
         _ => false,
