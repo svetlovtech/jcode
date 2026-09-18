@@ -583,7 +583,7 @@ That imported file is then jcode-owned; later Codex changes are not synced
 automatically. Imported environment values are copied too and may contain
 secrets.
 
-Both the canonical `mcpServers` key and jcode's historical `servers` key are accepted. jcode currently supports stdio (command-based) servers only; HTTP/SSE entries (`"type": "http"`/`"sse"`) are recognized and skipped with a log line.
+Both the canonical `mcpServers` key and jcode's historical `servers` key are accepted. jcode supports stdio (command-based) servers as well as remote HTTP/SSE servers (`"type": "http"` / `"sse"` / bare `url` entries, with optional `headers` such as `Authorization`). See `docs/PI_PARITY.md` for details, plus the pi-style `/goal` contracts, the `[permissions]` gate with chat-service approval asks, and `display.footer_style = "pi"`.
 
 Example MCP config:
 

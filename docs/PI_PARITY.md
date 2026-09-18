@@ -104,11 +104,14 @@ unchanged.
 ```toml
 [display]
 footer_style = "pi"    # or "aabee"; default "classic" = upstream output
+overscroll_status = "on"   # upstream default "overscroll" reveals the line
+                           # only while scrolling past the bottom
 ```
 
 Renders the overscroll status line as
 `dir · branch · model (provider) · effort · context bar · cost · Σ tokens`,
-omitting unavailable spans (e.g. cost on quota providers).
+omitting unavailable spans (e.g. cost on quota providers, git branch outside
+a repository).
 
 ## Building and testing
 
