@@ -24,6 +24,7 @@ pub mod browser;
 pub mod bus;
 pub mod cache_invalidation;
 pub mod cache_tracker;
+pub mod chat;
 pub mod claude_live;
 pub mod client_input;
 pub mod compaction;

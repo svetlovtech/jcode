@@ -816,6 +816,19 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
+        // pi-style permission gate ([permissions] in config.toml; opt-in).
+        // Runs before the external pre_tool hook so built-in rules and chat
+        // asks apply even when no hook command is configured.
+        if let crate::permissions::GateOutcome::Deny(reason) =
+            crate::permissions::check(&ctx.session_id, resolved_name, &input).await
+        {
+            let mut fields =
+                Self::tool_lifecycle_fields("blocked", name, resolved_name, &input, &ctx);
+            fields.push(("block_reason".to_string(), reason.clone()));
+            crate::logging::event_warn("TOOL_LIFECYCLE", fields);
+            return Err(anyhow::anyhow!(reason));
+        }
+
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.
         if crate::hooks::hook_configured("pre_tool") {

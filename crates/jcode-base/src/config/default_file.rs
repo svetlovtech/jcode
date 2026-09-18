@@ -127,6 +127,10 @@ timeout_secs = 90
 # Diff display mode: "off", "inline" (default), "full-inline", "pinned" (dedicated pane), or "file"
 diff_mode = "inline"
 
+# Footer style: "classic" (default) or "pi" / "aabee" for the pi-style status
+# line: dir · branch · model (provider) · effort · context · cost · Σ tokens
+# footer_style = "pi"
+
 # Center all content by default (default: false)
 centered = false
 

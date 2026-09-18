@@ -297,7 +297,7 @@ mod tests {
             if p.repeated_turns.unwrap_or(0) < 3 {
                 Err(anyhow::anyhow!("too few turns"))
             } else {
-                Ok((GoalContractStatus::Blocked, None, String::new()))
+                Ok((GoalContractStatus::Blocked, None::<String>, String::new()))
             }
         })(&parsed);
         assert!(result.is_err());

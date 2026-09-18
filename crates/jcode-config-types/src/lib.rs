@@ -900,6 +900,96 @@ impl Default for HooksConfig {
     }
 }
 
+/// A single pi-style permission rule. The first matching rule wins; when no
+/// rule matches, `permissions.default_action` applies.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct PermissionRule {
+    /// Tool name to gate. Exact name ("bash"), prefix glob ("mcp:*"), or "*".
+    pub tool: String,
+    /// Optional glob matched against the call's primary value (the bash
+    /// command, file path, URL, or MCP target). Supports "*" wildcards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// What to do on match: "allow", "ask", or "deny".
+    pub action: String,
+}
+
+/// Remote chat integration used to resolve "ask" permissions while the agent
+/// waits. Compatible with the AABEE chat service (services.aabee.tech
+/// /api/chat-service endpoints, Bearer auth).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct PermissionsChatConfig {
+    /// Chat service base URL, e.g. "https://services.aabee.tech".
+    pub url: String,
+    /// Bearer token. Prefer setting token_env and keeping the secret out of
+    /// config files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Environment variable holding the bearer token (e.g.
+    /// OPENCODE_CHAT_SERVICE_TOKEN). Wins over `token` when both resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    /// Seconds to wait for a human answer before denying (default: 3600).
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
+/// pi-style tool permission gate (opt-in). When `enabled` is false (the
+/// default) every tool call proceeds exactly as before this feature existed.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PermissionsConfig {
+    /// Master switch. Off keeps upstream behavior (no gating at all).
+    pub enabled: bool,
+    /// Action for tool calls no rule matches: "allow" (default), "ask", or
+    /// "deny".
+    pub default_action: String,
+    /// Rules evaluated in order; first match wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<PermissionRule>,
+    /// Chat integration used to resolve "ask" actions. Without it, an "ask"
+    /// denies (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<PermissionsChatConfig>,
+}
+
+impl PermissionsConfig {
+    /// Normalized action for unmatched calls.
+    pub fn resolved_default_action(&self) -> &str {
+        match self.default_action.trim().to_ascii_lowercase().as_str() {
+            "ask" => "ask",
+            "deny" | "blocked" => "deny",
+            _ => "allow",
+        }
+    }
+
+    /// Resolved chat bearer token, if any (token_env wins over token).
+    pub fn chat_token(&self) -> Option<String> {
+        let chat = self.chat.as_ref()?;
+        if let Some(env_name) = chat.token_env.as_deref().map(str::trim)
+            && !env_name.is_empty()
+            && let Ok(value) = std::env::var(env_name)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
+        chat.token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Seconds to wait for a chat answer before denying.
+    pub fn chat_timeout_secs(&self) -> u64 {
+        self.chat
+            .as_ref()
+            .map(|c| c.timeout_secs)
+            .filter(|s| *s > 0)
+            .unwrap_or(3600)
+    }
+}
+
 /// Automatic end-of-turn code review configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
