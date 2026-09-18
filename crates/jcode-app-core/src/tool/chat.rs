@@ -89,6 +89,12 @@ impl Tool for ChatNotifyTool {
 
 // ── ask_user ────────────────────────────────────────────────────────────────
 
+/// Interactive questions are strictly one-at-a-time: the chat service keeps
+/// a single active question per session and a parallel call would collide
+/// with HTTP 500. Base tools are shared across sessions, so this guard is
+/// process-wide - exactly the semantics a human expects from questions.
+static ASK_USER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub struct AskUserTool;
 
 impl AskUserTool {
@@ -123,7 +129,7 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user a question with answer options through the chat integration (Telegram) and block until they answer. Use when a decision is needed to proceed. Without options the user can type a free-form answer. The user may not answer for minutes; the call waits up to the timeout."
+        "Ask the user ONE question with answer options through the chat integration (Telegram) and block until they answer. Use when a decision is needed to proceed. Without options the user can type a free-form answer. Ask strictly one question at a time: never issue several ask_user calls in parallel - wait for the answer, then ask the next. The call may wait minutes up to the timeout."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -202,6 +208,9 @@ impl Tool for AskUserTool {
             prompt_text.push_str(" — ответь в Telegram или здесь.");
         }
 
+        // Interactive questions are serialized process-wide.
+        let _ask_guard = ASK_USER_LOCK.lock().await;
+
         // Dual-surface: when the TUI stdin channel is available, surface the
         // question there AND deliver the Telegram card; first answer wins.
         if let Some(stdin_tx) = ctx.stdin_request_tx.as_ref() {
@@ -228,7 +237,7 @@ impl Tool for AskUserTool {
             let tg = {
                 let client = client.clone();
                 tokio::spawn(async move {
-                    client
+                    let mut result = client
                         .ask_question(
                             &tg_session,
                             &header,
@@ -237,7 +246,25 @@ impl Tool for AskUserTool {
                             timeout,
                             "question",
                         )
-                        .await
+                        .await;
+                    // The service rejects overlapping questions with a bare
+                    // HTTP 500; one short retry absorbs races with the TUI.
+                    if let Err(err) = &result
+                        && err.to_string().contains("500 Internal Server Error")
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        result = client
+                            .ask_question(
+                                &tg_session,
+                                &header,
+                                &tg_question,
+                                &tg_options,
+                                timeout,
+                                "question",
+                            )
+                            .await;
+                    }
+                    result
                 })
             };
 
@@ -285,6 +312,7 @@ impl Tool for AskUserTool {
         }
 
         // Headless / no TUI channel: Telegram card only.
+        let _ask_guard = ASK_USER_LOCK.lock().await;
         let answer = client
             .ask_question(
                 &ctx.session_id,
