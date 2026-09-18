@@ -103,7 +103,7 @@ impl AskUserTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct AskOption {
     label: String,
     #[serde(default)]
@@ -112,14 +112,81 @@ struct AskOption {
 
 #[derive(Deserialize)]
 struct AskInput {
+    /// Legacy single-question shape.
+    #[serde(default)]
+    question: Option<String>,
+    #[serde(default)]
+    header: Option<String>,
+    #[serde(default)]
+    options: Option<Vec<AskOption>>,
+    /// Batch shape: 1-4 questions asked sequentially (Telegram renders each
+    /// as a card; TUI prompts appear one by one). The agent receives all
+    /// answers in order.
+    #[serde(default)]
+    questions: Option<Vec<AskQuestionSpec>>,
+    /// Overrides [chat] timeout_secs per question (min 60 server-side).
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Deserialize, Clone)]
+struct AskQuestionSpec {
     question: String,
     #[serde(default)]
     header: Option<String>,
     #[serde(default)]
     options: Option<Vec<AskOption>>,
-    /// Overrides [chat] timeout_secs for this question (min 60 server-side).
-    #[serde(default)]
-    timeout_seconds: Option<u64>,
+}
+
+struct QuestionSpec {
+    header: String,
+    text: String,
+    options: Vec<(String, String)>,
+}
+
+/// Normalize the input into an ordered list of questions: either the batch
+/// `questions` array or the legacy single-question fields.
+fn question_specs(params: &AskInput) -> Result<Vec<QuestionSpec>> {
+    if let Some(batch) = &params.questions {
+        if batch.is_empty() {
+            anyhow::bail!("questions must contain at least one item");
+        }
+        if batch.len() > 4 {
+            anyhow::bail!("at most 4 questions per call");
+        }
+        return Ok(batch
+            .iter()
+            .map(|q| QuestionSpec {
+                header: q.header.clone().unwrap_or_else(|| "Question".to_string()),
+                text: q.question.trim().to_string(),
+                options: q
+                    .options
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|opt| (opt.label, opt.description.unwrap_or_default()))
+                    .collect(),
+            })
+            .collect());
+    }
+    let question = params
+        .question
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .ok_or_else(|| anyhow!("question is required"))?;
+    let options = params
+        .options
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|opt| (opt.label, opt.description.unwrap_or_default()))
+        .collect();
+    Ok(vec![QuestionSpec {
+        header: "Question".to_string(),
+        text: question.to_string(),
+        options,
+    }])
 }
 
 #[async_trait]
@@ -129,13 +196,47 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user ONE question with answer options through the chat integration (Telegram) and block until they answer. Use when a decision is needed to proceed. Without options the user can type a free-form answer. Ask strictly one question at a time: never issue several ask_user calls in parallel - wait for the answer, then ask the next. The call may wait minutes up to the timeout."
+        "Ask the user 1-4 questions via Telegram; blocks until each is answered. Returns all answers."
     }
 
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The complete question."
+                            },
+                            "header": {
+                                "type": "string",
+                                "description": "Short topic tag for this question."
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "description": { "type": "string" }
+                                    },
+                                    "required": ["label"]
+                                },
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "description": "Optional answer options for this question."
+                            }
+                        },
+                        "required": ["question"]
+                    },
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "Batch: 1-4 questions asked sequentially."
+                },
                 "question": {
                     "type": "string",
                     "description": "The complete question, specific and ending with a question mark."
@@ -178,152 +279,159 @@ impl Tool for AskUserTool {
         let params: AskInput = serde_json::from_value(input)?;
         let client = client_from_config()?;
 
-        let options: Vec<(String, String)> = params
-            .options
-            .unwrap_or_default()
-            .into_iter()
-            .map(|opt| (opt.label, opt.description.unwrap_or_default()))
-            .collect();
-        if options.len() > 4 {
-            return Err(anyhow!("at most 4 options are supported"));
-        }
-
         let timeout = params
             .timeout_seconds
             .unwrap_or_else(|| config().chat.resolved_timeout_secs());
-        let header: String = params
-            .header
-            .as_deref()
-            .map(str::trim)
-            .filter(|h| !h.is_empty())
-            .unwrap_or("Question")
-            .to_string();
-
-        let mut prompt_text = format!("❓ {header}: {}\n", params.question);
-        if !options.is_empty() {
-            for (index, (label, description)) in options.iter().enumerate() {
-                if description.trim().is_empty() {
-                    prompt_text.push_str(&format!("  [{}] {}\n", index + 1, label));
-                } else {
-                    prompt_text.push_str(&format!(
-                        "  [{}] {} — {}\n",
-                        index + 1,
-                        label,
-                        description
-                    ));
-                }
-            }
-            prompt_text.push_str("\nОтветь цифрой варианта или своим текстом — ваше следующее сообщение станет ответом.");
-        } else {
-            prompt_text
-                .push_str("\nВаше следующее сообщение станет ответом (или ответьте в Telegram).\n");
-        }
-
         // Interactive questions are serialized process-wide.
         let _ask_guard = ASK_USER_LOCK.lock().await;
 
-        // Dual-surface: when the TUI stdin channel is available, surface the
-        // question there AND deliver the Telegram card; first answer wins.
-        if let Some(stdin_tx) = ctx.stdin_request_tx.as_ref() {
-            use tokio::sync::oneshot;
+        let specs = question_specs(&params)?;
+        let total = specs.len();
+        let mut answers: Vec<String> = Vec::new();
 
-            let request_id = format!(
-                "ask-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            );
-            let (answer_tx, answer_rx) = oneshot::channel::<String>();
-            let _ = stdin_tx.send(super::StdinInputRequest {
-                request_id: request_id.clone(),
-                prompt: prompt_text,
-                is_password: false,
-                response_tx: answer_tx,
-            });
-
-            let tg_session = ctx.session_id.clone();
-            let tg_question = params.question.clone();
-            let tg_options = options.clone();
-            let tg = {
-                let client = client.clone();
-                tokio::spawn(async move {
-                    ask_with_stale_recovery(
-                        &client,
-                        &tg_session,
-                        &header,
-                        &tg_question,
-                        &tg_options,
-                        timeout,
-                    )
-                    .await
-                })
+        for (index, spec) in specs.iter().enumerate() {
+            let header = if total > 1 {
+                format!("{} ({} из {})", spec.header, index + 1, total)
+            } else {
+                spec.header.clone()
             };
-
-            tokio::pin!(tg);
-            let (answer, surface) = tokio::select! {
-                answer = answer_rx => match answer {
-                    Ok(text) => (text, "TUI"),
-                    Err(_) => {
-                        // Stdin channel closed without an answer; fall back to Telegram.
-                        match &mut tg {
-                            tg_result => match (&mut **tg_result).await {
-                                Ok(Ok(text)) => (text, "Telegram"),
-                                Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
-                                Err(e) => return Err(anyhow!("ask_user failed: {e}")),
-                            },
-                        }
+            let mut prompt_text = format!("❓ {header}: {}\n", spec.text);
+            if !spec.options.is_empty() {
+                for (option_index, (label, description)) in spec.options.iter().enumerate() {
+                    if description.trim().is_empty() {
+                        prompt_text.push_str(&format!("  [{}] {}\n", option_index + 1, label));
+                    } else {
+                        prompt_text.push_str(&format!(
+                            "  [{}] {} — {}\n",
+                            option_index + 1,
+                            label,
+                            description
+                        ));
                     }
-                },
-                tg_result = &mut tg => match tg_result {
-                    Ok(Ok(text)) => (text, "Telegram"),
-                    Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
-                    Err(e) => return Err(anyhow!("ask_user failed: {e}")),
-                },
-            };
+                }
+                prompt_text.push_str(
+                    "\nОтветь цифрой варианта или своим текстом — ваше следующее сообщение станет ответом.",
+                );
+            } else {
+                prompt_text.push_str(
+                    "\nВаше следующее сообщение станет ответом (или ответьте в Telegram).\n",
+                );
+            }
+
+            // Dual-surface: when the TUI stdin channel is available, surface the
+            // question there AND deliver the Telegram card; first answer wins.
+            if let Some(stdin_tx) = ctx.stdin_request_tx.as_ref() {
+                use tokio::sync::oneshot;
+
+                let request_id = format!(
+                    "ask-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
+                let (answer_tx, answer_rx) = oneshot::channel::<String>();
+                let _ = stdin_tx.send(super::StdinInputRequest {
+                    request_id: request_id.clone(),
+                    prompt: prompt_text,
+                    is_password: false,
+                    response_tx: answer_tx,
+                });
+
+                let tg_session = ctx.session_id.clone();
+                let tg_question = spec.text.clone();
+                let tg_options = spec.options.clone();
+                let tg = {
+                    let client = client.clone();
+                    tokio::spawn(async move {
+                        ask_with_stale_recovery(
+                            &client,
+                            &tg_session,
+                            &header,
+                            &tg_question,
+                            &tg_options,
+                            timeout,
+                        )
+                        .await
+                    })
+                };
+
+                tokio::pin!(tg);
+                let (answer, surface) = tokio::select! {
+                    answer = answer_rx => match answer {
+                        Ok(text) => (text, "TUI"),
+                        Err(_) => {
+                            // Stdin channel closed without an answer; fall back to Telegram.
+                            match &mut tg {
+                                tg_result => match (&mut **tg_result).await {
+                                    Ok(Ok(text)) => (text, "Telegram"),
+                                    Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
+                                    Err(e) => return Err(anyhow!("ask_user failed: {e}")),
+                                },
+                            }
+                        }
+                    },
+                    tg_result = &mut tg => match tg_result {
+                        Ok(Ok(text)) => (text, "Telegram"),
+                        Ok(Err(e)) => return Err(anyhow!("ask_user failed: {e}")),
+                        Err(e) => return Err(anyhow!("ask_user failed: {e}")),
+                    },
+                };
+
+                let answer = answer.trim().to_string();
+                if answer.is_empty() {
+                    return Err(anyhow!(
+                        "No answer arrived within {timeout}s. Continue with the best default                      assumption and say so, or ask again later."
+                    ));
+                }
+
+                // The losing surface may still show a pending card/prompt: tell the
+                // service to close it so the user sees the resolution.
+                if surface == "TUI" {
+                    let _ = client
+                        .stop_question(&ctx.session_id, Some(&format!("Отвечено в TUI: {answer}")))
+                        .await;
+                }
+
+                answers.push(answer.trim().to_string());
+                continue;
+            }
+
+            // Headless / no TUI channel: Telegram card only.
+            let answer = ask_with_stale_recovery(
+                &client,
+                &ctx.session_id,
+                &header,
+                &spec.text,
+                &spec.options,
+                timeout,
+            )
+            .await?;
 
             let answer = answer.trim().to_string();
             if answer.is_empty() {
                 return Err(anyhow!(
-                    "No answer arrived within {timeout}s. Continue with the best default                      assumption and say so, or ask again later."
+                    "No answer arrived within {timeout}s (the question expired). Continue with the \
+                 best default assumption and say so, or ask again later."
                 ));
             }
+        }
 
-            // The losing surface may still show a pending card/prompt: tell the
-            // service to close it so the user sees the resolution.
-            if surface == "TUI" {
-                let _ = client
-                    .stop_question(&ctx.session_id, Some(&format!("Отвечено в TUI: {answer}")))
-                    .await;
+        let output = if answers.len() == 1 {
+            format!("User answered: {}", answers[0])
+        } else {
+            let mut text = String::from("Ответы пользователя:\n");
+            for (index, spec) in specs.iter().enumerate() {
+                let value = answers
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or("(без ответа)");
+                text.push_str(&format!("{}. {} → {}\n", index + 1, spec.text, value));
             }
+            text
+        };
 
-            return Ok(
-                ToolOutput::new(format!("User answered ({surface}): {answer}"))
-                    .with_title("ask_user answered"),
-            );
-        }
-
-        // Headless / no TUI channel: Telegram card only.
-        let _ask_guard = ASK_USER_LOCK.lock().await;
-        let answer = ask_with_stale_recovery(
-            &client,
-            &ctx.session_id,
-            &header,
-            &params.question,
-            &options,
-            timeout,
-        )
-        .await?;
-
-        let answer = answer.trim().to_string();
-        if answer.is_empty() {
-            return Err(anyhow!(
-                "No answer arrived within {timeout}s (the question expired). Continue with the \
-                 best default assumption and say so, or ask again later."
-            ));
-        }
-
-        Ok(ToolOutput::new(format!("User answered: {answer}")).with_title("ask_user answered"))
+        Ok(ToolOutput::new(output).with_title(format!("ask_user: {total} ответ(ов)")))
     }
 }
 
