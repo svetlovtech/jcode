@@ -72,6 +72,23 @@ impl Agent {
         split.dynamic_part.push_str(reminder);
     }
 
+    /// Append the session's goal contract (pi-style `/goal`) to the dynamic
+    /// part of the system prompt. Contracts live in the goal registry keyed by
+    /// session id, so `/goal` in the TUI and the goal_* tools mutate the same
+    /// state the agent sees here.
+    fn append_goal_contract(&self, split: &mut crate::prompt::SplitSystemPrompt) {
+        let Some(contract) = crate::goal_contract::get_goal(&self.session.id) else {
+            return;
+        };
+
+        if !split.dynamic_part.is_empty() {
+            split.dynamic_part.push_str("\n\n");
+        }
+        split
+            .dynamic_part
+            .push_str(&crate::goal_contract::prompt_block(&contract));
+    }
+
     /// Build split system prompt for better caching
     /// Returns static (cacheable) and dynamic (not cached) parts separately
     pub(super) fn build_system_prompt_split(
@@ -117,6 +134,7 @@ impl Agent {
         );
 
         self.append_current_turn_system_reminder(&mut split);
+        self.append_goal_contract(&mut split);
         crate::prompt::append_swarm_effort_directive(
             &mut split,
             self.provider.reasoning_effort().as_deref(),
