@@ -934,6 +934,58 @@ pub struct PermissionsChatConfig {
     pub timeout_secs: u64,
 }
 
+/// AABEE chat integration for the `chat_notify` / `ask_user` agent tools:
+/// send notifications and blocking questions (delivered to Telegram by the
+/// chat service) and wait for the answer. When `[permissions] chat` is not
+/// set, permission "ask" actions fall back to this section.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ChatConfig {
+    /// Chat service base URL, e.g. "https://services.aabee.tech". Empty
+    /// disables the tools (they return an explanatory error).
+    #[serde(default)]
+    pub url: String,
+    /// Bearer token. Prefer token_env.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Environment variable holding the bearer token. Wins over `token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_env: Option<String>,
+    /// Default seconds to wait for an answer to `ask_user` (default: 600).
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
+impl ChatConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.url.trim().is_empty()
+    }
+
+    /// Resolved bearer token, if any (token_env wins over token).
+    pub fn resolved_token(&self) -> Option<String> {
+        if let Some(env_name) = self.token_env.as_deref().map(str::trim)
+            && !env_name.is_empty()
+            && let Ok(value) = std::env::var(env_name)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
+        self.token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Seconds to wait for an answer.
+    pub fn resolved_timeout_secs(&self) -> u64 {
+        if self.timeout_secs > 0 {
+            self.timeout_secs
+        } else {
+            600
+        }
+    }
+}
+
 /// pi-style tool permission gate (opt-in). When `enabled` is false (the
 /// default) every tool call proceeds exactly as before this feature existed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

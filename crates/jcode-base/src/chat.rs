@@ -136,6 +136,79 @@ impl ChatServiceClient {
             .unwrap_or_default();
         Ok(answer_is_approval(&answer))
     }
+
+    /// Fire-and-forget notification relayed to Telegram by the chat service.
+    pub async fn notify(&self, title: &str, body: &str) -> Result<()> {
+        let response = self
+            .http
+            .post(format!("{}/api/chat-service/notify", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "title": title, "body": body }))
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        Ok(())
+    }
+
+    /// Blocking question: posts the options (kind "question" unless kind is
+    /// overridden) and waits for the answer. Returns the answer text verbatim
+    /// (empty when the session expired without an answer).
+    pub async fn ask_question(
+        &self,
+        session_id: &str,
+        header: &str,
+        question: &str,
+        options: &[(String, String)],
+        timeout_secs: u64,
+        kind: &str,
+    ) -> Result<String> {
+        let payload = QuestionPayload {
+            session_id: session_id.to_string(),
+            questions: vec![Question {
+                header: header.to_string(),
+                question: question.to_string(),
+                options: options
+                    .iter()
+                    .map(|(label, description)| QuestionOption {
+                        label: label.clone(),
+                        description: description.clone(),
+                    })
+                    .collect(),
+                kind: kind.to_string(),
+            }],
+            timeout_seconds: timeout_secs.max(60),
+        };
+
+        let response = self
+            .http
+            .post(format!("{}/api/chat-service/question", self.base_url))
+            .bearer_auth(&self.token)
+            .json(&payload)
+            .send()
+            .await
+            .context("chat service request failed")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("chat service returned HTTP {status}: {}", body.trim());
+        }
+        let parsed: QuestionResponse = response
+            .json()
+            .await
+            .context("chat service returned a malformed answer")?;
+        Ok(parsed
+            .results
+            .as_ref()
+            .and_then(|results| results.first())
+            .and_then(|first| first.answer.clone())
+            .or(parsed.answer)
+            .unwrap_or_default())
+    }
 }
 
 /// Interpret a free-form chat answer. Matching mirrors the pi bridge: the

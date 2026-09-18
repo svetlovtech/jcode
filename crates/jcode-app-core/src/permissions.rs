@@ -87,26 +87,41 @@ async fn ask_over_chat(
     permissions: &PermissionsConfig,
     matched: &str,
 ) -> GateOutcome {
-    let Some(chat) = permissions.chat.as_ref() else {
+    // Permission-scoped chat config wins; otherwise fall back to the global
+    // [chat] integration so one section serves both tools and permission asks.
+    let global_chat = &crate::config::config().chat;
+    let (url, token, timeout_secs) = match permissions
+        .chat
+        .as_ref()
+        .filter(|c| !c.url.trim().is_empty())
+    {
+        Some(chat) => (
+            chat.url.clone(),
+            permissions.chat_token(),
+            permissions.chat_timeout_secs(),
+        ),
+        None if global_chat.is_configured() => (
+            global_chat.url.clone(),
+            global_chat.resolved_token(),
+            global_chat.resolved_timeout_secs(),
+        ),
+        _ => {
+            return GateOutcome::Deny(format!(
+                "Permission denied: tool '{tool_name}' requires human approval (matched {matched}) \
+                 but no chat integration is configured. Add [chat] or [permissions.chat] to \
+                 config.toml, or the user can pre-approve this action with an allow rule."
+            ));
+        }
+    };
+
+    let Some(token) = token else {
         return GateOutcome::Deny(format!(
-            "Permission denied: tool '{tool_name}' requires human approval (matched {matched}) \
-             but no chat integration is configured. Add [permissions.chat] to config.toml, \
-             or the user can pre-approve this action with an allow rule."
+            "Permission denied: chat integration has no bearer token (set token_env) for tool \
+             '{tool_name}'."
         ));
     };
 
-    let Some(token) = permissions.chat_token() else {
-        return GateOutcome::Deny(format!(
-            "Permission denied: chat integration has no bearer token (set permissions.chat.token \
-             or token_env) for tool '{tool_name}'."
-        ));
-    };
-
-    let client = match crate::chat::ChatServiceClient::new(
-        &chat.url,
-        &token,
-        permissions.chat_timeout_secs(),
-    ) {
+    let client = match crate::chat::ChatServiceClient::new(&url, &token, timeout_secs) {
         Ok(client) => client,
         Err(e) => {
             return GateOutcome::Deny(format!(
@@ -118,8 +133,7 @@ async fn ask_over_chat(
     let question = format!("Allow tool '{tool_name}'?");
     let detail = (!primary_value.is_empty()).then(|| primary_value.to_string());
     crate::logging::info(&format!(
-        "Permissions: asking over chat for tool '{tool_name}' (matched {matched}), timeout {}s",
-        permissions.chat_timeout_secs()
+        "Permissions: asking over chat for tool '{tool_name}' (matched {matched}), timeout {timeout_secs}s"
     ));
     match client
         .ask_permission(
@@ -127,7 +141,7 @@ async fn ask_over_chat(
             "Permission",
             &question,
             detail.as_deref(),
-            permissions.chat_timeout_secs(),
+            timeout_secs,
         )
         .await
     {

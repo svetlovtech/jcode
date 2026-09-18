@@ -5,6 +5,7 @@ mod bash;
 mod batch;
 mod bg;
 mod browser;
+mod chat;
 mod communicate;
 #[cfg(target_os = "macos")]
 mod computer;
@@ -439,6 +440,11 @@ impl Registry {
         // definition (and provider KV cache), while newly created agents see
         // prompt edits immediately.
         Self::insert_tool(&mut tools, "swarm", communicate::CommunicateTool::new());
+        // AABEE chat integration: Telegram notifications and blocking user
+        // questions ([chat] in config.toml; unconfigured tools error with
+        // setup guidance instead of being absent from the tool list).
+        Self::insert_tool(&mut tools, "chat_notify", chat::ChatNotifyTool::new());
+        Self::insert_tool(&mut tools, "ask_user", chat::AskUserTool::new());
         tools
     }
 
