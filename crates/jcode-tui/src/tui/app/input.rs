@@ -1461,6 +1461,12 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
 
 pub(super) fn queue_message(app: &mut App) {
     let prepared = take_prepared_input(app);
+    // Fork: while an ask_user prompt is pending, a queued message is the
+    // answer - arm the followup dispatcher so it goes out as
+    // Request::StdinResponse immediately instead of waiting for the turn.
+    if app.pending_stdin.is_some() {
+        app.pending_queued_dispatch = true;
+    }
     app.queued_messages.push(prepared.expanded);
 }
 
