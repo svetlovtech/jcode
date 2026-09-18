@@ -126,6 +126,11 @@ pub struct DisplayConfig {
     /// reveal when scrolling past the bottom, "on" keeps it always visible.
     #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub overscroll_status: OverscrollStatusMode,
+    /// Style of the overscroll status footer: "classic" (default) or "pi"
+    /// (also "aabee") for the compact pi-style layout with cost and token
+    /// totals.
+    #[serde(default)]
+    pub footer_style: String,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -166,6 +171,7 @@ impl Default for DisplayConfig {
             external_sessions: true,
             usage_display: "left".to_string(),
             overscroll_status: OverscrollStatusMode::default(),
+            footer_style: "classic".to_string(),
         }
     }
 }
@@ -213,6 +219,15 @@ impl DisplayConfig {
 
     pub fn usage_display_used(&self) -> bool {
         self.usage_display.eq_ignore_ascii_case("used")
+    }
+
+    /// Whether the overscroll status footer should use the compact pi-style
+    /// layout ("pi" or "aabee"); anything else keeps the classic layout.
+    pub fn footer_style_pi(&self) -> bool {
+        matches!(
+            self.footer_style.trim().to_ascii_lowercase().as_str(),
+            "pi" | "aabee"
+        )
     }
 }
 
