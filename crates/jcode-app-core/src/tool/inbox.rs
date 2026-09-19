@@ -91,7 +91,7 @@ impl Tool for InboxListTool {
     }
 
     fn description(&self) -> &str {
-        "List files and images the user sent to the chat inbox (Telegram). Use this first when the user says they sent you something. Returns file ids needed by inbox_read."
+        "List files the user sent to the chat inbox. Returns file ids for inbox_read."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -140,7 +140,7 @@ impl Tool for InboxReadTool {
     }
 
     fn description(&self) -> &str {
-        "Download one inbox file by file_id (from inbox_list). Images are attached to the result so you can see them; text files return a preview plus the saved local path. The file is saved under the jcode inbox directory for later use."
+        "Download one inbox file by file_id. Images attach to the tool result."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -236,7 +236,7 @@ impl Tool for InboxClaimTool {
     }
 
     fn description(&self) -> &str {
-        "Delete ALL files from the chat inbox (destructive). Only use after the user confirmed the files were processed or explicitly asked to clear the inbox. Returns how many files were removed."
+        "Delete ALL files from the chat inbox (destructive). Returns the count removed."
     }
 
     fn parameters_schema(&self) -> Value {

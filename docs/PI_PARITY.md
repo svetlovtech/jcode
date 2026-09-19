@@ -63,6 +63,34 @@ timeout_secs = 600
   so vision models see them inline; text files return a preview plus the
   saved path under `<jcode-dir>/inbox/`.
 
+## 4. ask_user stdin routing (`ServerEvent::StdinRequest.source`)
+
+The stdin-request wire event carries a `source` tag distinguishing the two
+producers: `"stdin"` (a running command wants input; upstream bash stdin
+detector) and `"ask_user"` (the agent's question). The TUI only intercepts
+typed input for `ask_user` requests; command stdin keeps the upstream
+status-line-only behavior. `source` defaults to `"stdin"` so older
+senders/clients stay compatible.
+
+## Fork layout / merge policy
+
+Fork code is concentrated in dedicated modules; upstream files carry only
+small, `// Fork:`-marked call sites:
+
+- `jcode-base/src/mcp/remote.rs` - remote transport, `client.rs` keeps one
+  branch point (`ClientTransport::{Stdio, Remote}`).
+- `jcode-base/src/chat.rs`, `jcode-base/src/account_login.rs` - chat client,
+  account login.
+- `jcode-app-core/src/tool/chat.rs`, `tool/inbox.rs` - agent tools.
+- `jcode-tui/src/tui/pi_footer.rs` - footer styles; `ui_input.rs` delegates
+  in one `let spans = ...` expression.
+- `jcode-tui/src/tui/app/fork_ask.rs` - ask_user TUI prompt/answer flow;
+  `server_events.rs`, `remote.rs`, `input_dispatch.rs`, `key_handling.rs`
+  each hold a 3-10 line hook.
+
+`jcode-tui/src/tui/backend.rs` and other files with formatting-only drift
+are kept byte-identical to upstream.
+
 ## Building and testing
 
 ```bash
