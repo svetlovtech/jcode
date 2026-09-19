@@ -53,7 +53,7 @@ impl Tool for ChatNotifyTool {
     }
 
     fn description(&self) -> &str {
-        "Send a notification to the user's Telegram through the chat integration. Use for progress updates, alerts, and completion messages - never for questions that need an answer (use ask_user for those)."
+        "Send a Telegram notification to the user. For updates and alerts, not questions."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -196,7 +196,7 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user 1-4 questions via Telegram; blocks until each is answered. Returns all answers."
+        "Ask the user 1-4 questions via Telegram; returns all answers."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -353,6 +353,7 @@ impl Tool for AskUserTool {
                     prompt: prompt_text,
                     is_password: false,
                     response_tx: answer_tx,
+                    source: super::StdinRequestSource::AskUser,
                 });
 
                 let tg_session = ask_session.clone();
@@ -546,7 +547,7 @@ impl Tool for ChatSendTool {
     }
 
     fn description(&self) -> &str {
-        "Send a local file or image to the user's Telegram through the chat integration. Images (png/jpg/webp/gif) are delivered as photos, everything else as documents. Use for delivering reports, screenshots, archives and other artifacts the user asked for. Never read credential files to send things manually - this tool already handles delivery."
+        "Send a local file or image to the user's Telegram. Images go as photos."
     }
 
     fn parameters_schema(&self) -> Value {

@@ -618,9 +618,7 @@ pub(in crate::tui::app) fn handle_server_event(
         ServerEvent::TextDelta { text } => {
             // The turn continued -> the pending ask_user was answered elsewhere
             // (e.g. Telegram) or timed out; stop intercepting typed input.
-            if app.pending_stdin.take().is_some() {
-                app.set_status_notice("Вопрос закрыт (ответ принят в Telegram)");
-            }
+            crate::tui::app::fork_ask::clear_if_pending(app);
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
@@ -2305,10 +2303,8 @@ pub(in crate::tui::app) fn handle_server_event(
         }
         ServerEvent::ModelUsageUpdated { route } => {
             for cached in &mut app.remote_model_options {
-                if cached.model == route.model
-                    && cached.provider == route.provider
-                    && cached.api_method == route.api_method
-                {
+                if cached.model == route.model && cached.provider == route.provider
+                    && cached.api_method == route.api_method {
                     cached.usage = route.usage.clone();
                 }
             }
@@ -2900,27 +2896,25 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::StdinRequest {
-            request_id, prompt, ..
+            request_id,
+            prompt,
+            source,
+            ..
         } => {
             // Fork: ask_user surfaces its question in the chat and remembers
             // the pending request so the user's next typed message is
             // delivered as the answer (Request::StdinResponse).
-            app.pending_stdin = Some((request_id.clone(), prompt.clone()));
-            app.push_display_message(DisplayMessage::system(format!(
-                "❓ Вопрос от агента (ваше следующее сообщение станет ответом):\n{prompt}"
-            )));
-            let flat: String = prompt
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let flat = if flat.chars().count() > 110 {
-                format!("{}…", flat.chars().take(110).collect::<String>())
+            if jcode_app_core::tool::StdinRequestSource::from_wire(&source)
+                == jcode_app_core::tool::StdinRequestSource::AskUser
+            {
+                crate::tui::app::fork_ask::on_ask_prompt(app, request_id.clone(), prompt.clone());
             } else {
-                flat
-            };
-            app.set_status_notice(format!("⌨ {flat}"));
+                // Upstream behavior: a running command wants stdin; do not
+                // intercept typed input for it.
+                app.set_status_notice(
+                    "⌨ Interactive terminal detected (command will timeout)",
+                );
+            }
             false
         }
         _ => false,

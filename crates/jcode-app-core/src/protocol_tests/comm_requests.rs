@@ -73,10 +73,12 @@ fn test_stdin_request_event_roundtrip() -> Result<()> {
         prompt: "Password: ".to_string(),
         is_password: true,
         tool_call_id: "call_abc".to_string(),
+        source: "stdin".to_string(),
     };
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"stdin_request\""));
     assert!(json.contains("\"is_password\":true"));
+    assert!(json.contains("\"source\":\"stdin\""));
 
     let decoded = parse_event_json(json.trim())?;
     let ServerEvent::StdinRequest {
@@ -84,6 +86,7 @@ fn test_stdin_request_event_roundtrip() -> Result<()> {
         prompt,
         is_password,
         tool_call_id,
+        source,
     } = decoded
     else {
         return Err(anyhow!("expected StdinRequest"));
@@ -92,6 +95,7 @@ fn test_stdin_request_event_roundtrip() -> Result<()> {
     assert_eq!(prompt, "Password: ");
     assert!(is_password);
     assert_eq!(tool_call_id, "call_abc");
+    assert_eq!(source, "stdin");
     Ok(())
 }
 
@@ -104,6 +108,19 @@ fn test_stdin_request_event_defaults() -> Result<()> {
         return Err(anyhow!("expected StdinRequest"));
     };
     assert!(!is_password, "is_password should default to false");
+    Ok(())
+}
+
+#[test]
+fn test_stdin_request_event_source_defaults_to_stdin() -> Result<()> {
+    // Legacy senders (older daemons/clients) omit `source`; it decodes as an
+    // empty string so from_wire() treats it as a command stdin request.
+    let json = r#"{"type":"stdin_request","request_id":"r1","prompt":"","tool_call_id":"tc1"}"#;
+    let decoded = parse_event_json(json)?;
+    let ServerEvent::StdinRequest { source, .. } = decoded else {
+        return Err(anyhow!("expected StdinRequest"));
+    };
+    assert_eq!(source, "", "source should default to empty (command stdin)");
     Ok(())
 }
 

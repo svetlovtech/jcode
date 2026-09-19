@@ -775,6 +775,7 @@ pub(super) async fn handle_client(
                     prompt: req.prompt,
                     is_password: req.is_password,
                     tool_call_id: tool_call_id.clone(),
+                    source: req.source.as_str().to_string(),
                 });
             }
         })

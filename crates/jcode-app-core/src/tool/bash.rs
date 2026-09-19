@@ -1,4 +1,4 @@
-use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
+use super::{StdinInputRequest, StdinRequestSource, Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
 use crate::bus::{
     BackgroundTaskProgress, BackgroundTaskProgressKind, BackgroundTaskProgressSource,
@@ -994,6 +994,7 @@ impl BashTool {
                                         prompt: String::new(),
                                         is_password: false,
                                         response_tx,
+                                        source: StdinRequestSource::Command,
                                     };
 
                                     if stdin_tx.send(request).is_err() {

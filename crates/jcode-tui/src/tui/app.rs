@@ -66,6 +66,9 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
+/// Fork: agent ask_user prompts surfaced in the TUI (kept separate from
+/// upstream files so merges see one small module).
+pub(crate) mod fork_ask;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;

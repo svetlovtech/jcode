@@ -91,12 +91,42 @@ pub fn ensure_intent_in_schema(mut schema: Value) -> Value {
     schema
 }
 
+/// What produced a stdin input request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdinRequestSource {
+    /// A running command is waiting for input (bash stdin detector).
+    Command,
+    /// The agent's ask_user tool is asking the user a question.
+    AskUser,
+}
+
+impl StdinRequestSource {
+    /// Wire tag sent to remote clients (`ServerEvent::StdinRequest.source`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "stdin",
+            Self::AskUser => "ask_user",
+        }
+    }
+
+    /// Decode a wire tag; unknown/legacy values mean a command stdin request.
+    pub fn from_wire(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("ask_user") {
+            Self::AskUser
+        } else {
+            Self::Command
+        }
+    }
+}
+
 /// A request for stdin input from a running command.
 pub struct StdinInputRequest {
     pub request_id: String,
     pub prompt: String,
     pub is_password: bool,
     pub response_tx: tokio::sync::oneshot::Sender<String>,
+    /// Whether a command wants input or the ask_user tool is asking.
+    pub source: StdinRequestSource,
 }
 
 #[derive(Clone)]

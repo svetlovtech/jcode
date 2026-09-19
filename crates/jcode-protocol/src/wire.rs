@@ -1502,5 +1502,11 @@ pub enum ServerEvent {
         is_password: bool,
         /// Tool call ID this is associated with
         tool_call_id: String,
+        /// What produced this request: "stdin" (a running command wants input)
+        /// or "ask_user" (the agent's ask_user tool is asking a question).
+        /// Clients use this to decide between feeding a command and showing
+        /// the prompt as a question. Defaults to "stdin".
+        #[serde(default)]
+        source: String,
     },
 }
