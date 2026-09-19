@@ -263,3 +263,41 @@ fn missing_prompts_dir_is_harmless() {
     assert!(!candidates.iter().any(|(cmd, _)| cmd.starts_with("/sum")));
     restore_quick_prompts_env(temp, prev_home);
 }
+
+// Regression: a [prompts] entry added to config.toml while the session runs
+// used to stay invisible in the / palette until a restart, because the
+// palette candidate cache was never invalidated on config reload (the /name
+// expansion read config() directly and worked, which made it more confusing).
+// The config-reload hook must drop the cache so the very next keystroke sees
+// the new prompt.
+#[test]
+fn palette_shows_prompt_added_to_config_while_running() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("[prompts]\nsum = \"Summarize.\"\n");
+    let mut app = create_test_app();
+    assert!(
+        !app.get_suggestions_for("/").iter().any(|(cmd, _)| cmd == "/late"),
+        "precondition: the prompt is not configured yet"
+    );
+
+    // Add a new prompt on disk, then wait past the 500ms config throttle so
+    // the next key press re-stats the file (same modeling as
+    // keybinding_edit_applies_to_the_next_key_press).
+    let config_path = crate::config::Config::path().expect("config path");
+    std::fs::write(&config_path, "[prompts]\nsum = \"Summarize.\"\nlate = \"Late entry.\"\n")
+        .expect("rewrite config");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+
+    // A no-op key press runs the per-keystroke config-reload hook.
+    app.handle_key_press_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .expect("handle key press");
+
+    let candidates = app.get_suggestions_for("/");
+    assert!(
+        candidates.iter().any(|(cmd, _)| cmd == "/late"),
+        "prompt added to config.toml must appear in the palette without a restart; got {candidates:?}"
+    );
+    restore_quick_prompts_env(temp, prev_home);
+}
