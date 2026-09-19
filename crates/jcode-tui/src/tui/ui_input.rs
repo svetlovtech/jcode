@@ -1952,96 +1952,13 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         )
     });
 
-    let mut spans: Vec<Span> = Vec::new();
-
-    // Pi-style footer: build the alternative span list up front and skip the
-    // classic layout entirely so the default path stays byte-identical.
-    let pi_style = crate::config::config().display.footer_style_pi();
-    if pi_style {
-        spans = pi_footer::overscroll_pi_spans(app, &data);
-    }
-
-    if !pi_style {
-        // Model
-        let model = data
-            .model
-            .clone()
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| app.provider_model());
-        if !model.is_empty() && !overscroll_is_placeholder(&model) {
-            spans.push(Span::styled(
-                session_facts::pretty_model(&model),
-                Style::default().fg(rgb(255, 150, 200)).bold(),
-            ));
-            // Reasoning level shown inline next to the model, e.g. " high".
-            if let Some(effort) = data
-                .reasoning_effort
-                .as_deref()
-                .and_then(overscroll_short_reasoning)
-            {
-                spans.push(Span::styled(
-                    format!(" {}", effort),
-                    Style::default().fg(rgb(140, 140, 150)),
-                ));
-            }
-        }
-
-        // Provider
-        let provider = data
-            .provider_name
-            .clone()
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| app.provider_name());
-        if !provider.is_empty() && !overscroll_is_runtime_placeholder(&provider) {
-            if !spans.is_empty() {
-                spans.push(sep());
-            }
-            spans.push(Span::styled(
-                overscroll_provider_display(&provider),
-                Style::default().fg(rgb(140, 180, 255)),
-            ));
-        }
-
-        // Access method (auth)
-        if let Some((label, color)) = overscroll_auth_label(data.auth_method) {
-            if !spans.is_empty() {
-                spans.push(sep());
-            }
-            spans.push(Span::styled(label.to_string(), Style::default().fg(color)));
-        }
-
-        // Context usage as a rounded bar
-        if let Some((used, limit)) = overscroll_context_usage(&data) {
-            if !spans.is_empty() {
-                spans.push(sep());
-            }
-            spans.push(Span::styled(
-                format!(
-                    "{}/{} ",
-                    overscroll_format_tokens(used),
-                    overscroll_format_tokens(limit)
-                ),
-                Style::default().fg(rgb(140, 140, 150)),
-            ));
-            spans.extend(overscroll_context_bar(used, limit, 10));
-        }
-
-        // Working directory last, shown as a home-relative path, with the git
-        // branch alongside when available.
-        if let Some(dir) = app.working_dir().and_then(|d| overscroll_dir_label(&d)) {
-            if !spans.is_empty() {
-                spans.push(sep());
-            }
-            spans.push(Span::styled(" ", Style::default().fg(rgb(140, 180, 255))));
-            spans.push(Span::styled(dir, Style::default().fg(rgb(140, 140, 150))));
-            if let Some(branch) = overscroll_git_branch(&data) {
-                spans.push(Span::styled(
-                    format!("  {branch}"),
-                    Style::default().fg(rgb(150, 170, 140)),
-                ));
-            }
-        }
-    }
+    // Fork: the pi-style footer replaces the classic span list; upstream
+    // merges only touch this single delegation point.
+    let spans: Vec<Span> = if crate::config::config().display.footer_style_pi() {
+        pi_footer::overscroll_pi_spans(app, &data)
+    } else {
+        pi_footer::overscroll_classic_spans(app, &data, &sep)
+    };
 
     let total_width = area.width as usize;
 
@@ -2103,6 +2020,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
 }
 
 /// Truncate a list of spans to at most `max_width` display columns, appending a
+/// single-cell ellipsis when content is dropped. Preserves per-span styling.
 fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
     use unicode_width::UnicodeWidthStr;
     if max_width == 0 {
