@@ -1,0 +1,15 @@
+{
+  "version": "0.86.0",
+  "date": "2026-09-19",
+  "title": "Quick prompts as files",
+  "highlights": [
+    "Quick prompts can live as one-prompt-per-file Markdown documents in ~/.jcode/prompts: the file name becomes the slash command and edits apply immediately without a restart"
+  ],
+  "improvements": [
+    "New quick prompts appear in the / palette as soon as the config file changes, without restarting the session",
+    "A custom prompt directory can be set with [prompts] dir in config.toml, and inline [prompts] entries still work alongside prompt files"
+  ],
+  "fixes": [
+    "Quick prompts added to config.toml no longer stay invisible in the slash palette until a restart"
+  ]
+}
