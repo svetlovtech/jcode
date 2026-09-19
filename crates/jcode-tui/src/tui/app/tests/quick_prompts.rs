@@ -107,3 +107,17 @@ fn quick_prompt_candidates_appear_in_the_palette() {
     );
     restore_quick_prompts_env(temp, prev_home);
 }
+
+#[test]
+fn quick_prompt_name_over_64_chars_is_rejected() {
+    let _lock = quick_prompts_lock();
+    let long_name = "a".repeat(65);
+    let config = format!("[prompts]\n{long_name} = \"text\"\n");
+    let (temp, prev_home) = quick_prompts_env(&config);
+    let mut app = create_test_app();
+
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, &format!("/{long_name}"));
+    assert!(!handled, "over-long prompt names must be ignored by valid_entries");
+
+    restore_quick_prompts_env(temp, prev_home);
+}
