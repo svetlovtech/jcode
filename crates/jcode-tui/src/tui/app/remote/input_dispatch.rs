@@ -180,6 +180,14 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
 ) -> Result<()> {
     let raw_input = prepared.raw_input.clone();
 
+    // Fork: quick prompts ([prompts] in config.toml) insert their text into
+    // the composer instead of dispatching, in remote mode too. Handled here
+    // (before skills) so a prompt named like a skill wins - prompts are the
+    // lighter, user-owned surface.
+    if app_mod::commands_dispatch::handle_quick_prompt_command(app, raw_input.trim()) {
+        return Ok(());
+    }
+
     if crate::tui::is_ssh_remote() {
         let trimmed = prepared.expanded.trim();
         if app_mod::commands_dispatch::handle_ssh_unsupported_command(app, trimmed) {

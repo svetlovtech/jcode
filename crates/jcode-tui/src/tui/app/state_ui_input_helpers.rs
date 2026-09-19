@@ -382,6 +382,21 @@ impl App {
             }
         }
 
+        // Fork: quick prompts from [prompts] in config.toml - picking one
+        // inserts its text into the composer (see quick prompt handling in
+        // commands_dispatch). Recomputed per cache build; config edits need
+        // a client reload, same as other [display]/[features] options.
+        for (name, text) in crate::config::config().prompts.valid_entries() {
+            let command = format!("/{name}");
+            if seen.insert(command.clone()) {
+                let hint = format!(
+                    "Insert prompt: {}",
+                    crate::util::truncate_str(text.split('\n').next().unwrap_or(""), 40)
+                );
+                commands.push((command, Box::leak(hint.into_boxed_str())));
+            }
+        }
+
         *self.command_candidates_cache.borrow_mut() = Some(CommandCandidatesCache {
             candidates: commands.clone(),
         });

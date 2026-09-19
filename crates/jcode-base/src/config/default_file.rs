@@ -131,6 +131,11 @@ diff_mode = "inline"
 # line: dir · branch · model (provider) · effort · context · cost · Σ tokens
 # footer_style = "pi"
 
+# Quick prompts: named snippets insertable into the composer via the
+# slash palette. Typing `/` then the name inserts the text for editing.
+# [prompts]
+# review = "Please review the current diff and report findings by severity."
+
 # Center all content by default (default: false)
 centered = false
 

@@ -951,6 +951,35 @@ impl ChatConfig {
     }
 }
 
+/// Quick prompts: named text snippets insertable into the composer via the
+/// slash palette (`/name` shows an insertion entry). TOML:
+///   [prompts]
+///   review = "Please review the current diff..."
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct QuickPromptsConfig {
+    /// Flattened map of prompt name -> text: every key under `[prompts]` in
+    /// config.toml is one entry. Insertion order follows BTreeMap.
+    #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub prompts: std::collections::BTreeMap<String, String>,
+}
+
+impl QuickPromptsConfig {
+    /// Validated entries: trimmed non-empty name and text, max 64 chars name.
+    pub fn valid_entries(&self) -> Vec<(String, String)> {
+        self.prompts
+            .iter()
+            .filter_map(|(name, text)| {
+                let name = name.trim();
+                let text = text.trim();
+                if name.is_empty() || text.is_empty() || name.chars().count() > 64 {
+                    return None;
+                }
+                Some((name.to_string(), text.to_string()))
+            })
+            .collect()
+    }
+}
+
 /// Automatic end-of-turn code review configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]

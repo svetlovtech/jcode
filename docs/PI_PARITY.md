@@ -63,7 +63,27 @@ timeout_secs = 600
   so vision models see them inline; text files return a preview plus the
   saved path under `<jcode-dir>/inbox/`.
 
-## 4. ask_user stdin routing (`ServerEvent::StdinRequest.source`)
+## 4. Quick prompts (`[prompts]` in config.toml)
+
+Named text snippets insertable into the composer via the slash palette
+(pi-style insert-only prompts):
+
+```toml
+[prompts]
+review = "Please review the current diff carefully."
+fix = "Fix $ARGUMENTS in the affected module."
+compare = "$1 vs $2 - which is better?"
+```
+
+Typing `/` lists every configured prompt alongside built-in commands and
+skills. Picking one - or submitting `/name extra words` - replaces the
+command in the composer with the prompt text for editing; nothing is sent
+automatically. `extra words` substitute `$ARGUMENTS` / positional `$1`-`$9`
+when present, otherwise the raw text is inserted for manual editing.
+Prompt names may shadow neither built-ins nor skills (they lose the
+palette dedupe to those).
+
+## 5. ask_user stdin routing (`ServerEvent::StdinRequest.source`)
 
 The stdin-request wire event carries a `source` tag distinguishing the two
 producers: `"stdin"` (a running command wants input; upstream bash stdin
