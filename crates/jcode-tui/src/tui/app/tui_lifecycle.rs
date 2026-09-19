@@ -102,6 +102,10 @@ impl App {
             return false;
         }
         self.keybindings_config_generation = generation;
+        // The slash palette caches its candidate list; [prompts] edits would
+        // otherwise stay invisible until a restart even though /name already
+        // expands (the expansion path reads config() directly).
+        self.invalidate_command_candidates_cache();
         self.model_switch_keys = keybind::load_model_switch_keys();
         self.effort_switch_keys = keybind::load_effort_switch_keys();
         self.centered_toggle_keys = keybind::load_centered_toggle_key();

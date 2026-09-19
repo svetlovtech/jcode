@@ -75,6 +75,16 @@ fix = "Fix $ARGUMENTS in the affected module."
 compare = "$1 vs $2 - which is better?"
 ```
 
+Prompt files: one prompt per file in the `[prompts] dir` (default
+`~/.jcode/prompts`). The file name without extension is the prompt name and
+the file content is the text, so `~/.jcode/prompts/review.md` becomes
+`/review`. Extensions `.md`, `.markdown`, and `.txt` are recognized; other
+files, subdirectories, and empty files are ignored. Prompt files are read
+fresh on every palette/expansion lookup, so adding or editing a file takes
+effect immediately, without a restart. A same-named inline `[prompts]` entry
+wins over a prompt file, and both lose the palette dedupe to built-in
+commands and skills.
+
 Typing `/` lists every configured prompt alongside built-in commands and
 skills. Picking one - or submitting `/name extra words` - replaces the
 command in the composer with the prompt text for editing; nothing is sent

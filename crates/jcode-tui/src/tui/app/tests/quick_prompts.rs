@@ -121,3 +121,145 @@ fn quick_prompt_name_over_64_chars_is_rejected() {
 
     restore_quick_prompts_env(temp, prev_home);
 }
+
+// File-based prompts: one prompt per file in the [prompts] dir (default
+// ~/.jcode/prompts). The file stem is the prompt name.
+
+#[test]
+fn prompt_file_is_loaded_and_inserted_into_composer() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("sum.md"), "Кратко: что сделано и что осталось.\n")
+        .expect("write prompt file");
+
+    let mut app = create_test_app();
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/sum");
+
+    assert!(handled, "prompt file should claim the input");
+    assert_eq!(app.input, "Кратко: что сделано и что осталось.");
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn prompt_file_appears_in_the_palette() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("review.md"), "Review the diff.").expect("write prompt file");
+
+    let app = create_test_app();
+    let candidates = app.get_suggestions_for("/");
+    assert!(
+        candidates.iter().any(|(cmd, _)| cmd == "/review"),
+        "prompt file should be listed in the slash palette; got {candidates:?}"
+    );
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn prompt_file_edits_are_visible_without_restart() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    let path = prompts_dir.join("sum.md");
+    std::fs::write(&path, "First version.").expect("write prompt file");
+
+    let mut app = create_test_app();
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/sum");
+    assert!(handled);
+    assert_eq!(app.input, "First version.");
+
+    // Rewrite the file and re-dispatch in the same app: file prompts are read
+    // fresh from disk on every lookup, no restart or config reload needed.
+    std::fs::write(&path, "Second version.").expect("rewrite prompt file");
+    app.input = "/sum".to_string();
+    app.cursor_pos = app.input.len();
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/sum");
+    assert!(handled);
+    assert_eq!(app.input, "Second version.");
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn prompt_dir_config_points_at_custom_directory() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("[prompts]\ndir = \"myprompts\"\n");
+    let prompts_dir = temp.path().join("myprompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("custom.md"), "Custom dir prompt.").expect("write prompt file");
+
+    let mut app = create_test_app();
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/custom");
+    assert!(handled, "relative [prompts] dir resolves against the jcode home");
+    assert_eq!(app.input, "Custom dir prompt.");
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn prompt_dir_config_absolute_path_is_respected() {
+    let _lock = quick_prompts_lock();
+    let abs_dir = tempfile::tempdir().expect("abs dir");
+    std::fs::write(abs_dir.path().join("elsewhere.txt"), "From an absolute dir.")
+        .expect("write prompt file");
+    let config = format!("[prompts]\ndir = \"{}\"\n", abs_dir.path().display());
+    let (temp, prev_home) = quick_prompts_env(&config);
+    let mut app = create_test_app();
+
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/elsewhere");
+    assert!(handled, "absolute [prompts] dir should be used verbatim");
+    assert_eq!(app.input, "From an absolute dir.");
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn inline_prompt_wins_over_same_named_prompt_file() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("[prompts]\nsum = \"Inline wins.\"\n");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("sum.md"), "File loses.").expect("write prompt file");
+
+    let mut app = create_test_app();
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/sum");
+    assert!(handled);
+    assert_eq!(app.input, "Inline wins.");
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn prompt_files_with_bad_names_or_empty_content_are_skipped() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir.join("nested")).expect("create prompts dir");
+    std::fs::write(prompts_dir.join(".md"), "No stem.").expect("write prompt file");
+    std::fs::write(prompts_dir.join("empty.md"), "   \n").expect("write empty prompt file");
+    std::fs::write(prompts_dir.join("ignored.json"), "{}").expect("write non-prompt file");
+    std::fs::write(prompts_dir.join("nested").join("deep.md"), "Nested prompts are ignored.")
+        .expect("write nested prompt file");
+
+    let app = create_test_app();
+    let candidates = app.get_suggestions_for("/");
+    for bad in ["/empty", "/ignored", "/deep"] {
+        assert!(
+            !candidates.iter().any(|(cmd, _)| cmd == bad),
+            "{bad} must not appear in the palette; got {candidates:?}"
+        );
+    }
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
+fn missing_prompts_dir_is_harmless() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let app = create_test_app();
+
+    let candidates = app.get_suggestions_for("/");
+    assert!(!candidates.iter().any(|(cmd, _)| cmd.starts_with("/sum")));
+    restore_quick_prompts_env(temp, prev_home);
+}

@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// Resolve the jcode home directory (`JCODE_HOME` or `~/.jcode`).
+///
+/// `jcode-config-types` intentionally has no dependency on `jcode-storage`
+/// (that crate depends on this one), so the tiny resolution rule is repeated
+/// here. Keep in sync with `jcode_storage::jcode_dir`.
+fn jcode_home_dir() -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("JCODE_HOME") {
+        return Some(std::path::PathBuf::from(path));
+    }
+    dirs::home_dir().map(|home| home.join(".jcode"))
+}
+
 mod display;
 pub use display::DisplayConfig;
 pub mod keybindings;
@@ -952,11 +964,24 @@ impl ChatConfig {
 }
 
 /// Quick prompts: named text snippets insertable into the composer via the
-/// slash palette (`/name` shows an insertion entry). TOML:
-///   [prompts]
-///   review = "Please review the current diff..."
+/// slash palette (`/name` shows an insertion entry). Two sources:
+///   1. Inline TOML keys under `[prompts]` in config.toml:
+///        review = "Please review the current diff..."
+///   2. Prompt files (one prompt per file) in the `[prompts] dir`
+///      (default `~/.jcode/prompts`): the file name without extension is
+///      the prompt name, the file content is the prompt text.
+///      `review.md` -> `/review`. Subdirectories are ignored.
+///      File prompts are loaded fresh on every read, so edits on disk take
+///      effect on the next palette/expansion without a restart. A same-named
+///      inline entry wins over a file prompt.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct QuickPromptsConfig {
+    /// Directory holding one-prompt-per-file prompt files. Empty means the
+    /// default `~/.jcode/prompts`. Resolved relative to the jcode home dir
+    /// (`JCODE_HOME`-aware).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dir: String,
+
     /// Flattened map of prompt name -> text: every key under `[prompts]` in
     /// config.toml is one entry. Insertion order follows BTreeMap.
     #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -964,19 +989,90 @@ pub struct QuickPromptsConfig {
 }
 
 impl QuickPromptsConfig {
-    /// Validated entries: trimmed non-empty name and text, max 64 chars name.
+    /// Resolve the prompt directory for this config: the configured `dir`
+    /// (absolute, or relative to the jcode home) or `~/.jcode/prompts`.
+    pub fn prompt_dir(&self) -> Option<std::path::PathBuf> {
+        let configured = self.dir.trim();
+        if !configured.is_empty() {
+            let path = std::path::Path::new(configured);
+            if path.is_absolute() {
+                return Some(path.to_path_buf());
+            }
+            if let Some(jcode_dir) = jcode_home_dir() {
+                return Some(jcode_dir.join(path));
+            }
+            return None;
+        }
+        jcode_home_dir()
+            .map(|dir| dir.join("prompts"))
+    }
+
+    /// Prompts loaded from the prompt directory, fresh from disk. The file
+    /// name without extension is the prompt name; the trimmed file content is
+    /// the text. Invalid names (empty, over 64 chars, containing separators)
+    /// and unreadable files are skipped silently.
+    pub fn file_entries(&self) -> Vec<(String, String)> {
+        let Some(dir) = self.prompt_dir() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut prompts: Vec<(String, String)> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| {
+                let path = entry.path();
+                let extension = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase);
+                match extension.as_deref() {
+                    Some("md") | Some("txt") | Some("markdown") => {}
+                    _ => return None,
+                }
+                let name = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::trim)?;
+                let text = std::fs::read_to_string(&path).ok()?;
+                if !Self::name_is_valid(name) {
+                    return None;
+                }
+                Some((name.to_string(), text.trim().to_string()))
+            })
+            .filter(|(_, text)| !text.is_empty())
+            .collect();
+        prompts.sort();
+        prompts
+    }
+
+    /// Character-level name check shared by inline and file prompts.
+    fn name_is_valid(name: &str) -> bool {
+        !name.is_empty() && name.chars().count() <= 64 && !name.contains('/')
+    }
+
+    /// Validated entries: inline `[prompts]` keys plus prompt files from the
+    /// prompt directory. Trimmed non-empty name and text, max 64 chars name.
+    /// Inline entries win over same-named file prompts. Sorted by name.
     pub fn valid_entries(&self) -> Vec<(String, String)> {
-        self.prompts
+        let mut entries: std::collections::BTreeMap<String, String> = self
+            .prompts
             .iter()
             .filter_map(|(name, text)| {
                 let name = name.trim();
                 let text = text.trim();
-                if name.is_empty() || text.is_empty() || name.chars().count() > 64 {
+                if !Self::name_is_valid(name) || text.is_empty() {
                     return None;
                 }
                 Some((name.to_string(), text.to_string()))
             })
-            .collect()
+            .collect();
+        // Inline wins: files are inserted only when the name is free.
+        for (name, text) in self.file_entries() {
+            entries.entry(name).or_insert(text);
+        }
+        entries.into_iter().collect()
     }
 }
 
