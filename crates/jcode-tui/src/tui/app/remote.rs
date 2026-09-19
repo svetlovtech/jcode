@@ -1206,23 +1206,12 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     // answer (Request::StdinResponse) even while the turn is processing -
     // the blocking tool unblocks the moment it arrives.
     if app.pending_stdin.is_some() && !app.queued_messages.is_empty() {
-        let (request_id, _prompt) = app.pending_stdin.take().expect("checked above");
         let messages = std::mem::take(&mut app.queued_messages);
         let answer = messages.join(" ").trim().to_string();
         if answer.is_empty() {
             app.set_status_notice("Пустой ответ — вопрос остаётся открытым");
-            app.pending_stdin = Some((request_id, String::new()));
         } else {
-            match remote.send_stdin_response(&request_id, &answer).await {
-                Ok(()) => {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "Ответ отправлен агенту: {answer}"
-                    )));
-                }
-                Err(err) => {
-                    app.set_status_notice(format!("Не удалось отправить ответ: {err}"));
-                }
-            }
+            crate::tui::app::fork_ask::send_answer(app, remote, &answer).await;
             return;
         }
     }

@@ -18,22 +18,8 @@ pub(in crate::tui::app) async fn send_interleave_now(
     }
     // Fork: a pending ask_user prompt turns this interleave into the answer
     // (Request::StdinResponse) so the blocking tool unblocks immediately.
-    if app.pending_stdin.is_some() && !content.trim().is_empty() {
-        let (request_id, _prompt) = app.pending_stdin.take().expect("checked above");
-        let answer = content.trim().to_string();
-        match remote.send_stdin_response(&request_id, &answer).await {
-            Ok(()) => {
-                app.push_display_message(DisplayMessage::system(format!(
-                    "Ответ отправлен агенту: {answer}"
-                )));
-            }
-            Err(err) => {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Не удалось отправить ответ: {err}"
-                )));
-                app.pending_stdin = Some((request_id, _prompt));
-            }
-        }
+    if app.pending_stdin.is_some() {
+        crate::tui::app::fork_ask::send_answer(app, remote, content.trim()).await;
         return;
     }
     let msg_clone = content.clone();
