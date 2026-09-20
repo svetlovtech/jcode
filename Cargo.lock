@@ -3310,6 +3310,8 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
