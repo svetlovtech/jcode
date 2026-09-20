@@ -174,7 +174,8 @@ pub(in crate::tui::app) async fn toggle_server_blocking(
     };
 
     // Keep the session tool registry in sync with the manager state: register
-    // tools for every currently connected server (idempotent per name).
+    // tools for a newly connected server (idempotent per name), and drop a
+    // disconnected server's stale tools so dead calls cannot be made.
     if report.starts_with("Connected to") {
         let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(manager)).await;
         let server_prefix = crate::mcp::dispatch_name(name, "");
@@ -183,6 +184,10 @@ pub(in crate::tui::app) async fn toggle_server_blocking(
                 registry.register(tool_name, tool).await;
             }
         }
+    } else if report.starts_with("Disconnected") {
+        registry
+            .unregister_prefix(&crate::mcp::dispatch_name(name, ""))
+            .await;
     }
     report
 }
