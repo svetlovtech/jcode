@@ -232,7 +232,7 @@ impl Agent {
     /// Get comprehensive debug info about agent internal state
     pub fn debug_info(&self) -> serde_json::Value {
         serde_json::json!({
-            "provider": self.provider.name(),
+            "provider": self.provider_name(),
             "model": self.provider.model(),
             "provider_session_id": self.provider_session_id,
             "last_upstream_provider": self.last_upstream_provider,

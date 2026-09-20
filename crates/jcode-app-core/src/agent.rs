@@ -133,7 +133,7 @@ fn log_agent_provider_stream_lifecycle(
 ) {
     let mut owned = vec![
         ("phase".to_string(), phase.to_string()),
-        ("provider".to_string(), agent.provider.name().to_string()),
+        ("provider".to_string(), agent.provider_name()),
         ("model".to_string(), agent.provider.model()),
         ("session_id".to_string(), agent.session.id.clone()),
         (
@@ -440,7 +440,7 @@ impl Agent {
         let setup_ms = start.elapsed().as_millis();
         let telemetry_start = Instant::now();
         crate::telemetry::begin_session_with_parent(
-            agent.provider.name(),
+            &agent.provider_name(),
             &agent.provider.model(),
             agent.session.parent_id.clone(),
             false,
@@ -508,7 +508,7 @@ impl Agent {
         agent.fire_session_lifecycle_hook("session_start", "attach");
         agent.begin_concurrency_tracking();
         crate::telemetry::begin_session_with_parent(
-            agent.provider.name(),
+            &agent.provider_name(),
             &agent.provider.model(),
             agent.session.parent_id.clone(),
             false,

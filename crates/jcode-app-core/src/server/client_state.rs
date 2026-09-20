@@ -58,6 +58,19 @@ fn history_provider_name_from_session(session: &crate::session::Session) -> Opti
         return None;
     }
 
+    // An `openai-compatible:<profile>` key is a named/user profile route
+    // (e.g. `openai-compatible:zai-gateway`). Display the profile id itself so
+    // the client header reflects the gateway the user configured instead of
+    // the generic OpenRouter slot that executes it.
+    if let Some((family, profile)) = key.split_once(':')
+        && family.eq_ignore_ascii_case("openai-compatible")
+    {
+        let profile = profile.trim();
+        if !profile.is_empty() {
+            return Some(profile.to_string());
+        }
+    }
+
     let label = match key.to_ascii_lowercase().as_str() {
         "openai" => "OpenAI".to_string(),
         "claude" | "anthropic" => "Anthropic".to_string(),
@@ -219,7 +232,10 @@ pub(super) async fn handle_get_model_catalog(
                 let mut model_routes = provider.model_routes();
                 crate::model_usage::enrich_routes(&mut model_routes);
                 (
-                    Some(provider.name().to_string()),
+                    persisted
+                        .as_ref()
+                        .and_then(history_provider_name_from_session)
+                        .or_else(|| Some(provider.display_name())),
                     persisted_model.or_else(|| Some(provider.model())),
                     provider.available_models_display(),
                     model_routes,
@@ -500,7 +516,7 @@ async fn send_history_from_persisted_session(
     // large History event, so we do not hold Session + rendered payload +
     // serialized wire bytes simultaneously.
     let provider_name =
-        history_provider_name_from_session(&session).or_else(|| Some(provider.name().to_string()));
+        history_provider_name_from_session(&session).or_else(|| Some(provider.display_name()));
     let provider_model = session.model.clone().or_else(|| Some(provider.model()));
     let subagent_model = session.subagent_model.clone();
     let autoreview_enabled = session.autoreview_enabled;
@@ -892,6 +908,24 @@ mod tests {
         assert_eq!(
             history_provider_name_from_session(&session).as_deref(),
             Some("opencode-go")
+        );
+    }
+
+    #[test]
+    fn history_provider_name_shows_named_profile_for_openai_compatible_key() {
+        let session = session_with_provider_key(Some("openai-compatible:zai-gateway"));
+        assert_eq!(
+            history_provider_name_from_session(&session).as_deref(),
+            Some("zai-gateway")
+        );
+    }
+
+    #[test]
+    fn history_provider_name_handles_empty_profile_suffix() {
+        let session = session_with_provider_key(Some("openai-compatible:"));
+        assert_eq!(
+            history_provider_name_from_session(&session).as_deref(),
+            Some("openai-compatible:")
         );
     }
 }

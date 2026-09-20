@@ -32,7 +32,7 @@ impl Agent {
     /// Set logging context for this agent's session/provider
     pub(super) fn set_log_context(&self) {
         logging::set_session(&self.session.id);
-        logging::set_provider_info(self.provider.name(), &self.provider.model());
+        logging::set_provider_info(&self.provider_name(), &self.provider.model());
     }
 
     /// Record a lightweight environment snapshot for post-mortem debugging
@@ -80,7 +80,7 @@ impl Agent {
             reason: reason.to_string(),
             session_id: self.session.id.clone(),
             working_dir,
-            provider: self.provider.name().to_string(),
+            provider: self.provider_name(),
             model: self.provider.model().to_string(),
             jcode_version: jcode_build_meta::version().to_string(),
             jcode_git_hash,
