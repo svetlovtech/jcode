@@ -1145,6 +1145,9 @@ pub(crate) enum MemoryCommand {
     /// Show memory statistics
     Stats,
 
+    /// Regenerate embeddings for all memories using the active backend
+    Backfill,
+
     /// Clear test memory storage (used by debug sessions)
     ClearTest,
 }

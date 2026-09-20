@@ -748,6 +748,7 @@ fn map_memory_subcommand(subcmd: MemoryCommand) -> commands::MemorySubcommand {
             overwrite,
         },
         MemoryCommand::Stats => commands::MemorySubcommand::Stats,
+        MemoryCommand::Backfill => commands::MemorySubcommand::Backfill,
         MemoryCommand::ClearTest => commands::MemorySubcommand::ClearTest,
     }
 }

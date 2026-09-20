@@ -1573,6 +1573,7 @@ pub enum MemorySubcommand {
         overwrite: bool,
     },
     Stats,
+    Backfill,
     ClearTest,
 }
 
@@ -1807,6 +1808,19 @@ fn run_memory_command_for_dir(
             println!("\nBy category:");
             for (cat, count) in &categories {
                 println!("  {}: {}", cat, count);
+            }
+        }
+
+        MemorySubcommand::Backfill => {
+            let backend = crate::embedding_backend::active_model_id();
+            println!("Backfilling embeddings using active backend: {backend}");
+            let (generated, failed) = manager.backfill_embeddings()?;
+            println!("  regenerated: {generated}");
+            println!("  failed:      {failed}");
+            if failed > 0 {
+                println!(
+                    "\nNote: failed entries keep their previous embeddings and stay\nreachable via lexical search. Re-run when the backend is reachable."
+                );
             }
         }
 
