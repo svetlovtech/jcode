@@ -3673,13 +3673,16 @@ impl App {
                     PickerAction::McpServer { name } => {
                         self.inline_interactive_state = None;
                         let manager = Arc::clone(&self.mcp_manager);
+                        let registry = self.registry.clone();
                         let (tx, rx) = std::sync::mpsc::channel::<String>();
                         self.pending_mcp_command =
                             Some(super::PendingMcpCommand { receiver: rx });
                         self.set_status_notice("MCP command running...");
                         tokio::spawn(async move {
-                            let report =
-                                super::mcp_command::toggle_server_blocking(&manager, &name).await;
+                            let report = super::mcp_command::toggle_server_blocking(
+                                &manager, &name, &registry,
+                            )
+                            .await;
                             let _ = tx.send(report);
                         });
                     }

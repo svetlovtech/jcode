@@ -158,17 +158,33 @@ pub(in crate::tui::app) async fn connect_server_blocking(manager: &Arc<RwLock<cr
 
 /// Toggle by live state at execution time: connect when not connected,
 /// disconnect when connected. The picker opens before knowing the state,
-/// so the decision happens here.
+/// so the decision happens here. `registry` shares the session's tool map,
+/// so newly connected server tools register (and disconnected ones get
+/// dropped on the next reload) exactly like the agent-side `mcp` tool.
 pub(in crate::tui::app) async fn toggle_server_blocking(
     manager: &Arc<RwLock<crate::mcp::McpManager>>,
     name: &str,
+    registry: &crate::tool::Registry,
 ) -> String {
     let connected = manager.read().await.connected_servers().await;
-    if connected.contains(&name.to_string()) {
+    let report = if connected.contains(&name.to_string()) {
         disconnect_server_blocking(manager, name).await
     } else {
         connect_server_blocking(manager, name).await
+    };
+
+    // Keep the session tool registry in sync with the manager state: register
+    // tools for every currently connected server (idempotent per name).
+    if report.starts_with("Connected to") {
+        let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(manager)).await;
+        let server_prefix = crate::mcp::dispatch_name(name, "");
+        for (tool_name, tool) in mcp_tools {
+            if tool_name.starts_with(&server_prefix) {
+                registry.register(tool_name, tool).await;
+            }
+        }
     }
+    report
 }
 
 pub(in crate::tui::app) async fn disconnect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
