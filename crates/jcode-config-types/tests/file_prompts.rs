@@ -90,3 +90,20 @@ fn missing_and_unreadable_prompt_files_degrade_gracefully() {
     assert!(QuickPromptsConfig::default().valid_entries().is_empty());
     restore(temp, prev);
 }
+
+#[test]
+fn unreadable_prompt_file_is_skipped_without_failing_others() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let (temp, prev) = setup_home(&[("good.md", "Good prompt.")]);
+    let unreadable = temp.path().join("prompts").join("locked.md");
+    std::fs::write(&unreadable, "Secret?").unwrap();
+    let mut perms = std::fs::metadata(&unreadable).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&unreadable, perms).expect("chmod 000");
+
+    let entries = QuickPromptsConfig::default().valid_entries();
+    let names: Vec<String> = entries.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, vec!["good"], "unreadable file must be skipped, not fatal");
+    restore(temp, prev);
+}
