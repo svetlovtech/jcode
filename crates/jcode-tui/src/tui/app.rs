@@ -662,6 +662,10 @@ pub(super) struct OvernightAutoPokeState {
 #[derive(Clone, Debug, Default)]
 struct CommandCandidatesCache {
     candidates: Vec<(String, &'static str)>,
+    /// Fingerprint of the quick-prompt sources at build time (config
+    /// generation + prompts-dir mtime). A mismatch forces a rebuild so
+    /// prompt files edited on disk update their palette hints live.
+    fingerprint: u64,
 }
 
 /// Memoized result of [`App::command_suggestions`] for one exact input buffer.

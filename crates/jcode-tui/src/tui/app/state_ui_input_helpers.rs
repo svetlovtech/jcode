@@ -3,6 +3,61 @@ use crate::tui::core;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Fingerprint the quick-prompt sources so the palette notices prompt-file
+/// edits without polling: the config reload generation (catches config.toml
+/// edits) hashed with each prompt file's mtime (catches content edits, adds,
+/// and deletes; the set is tiny so stat-ing per frame is cheap). A missing
+/// dir contributes a stable constant.
+fn prompt_sources_fingerprint() -> u64 {
+    let config = crate::config::config();
+    let mut state: u64 = crate::config::config_reload_generation();
+    if let Some(dir) = config.prompts.prompt_dir() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.filter_map(Result::ok) {
+                if !entry.path().is_file() {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) {
+                            let nanos = since.as_nanos() as u64;
+                            state ^= nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17);
+                            state = state.rotate_left(7);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state
+}
+
+/// Intern a prompt hint into a `&'static str`, deduplicating by content.
+///
+/// The suggestion pipeline carries help strings as `&'static str` (most come
+/// from `REGISTERED_COMMANDS`, which is truly static). Prompt hints are built
+/// from dynamic text, and the naive `Box::leak` per cache rebuild leaked a new
+/// copy every time the candidates cache was invalidated. Interning keeps the
+/// `&'static str` contract while leaking each distinct hint at most once; the
+/// table is bounded by the number of distinct prompt texts a user ever has.
+fn intern_hint(hint: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let interned = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(set) = interned.lock() {
+        if let Some(existing) = set.get(hint) {
+            return existing;
+        }
+    }
+    let leaked: &'static str = Box::leak(hint.to_string().into_boxed_str());
+    if let Ok(mut set) = interned.lock() {
+        set.insert(leaked);
+    }
+    leaked
+}
+
 #[derive(Clone, Copy)]
 struct RegisteredCommand {
     name: &'static str,
@@ -342,9 +397,15 @@ impl App {
             .collect()
     }
 
+    /// Build the full slash-command candidate list (commands + skills +
+    /// quick prompts), memoized until invalidated or the quick-prompt
+    /// sources change (config generation or prompts-dir mtime).
     fn command_candidates(&self) -> Vec<(String, &'static str)> {
+        let fingerprint = prompt_sources_fingerprint();
         if let Some(cache) = self.command_candidates_cache.borrow().as_ref() {
-            return cache.candidates.clone();
+            if cache.fingerprint == fingerprint {
+                return cache.candidates.clone();
+            }
         }
 
         fn push_skill_commands(
@@ -393,12 +454,13 @@ impl App {
                     "Insert prompt: {}",
                     crate::util::truncate_str(text.split('\n').next().unwrap_or(""), 40)
                 );
-                commands.push((command, Box::leak(hint.into_boxed_str())));
+                commands.push((command, intern_hint(&hint)));
             }
         }
 
         *self.command_candidates_cache.borrow_mut() = Some(CommandCandidatesCache {
             candidates: commands.clone(),
+            fingerprint,
         });
         commands
     }
