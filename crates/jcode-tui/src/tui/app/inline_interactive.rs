@@ -3678,7 +3678,7 @@ impl App {
                         // so one Enter still does the job without typing.
                         if self.is_remote {
                             let instruction = format!(
-                                "Use the mcp tool with action \"toggle\" (or connect/disconnect) for the server \"{name}\". Do it now and report the result briefly."
+                                "Use the mcp tool: first action \"list\" to check whether server \"{name}\" is connected, then action \"disconnect {name}\" if it is connected, otherwise \"connect {name}\". Report the result in one short sentence."
                             );
                             self.input = instruction;
                             self.cursor_pos = self.input.len();
