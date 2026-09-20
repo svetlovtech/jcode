@@ -89,3 +89,37 @@ fn mcp_command_appears_in_the_palette() {
         "/mcp should be listed in the slash palette; got {candidates:?}"
     );
 }
+
+#[test]
+fn mcp_picker_survives_malformed_global_mcp_json() {
+    // A malformed ~/.jcode/mcp.json must not panic or wedge the picker:
+    // the manager skips unreadable sources per-file.
+    let _lock = mcp_command_lock();
+    let (temp, prev_home) = mcp_command_env_with_malformed_json();
+    let mut app = create_test_app();
+
+    let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/mcp");
+    assert!(handled, "/mcp must be claimed even with a malformed mcp.json");
+    assert!(
+        app.inline_interactive_state.is_some(),
+        "picker must open despite a malformed global mcp.json"
+    );
+    restore_home(temp, prev_home);
+}
+
+fn mcp_command_env_with_malformed_json() -> (tempfile::TempDir, Option<std::ffi::OsString>) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    std::fs::create_dir_all(temp.path()).expect("create home");
+    std::fs::write(temp.path().join("mcp.json"), "{ broken json !!!").expect("write mcp.json");
+    (temp, prev_home)
+}
+
+fn restore_home(temp: tempfile::TempDir, prev_home: Option<std::ffi::OsString>) {
+    match prev_home {
+        Some(v) => crate::env::set_var("JCODE_HOME", v),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    drop(temp);
+}
