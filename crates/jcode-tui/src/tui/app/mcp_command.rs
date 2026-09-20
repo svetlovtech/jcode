@@ -11,11 +11,11 @@
 //!   /mcp connect <name>      - connect a configured (possibly disabled) server
 //!   /mcp disconnect <name>   - disconnect a connected server
 //!
-//! Operations run against the local process's `McpManager`, which the wire
-//! client does not own, so SSH/remote sessions block the command like the
-//! other laptop-local actions. Results are delivered to the transcript via a
-//! pending receiver polled from the run loop (same shape as
-//! `PendingLocalTransfer`).
+//! Operations run against the local process's `McpManager` in local mode.
+//! In wire-attached sessions (app.is_remote) the picker stays available and
+//! its toggles are routed through the daemon session's agent `mcp` tool, so
+//! one Enter still manages servers without typing. SSH sessions block the
+//! command like other laptop-local actions.
 
 use super::{App, PendingMcpCommand};
 use std::sync::mpsc;
@@ -34,6 +34,9 @@ pub(in crate::tui::app) fn handle_mcp_command(app: &mut App, input: &str) -> boo
         super::commands_dispatch::ssh_local_action_blocked(app, "MCP management");
         return true;
     }
+    // Note: wire-attached sessions (app.is_remote) still get the picker - their
+    // toggles are routed through the agent's mcp tool (see the picker action),
+    // because the McpManager belongs to the daemon session.
     // Wire-client sessions (TUI attached to a running daemon) do not own the
     // McpManager - the daemon's session does. Toggling here would silently
     // change nothing for the agent, so block it like other laptop-local

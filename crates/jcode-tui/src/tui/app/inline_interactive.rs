@@ -3672,6 +3672,19 @@ impl App {
                     // channel as the /mcp slash command.
                     PickerAction::McpServer { name } => {
                         self.inline_interactive_state = None;
+                        // Fork: sessions attached to the daemon (wire clients)
+                        // do not own the McpManager - the daemon session does.
+                        // Route the toggle through the agent's own `mcp` tool
+                        // so one Enter still does the job without typing.
+                        if self.is_remote {
+                            let instruction = format!(
+                                "Use the mcp tool with action \"toggle\" (or connect/disconnect) for the server \"{name}\". Do it now and report the result briefly."
+                            );
+                            self.input = instruction;
+                            self.cursor_pos = self.input.len();
+                            self.submit_input();
+                            return Ok(());
+                        }
                         let manager = Arc::clone(&self.mcp_manager);
                         let registry = self.registry.clone();
                         let (tx, rx) = std::sync::mpsc::channel::<String>();
