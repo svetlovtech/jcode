@@ -273,6 +273,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Poke model to resume with incomplete todos (on/off/status)",
     ));
     lines.push(help_entry(
+        "/mcp [list|reload|connect <name>|disconnect <name>]",
+        "List or manage MCP servers (interactive picker without arguments)",
+    ));
+    lines.push(help_entry(
         "/plan [goal]",
         "Draft a plan-only proposal as a plan card (no edits)",
     ));
