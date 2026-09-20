@@ -34,20 +34,6 @@ pub(in crate::tui::app) fn handle_mcp_command(app: &mut App, input: &str) -> boo
         super::commands_dispatch::ssh_local_action_blocked(app, "MCP management");
         return true;
     }
-    // Note: wire-attached sessions (app.is_remote) still get the picker - their
-    // toggles are routed through the agent's mcp tool (see the picker action),
-    // because the McpManager belongs to the daemon session.
-    // Wire-client sessions (TUI attached to a running daemon) do not own the
-    // McpManager - the daemon's session does. Toggling here would silently
-    // change nothing for the agent, so block it like other laptop-local
-    // actions. True local mode owns the manager and proceeds below.
-    if app.is_remote {
-        app.push_display_message(super::DisplayMessage::system(
-            "/mcp is unavailable while attached to a running jcode server: the server owns the MCP manager. Use the agent's `mcp` tool (action: reload/connect/disconnect) instead.".to_string(),
-        ));
-        return true;
-    }
-
     let argument = trimmed
         .strip_prefix("/mcp")
         .map(str::trim)
