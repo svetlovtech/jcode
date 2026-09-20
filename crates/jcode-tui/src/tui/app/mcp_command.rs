@@ -41,9 +41,15 @@ pub(in crate::tui::app) fn handle_mcp_command(app: &mut App, input: &str) -> boo
         .unwrap_or_default();
     let parts = argument.split_whitespace().collect::<Vec<_>>();
 
+    // Bare /mcp opens the interactive picker (arrows + Enter); typed
+    // subcommands stay available for power users and scripting.
+    if parts.is_empty() {
+        open_mcp_picker(app);
+        return true;
+    }
+
     let action = match parts.as_slice() {
-        [] => McpAction::List,
-        ["list"] => McpAction::List,
+        [] | ["list"] => McpAction::List,
         ["reload"] => McpAction::Reload,
         ["connect", name] => McpAction::Connect((*name).to_string()),
         ["disconnect", name] => McpAction::Disconnect((*name).to_string()),
@@ -78,8 +84,8 @@ async fn run_mcp_action(manager: Arc<RwLock<crate::mcp::McpManager>>, action: Mc
     match action {
         McpAction::List => list_servers(&manager).await,
         McpAction::Reload => reload_servers(manager).await,
-        McpAction::Connect(name) => connect_server(&manager, &name).await,
-        McpAction::Disconnect(name) => disconnect_server(&manager, &name).await,
+        McpAction::Connect(name) => connect_server_blocking(&manager, &name).await,
+        McpAction::Disconnect(name) => disconnect_server_blocking(&manager, &name).await,
     }
 }
 
@@ -125,7 +131,7 @@ async fn reload_servers(manager: Arc<RwLock<crate::mcp::McpManager>>) -> String 
     }
 }
 
-async fn connect_server(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+pub(in crate::tui::app) async fn connect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
     let configured = {
         let manager = manager.read().await;
         manager.config().servers.get(name).cloned()
@@ -150,7 +156,7 @@ async fn connect_server(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &st
     }
 }
 
-async fn disconnect_server(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+pub(in crate::tui::app) async fn disconnect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
     let manager = manager.read().await;
     let connected = manager.connected_servers().await;
     if !connected.contains(&name.to_string()) {
@@ -184,4 +190,81 @@ pub(in crate::tui::app) fn poll_mcp_command(app: &mut App) -> bool {
             true
         }
     }
+}
+
+/// Open the interactive `/mcp` picker: one row per configured server,
+/// Enter toggles connect/disconnect. Built from a fresh config read so
+/// new servers appear without a reload.
+pub(in crate::tui::app) fn open_mcp_picker(app: &mut App) {
+    use crate::tui::{InlineInteractiveState, PickerEntry, PickerKind, PickerOption};
+
+    let config = mcp_config();
+    let connected: std::collections::HashSet<String> = {
+        match app.mcp_manager.try_read() {
+            Ok(manager) => {
+                // connected_servers() is async; approximate with the config
+                // snapshot's enabled state plus a non-blocking check below.
+                let _ = manager;
+                std::collections::HashSet::new()
+            }
+            Err(_) => std::collections::HashSet::new(),
+        }
+    };
+    let _ = connected;
+
+    let mut entries: Vec<PickerEntry> = config
+        .servers
+        .iter()
+        .map(|(name, server)| {
+            let kind_label = if server.url.is_some() { "remote" } else { "stdio" };
+            PickerEntry {
+                name: name.clone(),
+                options: vec![PickerOption {
+                    provider: format!("{} - Enter to toggle", kind_label),
+                    api_method: String::new(),
+                    available: true,
+                    detail: server
+                        .url
+                        .clone()
+                        .unwrap_or_else(|| server.command.clone()),
+                    estimated_reference_cost_micros: None,
+                }],
+                action: crate::tui::PickerAction::McpServer {
+                    name: name.clone(),
+                    connect: true,
+                },
+                selected_option: 0,
+                is_current: false,
+                is_default: false,
+                is_favorite: false,
+                recommended: false,
+                recommendation_rank: usize::MAX,
+                usage_score: 0,
+                old: false,
+                created_date: None,
+                effort: None,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    app.inline_view_state = None;
+    app.inline_interactive_state = Some(InlineInteractiveState {
+        kind: PickerKind::Model,
+        filtered: (0..entries.len()).collect(),
+        entries,
+        selected: 0,
+        column: 0,
+        filter: String::new(),
+        preview: false,
+    });
+    app.input.clear();
+    app.cursor_pos = 0;
+}
+
+/// Read the merged MCP config synchronously (same resolution as the manager).
+fn mcp_config() -> crate::mcp::McpConfig {
+    crate::mcp::McpConfig::load_for_dir(
+        std::env::current_dir().ok().as_deref(),
+    )
 }

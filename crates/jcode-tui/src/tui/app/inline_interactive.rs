@@ -3667,6 +3667,26 @@ impl App {
                         }
                         let _ = self.session.save();
                     }
+                    // Fork: /mcp picker toggle (connect/disconnect) via the
+                    // local McpManager; report lands through the same pending
+                    // channel as the /mcp slash command.
+                    PickerAction::McpServer { name, connect } => {
+                        self.inline_interactive_state = None;
+                        let manager = Arc::clone(&self.mcp_manager);
+                        let (tx, rx) = std::sync::mpsc::channel::<String>();
+                        self.pending_mcp_command =
+                            Some(super::PendingMcpCommand { receiver: rx });
+                        self.set_status_notice("MCP command running...");
+                        tokio::spawn(async move {
+                            let report = if connect {
+                                super::mcp_command::connect_server_blocking(&manager, &name).await
+                            } else {
+                                super::mcp_command::disconnect_server_blocking(&manager, &name)
+                                    .await
+                            };
+                            let _ = tx.send(report);
+                        });
+                    }
                     PickerAction::Model => {
                         if !route.available {
                             self.push_display_message(DisplayMessage::error(

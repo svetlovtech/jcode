@@ -1323,6 +1323,11 @@ pub enum PickerAction {
     SubagentModelChoice {
         inherit: bool,
     },
+    /// Fork: connect or disconnect an MCP server from the /mcp picker.
+    McpServer {
+        name: String,
+        connect: bool,
+    },
 }
 
 /// Unified inline picker with three columns.
@@ -1369,6 +1374,7 @@ fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
         | PickerAction::AgentModelChoice { .. }
         | PickerAction::SubagentModelChoice { .. }
         | PickerAction::LogoutAll => 0,
+        PickerAction::McpServer { name, .. } => name.capacity(),
         PickerAction::Account(AccountPickerAction::Switch { provider_id, label }) => {
             provider_id.capacity() + label.capacity()
         }

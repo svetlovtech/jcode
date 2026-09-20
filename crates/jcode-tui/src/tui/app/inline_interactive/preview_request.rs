@@ -96,6 +96,8 @@ pub(super) fn picker_account_provider_scope(picker: &InlineInteractiveState) -> 
         | PickerAction::Usage { .. }
         | PickerAction::AgentTarget(_)
         | PickerAction::AgentModelChoice { .. }
-        | PickerAction::SubagentModelChoice { .. } => None,
+        | PickerAction::SubagentModelChoice { .. }
+        // Fork: /mcp picker entries carry no account scope.
+        | PickerAction::McpServer { .. } => None,
     })
 }

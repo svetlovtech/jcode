@@ -17,13 +17,26 @@ async fn mcp_command_claims_root_and_subcommands() {
         .await
         .expect("app built");
 
-    for input in ["/mcp", "/mcp list", "/mcp reload", "/mcp connect x", "/mcp disconnect y"] {
+    for input in ["/mcp list", "/mcp reload", "/mcp connect x", "/mcp disconnect y"] {
         app.input = input.to_string();
         app.cursor_pos = app.input.len();
         let handled = super::commands_dispatch::dispatch_local_command(&mut app, input);
         assert!(handled, "{input} should be claimed by the /mcp command");
         // Drain the pending operation so the next iteration starts clean.
         let _ = app.pending_mcp_command.take();
+    }
+
+    // Bare /mcp opens the interactive picker instead of a text list.
+    {
+        app.input = "/mcp".to_string();
+        app.cursor_pos = 4;
+        let handled = super::commands_dispatch::dispatch_local_command(&mut app, "/mcp");
+        assert!(handled, "/mcp should be claimed");
+        assert!(
+            app.inline_interactive_state.is_some(),
+            "bare /mcp should open the interactive picker"
+        );
+        assert!(app.pending_mcp_command.is_none(), "picker needs no background op");
     }
 }
 
