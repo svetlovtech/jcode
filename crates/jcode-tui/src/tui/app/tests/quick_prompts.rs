@@ -372,3 +372,22 @@ fn palette_tracks_prompt_file_renames() {
     );
     restore_quick_prompts_env(temp, prev_home);
 }
+
+#[test]
+fn prompt_file_supports_argument_substitution() {
+    // quickfix.md on disk carries $ARGUMENTS; a file prompt must substitute
+    // trailing words exactly like an inline [prompts] entry does.
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("fix.md"), "Fix $ARGUMENTS in the affected module.")
+        .expect("write prompt file");
+
+    let mut app = create_test_app();
+    let handled =
+        super::commands_dispatch::dispatch_local_command(&mut app, "/fix the login timeout");
+    assert!(handled);
+    assert_eq!(app.input, "Fix the login timeout in the affected module.");
+    restore_quick_prompts_env(temp, prev_home);
+}
