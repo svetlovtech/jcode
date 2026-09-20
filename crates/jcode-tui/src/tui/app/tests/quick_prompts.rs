@@ -343,3 +343,32 @@ fn palette_hint_refreshes_when_prompt_file_is_edited() {
     );
     restore_quick_prompts_env(temp, prev_home);
 }
+
+#[test]
+fn palette_tracks_prompt_file_renames() {
+    // A rename preserves the file's mtime; the fingerprint must include the
+    // NAME too, or the palette keeps serving the old prompt set (observed
+    // live: review.md -> diff-review.md stayed invisible after the rename).
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    std::fs::write(prompts_dir.join("old.md"), "Old name text.").expect("write prompt file");
+
+    let app = create_test_app();
+    assert!(app.get_suggestions_for("/").iter().any(|(cmd, _)| cmd == "/old"));
+
+    std::fs::rename(prompts_dir.join("old.md"), prompts_dir.join("new.md"))
+        .expect("rename prompt file");
+
+    let candidates = app.get_suggestions_for("/");
+    assert!(
+        !candidates.iter().any(|(cmd, _)| cmd == "/old"),
+        "renamed-away prompt must disappear; got {candidates:?}"
+    );
+    assert!(
+        candidates.iter().any(|(cmd, _)| cmd == "/new"),
+        "renamed-to prompt must appear; got {candidates:?}"
+    );
+    restore_quick_prompts_env(temp, prev_home);
+}

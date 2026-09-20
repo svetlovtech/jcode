@@ -4,19 +4,34 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Fingerprint the quick-prompt sources so the palette notices prompt-file
-/// edits without polling: the config reload generation (catches config.toml
-/// edits) hashed with each prompt file's mtime (catches content edits, adds,
-/// and deletes; the set is tiny so stat-ing per frame is cheap). A missing
-/// dir contributes a stable constant.
+/// changes without polling: the config reload generation (catches config.toml
+/// edits) hashed with each prompt file's NAME and mtime. Names matter as much
+/// as times: a rename preserves the mtime, and without the name in the hash
+/// the multiset - and therefore the fingerprint - would not change. The set
+/// is tiny, so stat-ing per frame is cheap. A missing dir contributes a
+/// stable constant.
 fn prompt_sources_fingerprint() -> u64 {
     let config = crate::config::config();
     let mut state: u64 = crate::config::config_reload_generation();
     if let Some(dir) = config.prompts.prompt_dir() {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.filter_map(Result::ok) {
-                if !entry.path().is_file() {
+                let path = entry.path();
+                if !path.is_file() {
                     continue;
                 }
+                let name_hash: u64 = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| {
+                        name.bytes()
+                            .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
+                                (acc ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+                            })
+                    })
+                    .unwrap_or(0);
+                state ^= name_hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(13);
+                state = state.rotate_left(7);
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(modified) = meta.modified() {
                         if let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) {
