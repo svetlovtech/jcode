@@ -133,7 +133,12 @@ diff_mode = "inline"
 
 # Quick prompts: named snippets insertable into the composer via the
 # slash palette. Typing `/` then the name inserts the text for editing.
+# Prompts can also live as one-prompt-per-file Markdown documents in
+# ~/.jcode/prompts (or a custom directory set with `dir` below): the
+# file name becomes the command and the content the text. Edits apply
+# immediately, no restart needed.
 # [prompts]
+# dir = "~/notes/prompts"
 # review = "Please review the current diff and report findings by severity."
 
 # Center all content by default (default: false)
