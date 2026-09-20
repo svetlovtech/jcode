@@ -66,6 +66,9 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
+/// Fork: `/mcp` slash command for managing MCP servers from the TUI (all
+/// logic in the dedicated module; upstream files carry small call sites).
+mod mcp_command;
 /// Fork: agent ask_user prompts surfaced in the TUI (kept separate from
 /// upstream files so merges see one small module).
 pub(crate) mod fork_ask;
@@ -152,6 +155,11 @@ struct PendingSplitPrompt {
 
 struct PendingLocalTransfer {
     receiver: mpsc::Receiver<anyhow::Result<PreparedTransferSession>>,
+}
+
+/// Fork: pending `/mcp` operation result (see `mcp_command.rs`).
+struct PendingMcpCommand {
+    receiver: mpsc::Receiver<String>,
 }
 
 /// A reasoning trace anchored in the transcript during the current turn
@@ -1548,6 +1556,8 @@ pub struct App {
     pending_transfer_request: bool,
     // Local transfer preparation currently running in the background.
     pending_local_transfer: Option<PendingLocalTransfer>,
+    /// Fork: in-flight `/mcp` operation result (see `mcp_command.rs`).
+    pending_mcp_command: Option<PendingMcpCommand>,
     // Queue mode: if true, Enter during processing queues; if false, Enter queues to send next
     // Toggle with Ctrl+Tab or Ctrl+T
     queue_mode: bool,

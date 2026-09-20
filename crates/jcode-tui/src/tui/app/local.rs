@@ -107,6 +107,8 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.poll_compaction_completion();
     needs_redraw |= app.maybe_refresh_overnight_display_card();
     needs_redraw |= super::commands::poll_local_transfer_prepare(app);
+    // Fork: surface finished /mcp operations in the transcript.
+    needs_redraw |= super::mcp_command::poll_mcp_command(app);
     needs_redraw |= super::commands::maybe_begin_pending_local_transfer(app);
     needs_redraw |= app.maybe_progress_provider_failover_countdown();
     app.check_debug_command();

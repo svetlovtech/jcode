@@ -1,0 +1,187 @@
+//! Fork: `/mcp` slash command - manage MCP servers from the TUI.
+//!
+//! Fork policy: all logic lives in this dedicated module; the only upstream
+//! files touched are the dispatch table (`commands_dispatch.rs`, one call
+//! site), the local/remote run loops (one `poll_mcp_command` call each), and
+//! the `App` struct (one pending-result field).
+//!
+//! Usage:
+//!   /mcp                     - list configured + connected servers
+//!   /mcp reload              - re-read mcp.json and reconnect everything
+//!   /mcp connect <name>      - connect a configured (possibly disabled) server
+//!   /mcp disconnect <name>   - disconnect a connected server
+//!
+//! Operations run against the local process's `McpManager`, which the wire
+//! client does not own, so SSH/remote sessions block the command like the
+//! other laptop-local actions. Results are delivered to the transcript via a
+//! pending receiver polled from the run loop (same shape as
+//! `PendingLocalTransfer`).
+
+use super::{App, PendingMcpCommand};
+use std::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// Entry point for the `/mcp` slash command. Returns `true` when the input
+/// was claimed.
+pub(in crate::tui::app) fn handle_mcp_command(app: &mut App, input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed != "/mcp" && !trimmed.starts_with("/mcp ") {
+        return false;
+    }
+
+    if crate::tui::is_ssh_remote() {
+        super::commands_dispatch::ssh_local_action_blocked(app, "MCP management");
+        return true;
+    }
+
+    let argument = trimmed
+        .strip_prefix("/mcp")
+        .map(str::trim)
+        .unwrap_or_default();
+    let parts = argument.split_whitespace().collect::<Vec<_>>();
+
+    let action = match parts.as_slice() {
+        [] => McpAction::List,
+        ["list"] => McpAction::List,
+        ["reload"] => McpAction::Reload,
+        ["connect", name] => McpAction::Connect((*name).to_string()),
+        ["disconnect", name] => McpAction::Disconnect((*name).to_string()),
+        [unknown, ..] => {
+            app.push_display_message(super::DisplayMessage::system(format!(
+                "Unknown /mcp action '{unknown}'. Usage: /mcp [list | reload | connect <name> | disconnect <name>]"
+            )));
+            return true;
+        }
+    };
+
+    let manager = Arc::clone(&app.mcp_manager);
+    let (tx, rx) = mpsc::channel::<String>();
+    app.pending_mcp_command = Some(PendingMcpCommand { receiver: rx });
+    app.set_status_notice("MCP command running...".to_string());
+
+    tokio::spawn(async move {
+        let report = run_mcp_action(manager, action).await;
+        let _ = tx.send(report);
+    });
+    true
+}
+
+enum McpAction {
+    List,
+    Reload,
+    Connect(String),
+    Disconnect(String),
+}
+
+async fn run_mcp_action(manager: Arc<RwLock<crate::mcp::McpManager>>, action: McpAction) -> String {
+    match action {
+        McpAction::List => list_servers(&manager).await,
+        McpAction::Reload => reload_servers(manager).await,
+        McpAction::Connect(name) => connect_server(&manager, &name).await,
+        McpAction::Disconnect(name) => disconnect_server(&manager, &name).await,
+    }
+}
+
+async fn list_servers(manager: &Arc<RwLock<crate::mcp::McpManager>>) -> String {
+    let manager = manager.read().await;
+    let configured = manager.config().servers.clone();
+    let connected = manager.connected_servers().await;
+    let all_tools = manager.all_tools().await;
+
+    if configured.is_empty() {
+        return "No MCP servers configured. Add servers to ~/.jcode/mcp.json \
+                (or .jcode/mcp.json in the project), then run /mcp reload."
+            .to_string();
+    }
+
+    let mut lines = vec!["MCP servers:".to_string()];
+    for (name, server) in &configured {
+        let state = if connected.contains(&name.to_string()) { "connected" } else { "not connected" };
+        let tool_count = all_tools.iter().filter(|(server, _)| server == name).count();
+        let kind = if server.url.is_some() { "remote" } else { "stdio" };
+        lines.push(format!("  {name} ({kind}, {state}, {tool_count} tools)"));
+    }
+    lines.join("\n")
+}
+
+async fn reload_servers(manager: Arc<RwLock<crate::mcp::McpManager>>) -> String {
+    let mut manager = manager.write().await;
+    match manager.reload().await {
+        Ok((connected_count, failures)) => {
+            let total = manager.config().servers.len();
+            if failures.is_empty() {
+                format!("MCP reload complete: {connected_count}/{total} servers connected.")
+            } else {
+                let failed: Vec<String> =
+                    failures.iter().map(|(name, error)| format!("  {name}: {error}")).collect();
+                format!(
+                    "MCP reload complete: {connected_count}/{total} servers connected. Failures:\n{}",
+                    failed.join("\n")
+                )
+            }
+        }
+        Err(error) => format!("MCP reload failed: {error}"),
+    }
+}
+
+async fn connect_server(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+    let configured = {
+        let manager = manager.read().await;
+        manager.config().servers.get(name).cloned()
+    };
+    let Some(config) = configured else {
+        return format!(
+            "Server '{name}' is not in the MCP config. Add it to ~/.jcode/mcp.json, then /mcp reload."
+        );
+    };
+
+    let manager = manager.read().await;
+    let connected = manager.connected_servers().await;
+    if connected.contains(&name.to_string()) {
+        return format!("Server '{name}' is already connected. Use '/mcp disconnect {name}' first.");
+    }
+    match manager.connect(name, &config).await {
+        Ok(()) => {
+            let tool_count = manager.all_tools().await.iter().filter(|(s, _)| s == name).count();
+            format!("Connected to '{name}' ({tool_count} tools).")
+        }
+        Err(error) => format!("Failed to connect to '{name}': {error}"),
+    }
+}
+
+async fn disconnect_server(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+    let manager = manager.read().await;
+    let connected = manager.connected_servers().await;
+    if !connected.contains(&name.to_string()) {
+        return format!("Server '{name}' is not connected.");
+    }
+    match manager.disconnect(name).await {
+        Ok(()) => format!("Disconnected '{name}'."),
+        Err(error) => format!("Failed to disconnect '{name}': {error}"),
+    }
+}
+
+/// Poll a finished `/mcp` operation and surface its report in the transcript.
+/// Called from the local/remote run loops; returns `true` when a report
+/// arrived (so the caller redraws).
+pub(in crate::tui::app) fn poll_mcp_command(app: &mut App) -> bool {
+    let Some(pending) = app.pending_mcp_command.as_ref() else {
+        return false;
+    };
+    match pending.receiver.try_recv() {
+        Ok(report) => {
+            app.pending_mcp_command = None;
+            app.push_display_message(super::DisplayMessage::system(report));
+            true
+        }
+        Err(mpsc::TryRecvError::Empty) => false,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            app.pending_mcp_command = None;
+            app.push_display_message(super::DisplayMessage::system(
+                "MCP command failed: background task ended without a report.".to_string(),
+            ));
+            true
+        }
+    }
+}

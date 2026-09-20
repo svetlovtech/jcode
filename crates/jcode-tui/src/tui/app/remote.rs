@@ -140,6 +140,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.progress_update_simulator();
     needs_redraw |= app.refresh_keybindings_if_config_reloaded();
+    // Fork: surface finished /mcp operations in the transcript (no-op without
+    // a pending command; the manager itself is local-only).
+    needs_redraw |= super::mcp_command::poll_mcp_command(app);
 
     let _ = check_debug_command(app, remote).await;
 
