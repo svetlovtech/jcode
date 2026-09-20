@@ -156,6 +156,21 @@ pub(in crate::tui::app) async fn connect_server_blocking(manager: &Arc<RwLock<cr
     }
 }
 
+/// Toggle by live state at execution time: connect when not connected,
+/// disconnect when connected. The picker opens before knowing the state,
+/// so the decision happens here.
+pub(in crate::tui::app) async fn toggle_server_blocking(
+    manager: &Arc<RwLock<crate::mcp::McpManager>>,
+    name: &str,
+) -> String {
+    let connected = manager.read().await.connected_servers().await;
+    if connected.contains(&name.to_string()) {
+        disconnect_server_blocking(manager, name).await
+    } else {
+        connect_server_blocking(manager, name).await
+    }
+}
+
 pub(in crate::tui::app) async fn disconnect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
     let manager = manager.read().await;
     let connected = manager.connected_servers().await;
@@ -231,7 +246,6 @@ pub(in crate::tui::app) fn open_mcp_picker(app: &mut App) {
                 }],
                 action: crate::tui::PickerAction::McpServer {
                     name: name.clone(),
-                    connect: true,
                 },
                 selected_option: 0,
                 is_current: false,

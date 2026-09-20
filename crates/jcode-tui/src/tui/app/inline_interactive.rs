@@ -3670,7 +3670,7 @@ impl App {
                     // Fork: /mcp picker toggle (connect/disconnect) via the
                     // local McpManager; report lands through the same pending
                     // channel as the /mcp slash command.
-                    PickerAction::McpServer { name, connect } => {
+                    PickerAction::McpServer { name } => {
                         self.inline_interactive_state = None;
                         let manager = Arc::clone(&self.mcp_manager);
                         let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -3678,12 +3678,8 @@ impl App {
                             Some(super::PendingMcpCommand { receiver: rx });
                         self.set_status_notice("MCP command running...");
                         tokio::spawn(async move {
-                            let report = if connect {
-                                super::mcp_command::connect_server_blocking(&manager, &name).await
-                            } else {
-                                super::mcp_command::disconnect_server_blocking(&manager, &name)
-                                    .await
-                            };
+                            let report =
+                                super::mcp_command::toggle_server_blocking(&manager, &name).await;
                             let _ = tx.send(report);
                         });
                     }
