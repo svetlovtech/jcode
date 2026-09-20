@@ -301,3 +301,45 @@ fn palette_shows_prompt_added_to_config_while_running() {
     );
     restore_quick_prompts_env(temp, prev_home);
 }
+
+#[test]
+fn palette_hint_refreshes_when_prompt_file_is_edited() {
+    // The candidates cache fingerprints the prompt files' mtimes; rewriting a
+    // prompt file (no config.toml change) must update the palette hint text,
+    // not just what /name inserts.
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) = quick_prompts_env("");
+    let prompts_dir = temp.path().join("prompts");
+    std::fs::create_dir_all(&prompts_dir).expect("create prompts dir");
+    let path = prompts_dir.join("sum.md");
+    std::fs::write(&path, "First hint line.").expect("write prompt file");
+
+    let app = create_test_app();
+    let candidates = app.get_suggestions_for("/");
+    let (_, hint) = candidates
+        .iter()
+        .find(|(cmd, _)| cmd == "/sum")
+        .expect("initial prompt listed");
+    assert!(
+        hint.contains("First hint line."),
+        "initial hint should reflect the file; got {hint}"
+    );
+
+    // Rewrite the file. The cache fingerprint hashes file mtimes, so the very
+    // next suggestion build must observe the edit (mtime resolution caveat:
+    // also change the length so coarse-timestamp filesystems see a diff).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, "Second hint text.")
+        .expect("rewrite prompt file");
+
+    let candidates = app.get_suggestions_for("/");
+    let (_, hint) = candidates
+        .iter()
+        .find(|(cmd, _)| cmd == "/sum")
+        .expect("prompt still listed after edit");
+    assert!(
+        hint.contains("Second hint text."),
+        "palette hint must refresh after a prompt file edit without restart; got {hint}"
+    );
+    restore_quick_prompts_env(temp, prev_home);
+}
