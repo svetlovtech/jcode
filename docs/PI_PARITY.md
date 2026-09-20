@@ -104,6 +104,12 @@ senders/clients stay compatible.
 
 ## Fork layout / merge policy
 
+The TUI `/mcp` picker manages the local process's `McpManager`; sessions
+attached to a running daemon (wire clients) are told to use the agent's
+`mcp` tool instead, because the daemon owns the manager there.
+
+
+
 Fork code is concentrated in dedicated modules; upstream files carry only
 small, `// Fork:`-marked call sites:
 
