@@ -1319,16 +1319,6 @@ fn gather_ambient_info_inner(ambient_enabled: bool) -> Option<AmbientWidgetData>
         next_wake,
         next_reminder_wake: next_reminder_item
             .map(|item| format_countdown_until(item.scheduled_for)),
-        // Fork: absolute wake time in UTC+3 so the scheduled-task line shows
-        // when the task fires on the wall clock, not only the countdown.
-        next_reminder_abs: next_reminder_item.map(|item| {
-            use chrono::FixedOffset;
-            let msk = FixedOffset::east_opt(3 * 3600).expect("UTC+3 offset");
-            item.scheduled_for
-                .with_timezone(&msk)
-                .format("%H:%M")
-                .to_string()
-        }),
         budget_percent: None,
     })
 }

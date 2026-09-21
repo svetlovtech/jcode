@@ -569,9 +569,6 @@ pub struct AmbientWidgetData {
     pub last_summary: Option<String>,
     pub next_wake: Option<String>,
     pub next_reminder_wake: Option<String>,
-    /// Fork: absolute wake time of the next reminder, preformatted ("HH:MM",
-    /// UTC+3). None when unknown.
-    pub next_reminder_abs: Option<String>,
     pub budget_percent: Option<f32>,
 }
 
