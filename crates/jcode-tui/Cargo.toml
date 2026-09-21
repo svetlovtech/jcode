@@ -23,6 +23,9 @@ path = "src/lib.rs"
 # so this crate (and ultimately the root crate) controls app-core's features.
 jcode-app-core = { path = "../jcode-app-core", default-features = false }
 
+# Fork: wire `AskSpec` for the interactive ask_user modal.
+jcode-protocol = { path = "../jcode-protocol" }
+
 # Pure math kernels for the idle animations (3D samplers, glyph chooser,
 # HSV->RGB). Pinned to opt-level = 3 in all profiles via workspace Cargo.toml so
 # the hot trig loops stay optimized even in debug/selfdev builds.

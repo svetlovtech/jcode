@@ -2899,6 +2899,7 @@ pub(in crate::tui::app) fn handle_server_event(
             request_id,
             prompt,
             source,
+            ask,
             ..
         } => {
             // Fork: ask_user surfaces its question in the chat and remembers
@@ -2907,7 +2908,24 @@ pub(in crate::tui::app) fn handle_server_event(
             if jcode_app_core::tool::StdinRequestSource::from_wire(&source)
                 == jcode_app_core::tool::StdinRequestSource::AskUser
             {
-                crate::tui::app::fork_ask::on_ask_prompt(app, request_id.clone(), prompt.clone());
+                // Fork: a structured ask spec opens the interactive modal;
+                // clients/daemons without the spec fall back to the textual
+                // prompt interception.
+                match ask {
+                    Some(spec) => crate::tui::app::fork_ask::on_ask_prompt_with_spec(
+                        app,
+                        request_id.clone(),
+                        prompt.clone(),
+                        spec.into(),
+                    ),
+                    None => {
+                        crate::tui::app::fork_ask::on_ask_prompt(
+                            app,
+                            request_id.clone(),
+                            prompt.clone(),
+                        );
+                    }
+                }
             } else {
                 // Upstream behavior: a running command wants stdin; do not
                 // intercept typed input for it.

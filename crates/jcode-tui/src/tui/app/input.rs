@@ -2617,6 +2617,13 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
+    // Fork: structured ask_user modal intercepts all keys while open.
+    if app.pending_ask_modal.is_some()
+        && super::fork_ask_modal::handle_modal_key(app, code, modifiers)
+    {
+        return Ok(true);
+    }
+
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
         return Ok(true);

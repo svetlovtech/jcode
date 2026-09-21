@@ -2783,6 +2783,21 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    // Fork: structured ask_user modal takes over the whole frame (the frame is
+    // already cleared above, so this renders the modal alone; streaming keeps
+    // running behind it).
+    if let Some(modal) = app.pending_ask_modal() {
+        crate::tui::app::fork_ask_modal::draw_ask_modal(frame, modal);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
     // Initialize visual debug capture if enabled
     let mut debug_capture = if visual_debug::is_enabled() {
         Some(FrameCaptureBuilder::new(area.width, area.height))

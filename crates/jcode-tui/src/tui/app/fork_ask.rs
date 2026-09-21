@@ -27,6 +27,20 @@ pub(super) fn on_ask_prompt(app: &mut App, request_id: String, prompt: String) {
     app.set_status_notice(format!("⌨ {}", flat_prompt(&prompt)));
 }
 
+/// Fork: open the structured ask modal on top of the pending stdin request.
+/// Same interception semantics as `on_ask_prompt`, plus a modal UI built from
+/// the structured spec (local `AskSpecUi` until the protocol crate publishes
+/// the wire type and the coordinator swaps the construction site).
+pub(super) fn on_ask_prompt_with_spec(
+    app: &mut App,
+    request_id: String,
+    prompt: String,
+    spec: super::fork_ask_modal::AskSpecUi,
+) {
+    on_ask_prompt(app, request_id.clone(), prompt);
+    app.pending_ask_modal = Some(super::fork_ask_modal::AskModal::new(request_id, spec));
+}
+
 /// Deliver `answer` as the response to the pending ask_user request.
 ///
 /// Returns `true` when the answer went out (or the question was consumed);
@@ -63,6 +77,10 @@ pub(super) fn clear_if_pending(app: &mut App) {
     if app.pending_stdin.take().is_some() {
         app.set_status_notice("Вопрос закрыт (ответ принят в Telegram)");
     }
+    // Fork: a question closed elsewhere (Telegram/timeout) must close the
+    // modal and drop any staged-but-unflushed modal answer too.
+    app.pending_ask_modal = None;
+    app.pending_ask_answer = None;
 }
 
 /// One-line preview of a multi-line prompt for the status bar.

@@ -72,6 +72,9 @@ mod mcp_command;
 /// Fork: agent ask_user prompts surfaced in the TUI (kept separate from
 /// upstream files so merges see one small module).
 pub(crate) mod fork_ask;
+/// Fork: interactive ask_user modal (all logic in the dedicated module;
+/// upstream files carry small call sites).
+pub(crate) mod fork_ask_modal;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
@@ -907,6 +910,10 @@ pub struct App {
     /// Fork: pending ask_user stdin prompt (daemon ask surfaced to the TUI).
     /// Some((request_id, prompt)) while waiting for the user's typed answer.
     pub pending_stdin: Option<(String, String)>,
+    /// Fork: structured ask_user modal state (drawn as a full-screen overlay).
+    pub pending_ask_modal: Option<crate::tui::app::fork_ask_modal::AskModal>,
+    /// Fork: answer staged by the ask modal, flushed by process_remote_followups.
+    pub pending_ask_answer: Option<(String, String)>,
     last_stream_activity: Option<Instant>,
     // When the user last pressed a key, mouse-scrolled, or pasted.
     //
