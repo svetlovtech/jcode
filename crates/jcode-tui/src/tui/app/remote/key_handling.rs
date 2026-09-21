@@ -324,6 +324,15 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    // Fork: the ask_user modal owns all keys in remote/client mode too (the
+    // local path gets this from handle_modal_key; this file duplicates the
+    // modal chain for wire-attached sessions).
+    if app.pending_ask_modal.is_some()
+        && crate::tui::app::fork_ask_modal::handle_modal_key(app, code, modifiers)
+    {
+        return Ok(());
+    }
+
     if app.session_picker_overlay.is_some() {
         return app.handle_session_picker_key(code, modifiers);
     }

@@ -2783,20 +2783,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    // Fork: structured ask_user modal takes over the whole frame (the frame is
-    // already cleared above, so this renders the modal alone; streaming keeps
-    // running behind it).
-    if let Some(modal) = app.pending_ask_modal() {
-        crate::tui::app::fork_ask_modal::draw_ask_modal(frame, modal);
-        finalize_frame_metrics(
-            app,
-            total_start,
-            Duration::ZERO,
-            total_start.elapsed(),
-            None,
-        );
-        return;
-    }
+    // Fork: the structured ask_user modal renders as a LATE overlay (after the
+    // normal UI below) so the user keeps seeing the chat behind it instead of
+    // a bare gray backdrop. Streaming keeps running behind it.
+    let ask_modal_open = app.pending_ask_modal().is_some();
 
     // Initialize visual debug capture if enabled
     let mut debug_capture = if visual_debug::is_enabled() {
@@ -3626,6 +3616,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
     input_ui::draw_prompt_history_search_overlay(frame, app, chunks[7]);
+
+    // Fork: the structured ask_user modal is the topmost overlay so the user
+    // keeps the chat visible behind it.
+    if ask_modal_open
+        && let Some(modal) = app.pending_ask_modal()
+    {
+        crate::tui::app::fork_ask_modal::draw_ask_modal(frame, modal);
+    }
 
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.
