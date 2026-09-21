@@ -119,6 +119,9 @@ struct AskInput {
     header: Option<String>,
     #[serde(default)]
     options: Option<Vec<AskOption>>,
+    // Fork: multi-select mode (checkboxes) for legacy single-question shape.
+    #[serde(default)]
+    multiple: bool,
     /// Batch shape: 1-4 questions asked sequentially (Telegram renders each
     /// as a card; TUI prompts appear one by one). The agent receives all
     /// answers in order.
@@ -136,12 +139,17 @@ struct AskQuestionSpec {
     header: Option<String>,
     #[serde(default)]
     options: Option<Vec<AskOption>>,
+    // Fork: multi-select mode (checkboxes).
+    #[serde(default)]
+    multiple: bool,
 }
 
 struct QuestionSpec {
     header: String,
     text: String,
     options: Vec<(String, String)>,
+    // Fork: multi-select mode (checkboxes).
+    multiple: bool,
 }
 
 /// Normalize the input into an ordered list of questions: either the batch
@@ -166,6 +174,8 @@ fn question_specs(params: &AskInput) -> Result<Vec<QuestionSpec>> {
                     .into_iter()
                     .map(|opt| (opt.label, opt.description.unwrap_or_default()))
                     .collect(),
+                // Fork: carry multi-select flag.
+                multiple: q.multiple,
             })
             .collect());
     }
@@ -186,6 +196,8 @@ fn question_specs(params: &AskInput) -> Result<Vec<QuestionSpec>> {
         header: "Question".to_string(),
         text: question.to_string(),
         options,
+        // Fork: carry multi-select flag.
+        multiple: params.multiple,
     }])
 }
 
@@ -216,6 +228,10 @@ impl Tool for AskUserTool {
                                 "type": "string",
                                 "description": "Short topic tag for this question."
                             },
+                            "multiple": {
+                                "type": "boolean",
+                                "description": "When true, the user may select several options at once (checkboxes); separate labels with '; ' in the answer."
+                            },
                             "options": {
                                 "type": "array",
                                 "items": {
@@ -244,6 +260,10 @@ impl Tool for AskUserTool {
                 "header": {
                     "type": "string",
                     "description": "Very short topic tag shown next to the question (max ~16 chars)."
+                },
+                "multiple": {
+                    "type": "boolean",
+                    "description": "When true, the user may select several options at once (checkboxes); separate labels with '; ' in the answer."
                 },
                 "options": {
                     "type": "array",
@@ -326,9 +346,11 @@ impl Tool for AskUserTool {
                         ));
                     }
                 }
-                prompt_text.push_str(
-                    "\nОтветь цифрой варианта или своим текстом — ваше следующее сообщение станет ответом.",
-                );
+                prompt_text.push_str(if spec.multiple {
+                    "\nОтветьте цифрами через пробел или своим текстом — ваше следующее сообщение станет ответом."
+                } else {
+                    "\nОтветь цифрой варианта или своим текстом — ваше следующее сообщение станет ответом."
+                });
             } else {
                 prompt_text.push_str(
                     "\nВаше следующее сообщение станет ответом (или ответьте в Telegram).\n",
@@ -348,12 +370,31 @@ impl Tool for AskUserTool {
                         .unwrap_or(0)
                 );
                 let (answer_tx, answer_rx) = oneshot::channel::<String>();
+                // Fork: structured ask spec so clients can render native option UIs.
+                let ask_spec = jcode_protocol::AskSpec {
+                    header: header.clone(),
+                    question: spec.text.clone(),
+                    options: spec
+                        .options
+                        .iter()
+                        .map(|(label, description)| jcode_protocol::AskOptionSpec {
+                            label: label.clone(),
+                            description: description.clone(),
+                        })
+                        .collect(),
+                    multiple: spec.multiple,
+                    timeout_secs: timeout,
+                    question_index: index + 1,
+                    question_total: total,
+                };
                 let _ = stdin_tx.send(super::StdinInputRequest {
                     request_id: request_id.clone(),
                     prompt: prompt_text,
                     is_password: false,
                     response_tx: answer_tx,
                     source: super::StdinRequestSource::AskUser,
+                    // Fork: carry structured ask spec.
+                    ask: Some(ask_spec),
                 });
 
                 let tg_session = ask_session.clone();

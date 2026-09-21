@@ -24,6 +24,52 @@ pub struct TaskGraphNodeSpec {
     pub priority: u8,
 }
 
+/// One selectable option in an interactive ask_user question.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskOptionSpec {
+    pub label: String,
+    pub description: String,
+}
+
+/// Wire spec for an interactive ask_user question, allowing clients to render
+/// native option UIs instead of parsing the textual prompt fallback.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AskSpec {
+    pub header: String,
+    pub question: String,
+    pub options: Vec<AskOptionSpec>,
+    #[serde(default)]
+    pub multiple: bool,
+    #[serde(default = "default_ask_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub question_index: usize,
+    #[serde(default = "default_question_total")]
+    pub question_total: usize,
+}
+
+impl Default for AskSpec {
+    fn default() -> Self {
+        Self {
+            header: String::new(),
+            question: String::new(),
+            options: Vec::new(),
+            multiple: false,
+            timeout_secs: 600,
+            question_index: 0,
+            question_total: 1,
+        }
+    }
+}
+
+fn default_ask_timeout_secs() -> u64 {
+    600
+}
+
+fn default_question_total() -> usize {
+    1
+}
+
 fn is_zero_u8(value: &u8) -> bool {
     *value == 0
 }
@@ -1508,5 +1554,8 @@ pub enum ServerEvent {
         /// the prompt as a question. Defaults to "stdin".
         #[serde(default)]
         source: String,
+        // Fork: optional structured ask_user question spec.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<AskSpec>,
     },
 }

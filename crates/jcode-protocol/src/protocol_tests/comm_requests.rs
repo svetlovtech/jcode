@@ -74,6 +74,8 @@ fn test_stdin_request_event_roundtrip() -> Result<()> {
         is_password: true,
         tool_call_id: "call_abc".to_string(),
         source: "stdin".to_string(),
+        // Fork: no structured ask spec for plain stdin requests.
+        ask: None,
     };
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"stdin_request\""));
@@ -87,6 +89,7 @@ fn test_stdin_request_event_roundtrip() -> Result<()> {
         is_password,
         tool_call_id,
         source,
+        ..
     } = decoded
     else {
         return Err(anyhow!("expected StdinRequest"));
@@ -121,6 +124,58 @@ fn test_stdin_request_event_source_defaults_to_stdin() -> Result<()> {
         return Err(anyhow!("expected StdinRequest"));
     };
     assert_eq!(source, "", "source should default to empty (command stdin)");
+    Ok(())
+}
+
+#[test]
+fn test_stdin_request_event_with_ask_roundtrip() -> Result<()> {
+    let ask = AskSpec {
+        header: "Deploy".to_string(),
+        question: "Which environment?".to_string(),
+        options: vec![
+            AskOptionSpec {
+                label: "Staging".to_string(),
+                description: "Test cluster".to_string(),
+            },
+            AskOptionSpec {
+                label: "Production".to_string(),
+                description: String::new(),
+            },
+        ],
+        multiple: false,
+        timeout_secs: 120,
+        question_index: 1,
+        question_total: 3,
+    };
+    let event = ServerEvent::StdinRequest {
+        request_id: "stdin-ask-1".to_string(),
+        prompt: "Which environment?".to_string(),
+        is_password: false,
+        tool_call_id: "call_ask".to_string(),
+        source: "ask_user".to_string(),
+        ask: Some(ask.clone()),
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"ask\":"));
+
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::StdinRequest { ask: decoded_ask, .. } = decoded else {
+        return Err(anyhow!("expected StdinRequest"));
+    };
+    assert_eq!(decoded_ask, Some(ask));
+    Ok(())
+}
+
+#[test]
+fn test_stdin_request_event_ask_defaults_to_none() -> Result<()> {
+    // Senders that predate the ask field omit it; it decodes as None so older
+    // clients and prompts keep working.
+    let json = r#"{"type":"stdin_request","request_id":"r1","prompt":"","tool_call_id":"tc1"}"#;
+    let decoded = parse_event_json(json)?;
+    let ServerEvent::StdinRequest { ask, .. } = decoded else {
+        return Err(anyhow!("expected StdinRequest"));
+    };
+    assert!(ask.is_none(), "ask should default to None");
     Ok(())
 }
 

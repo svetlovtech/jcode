@@ -58,6 +58,7 @@ rand = "0.9.3"
 url = "2"
 open = "5"               # Open URLs in browser
 jcode-agent-runtime = { path = "../jcode-agent-runtime" }
+jcode-protocol = { path = "../jcode-protocol" }
 jcode-ambient-types = { path = "../jcode-ambient-types" }
 jcode-notify-email = { path = "../jcode-notify-email" }
 jcode-provider-core = { path = "../jcode-provider-core" }

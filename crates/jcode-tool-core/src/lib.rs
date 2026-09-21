@@ -127,6 +127,8 @@ pub struct StdinInputRequest {
     pub response_tx: tokio::sync::oneshot::Sender<String>,
     /// Whether a command wants input or the ask_user tool is asking.
     pub source: StdinRequestSource,
+    // Fork: optional structured ask_user question spec.
+    pub ask: Option<jcode_protocol::AskSpec>,
 }
 
 #[derive(Clone)]

@@ -995,6 +995,8 @@ impl BashTool {
                                         is_password: false,
                                         response_tx,
                                         source: StdinRequestSource::Command,
+                                        // Fork: no structured ask spec for commands.
+                                        ask: None,
                                     };
 
                                     if stdin_tx.send(request).is_err() {

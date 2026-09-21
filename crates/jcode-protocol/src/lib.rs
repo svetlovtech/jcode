@@ -175,6 +175,8 @@ pub type ReloadRecoverySnapshot = jcode_selfdev_types::ReloadRecoveryDirective;
 
 mod wire;
 pub use wire::TaskGraphNodeSpec;
+// Fork: ask_user wire specs.
+pub use wire::{AskOptionSpec, AskSpec};
 pub use wire::{Request, ServerEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
