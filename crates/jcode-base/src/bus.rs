@@ -469,6 +469,14 @@ pub enum BusEvent {
     MermaidRenderCompleted,
     /// Productivity report finished generating off the UI thread
     ProductivityReportReady(ProductivityReportReady),
+    /// Fork: an ask_user question was answered on a losing surface (e.g.
+    /// Telegram) while a client still shows the interactive modal. Carries the
+    /// wire request id and the winning answer so the client can close its
+    /// modal and drop the pending stdin interception.
+    AskQuestionResolved {
+        request_id: String,
+        answer: String,
+    },
 }
 
 pub struct Bus {

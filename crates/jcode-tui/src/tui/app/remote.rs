@@ -613,6 +613,12 @@ pub(super) async fn handle_bus_event(
             true
         }
         Ok(BusEvent::MermaidRenderCompleted) => true,
+        // Fork: the ask_user tool resolved this question on another surface
+        // (Telegram won the race); close the local modal immediately.
+        Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
+            crate::tui::app::fork_ask::on_question_resolved_elsewhere(app, &answer);
+            true
+        }
         Ok(BusEvent::UsageReportProgress(progress)) => {
             app.handle_usage_report_progress(progress);
             true

@@ -83,6 +83,22 @@ pub(super) fn clear_if_pending(app: &mut App) {
     app.pending_ask_answer = None;
 }
 
+/// Fork: the ask_user tool reported that this question was resolved on a
+/// losing surface (Telegram won the race while this client showed the modal).
+/// Close the modal for this request id (any request id, if a stale event
+/// arrives after the client already re-asked) and surface the winning answer.
+pub(super) fn on_question_resolved_elsewhere(app: &mut App, answer: &str) {
+    let was_open = app.pending_ask_modal.is_some();
+    app.pending_ask_modal = None;
+    app.pending_ask_answer = None;
+    if app.pending_stdin.take().is_some() || was_open {
+        app.push_display_message(DisplayMessage::system(format!(
+            "Вопрос закрыт: ответ пришёл из Telegram: {answer}"
+        )));
+        app.set_status_notice("Вопрос закрыт (ответ из Telegram)");
+    }
+}
+
 /// One-line preview of a multi-line prompt for the status bar.
 fn flat_prompt(prompt: &str) -> String {
     let flat: String = prompt

@@ -450,6 +450,15 @@ impl Tool for AskUserTool {
                     let _ = client
                         .stop_question(&ask_session, Some(&format!("Отвечено в TUI: {answer}")))
                         .await;
+                } else {
+                    // Fork: Telegram answered first — tell local clients to close
+                    // the interactive ask modal and drop the pending stdin
+                    // interception; otherwise the dead question stays on screen
+                    // until its timeout.
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::AskQuestionResolved {
+                        request_id: request_id.clone(),
+                        answer: answer.clone(),
+                    });
                 }
 
                 answers.push(answer.trim().to_string());

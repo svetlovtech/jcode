@@ -194,6 +194,12 @@ pub(super) fn handle_bus_event(
             true
         }
         Ok(BusEvent::MermaidRenderCompleted) => true,
+        // Fork: ask_user resolved on another surface (Telegram won); close the
+        // local modal (mirror of the remote handler).
+        Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
+            crate::tui::app::fork_ask::on_question_resolved_elsewhere(app, &answer);
+            true
+        }
         Ok(BusEvent::UsageReport(results)) => {
             app.handle_usage_report(results);
             true
