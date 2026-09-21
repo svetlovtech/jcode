@@ -127,9 +127,10 @@ timeout_secs = 90
 # Diff display mode: "off", "inline" (default), "full-inline", "pinned" (dedicated pane), or "file"
 diff_mode = "inline"
 
-# Footer style: "classic" (default) or "pi" / "aabee" for the pi-style status
+# Footer style: "classic" (default) or "advanced" for the status
 # line: dir · branch · model (provider) · effort · context · cost · Σ tokens
-# footer_style = "pi"
+# (legacy "pi"/"aabee" values still select the advanced layout)
+# footer_style = "advanced"
 
 # Quick prompts: named snippets insertable into the composer via the
 # slash palette. Typing `/` then the name inserts the text for editing.

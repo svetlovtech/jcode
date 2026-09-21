@@ -1952,12 +1952,12 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         )
     });
 
-    // Fork: the pi-style footer replaces the classic span list; upstream
+    // Fork: the advanced footer replaces the classic span list; upstream
     // merges only touch this single delegation point.
-    let spans: Vec<Span> = if crate::config::config().display.footer_style_pi() {
-        pi_footer::overscroll_pi_spans(app, &data)
+    let spans: Vec<Span> = if crate::config::config().display.footer_style_advanced() {
+        advanced_footer::overscroll_advanced_spans(app, &data)
     } else {
-        pi_footer::overscroll_classic_spans(app, &data, &sep)
+        advanced_footer::overscroll_classic_spans(app, &data, &sep)
     };
 
     let total_width = area.width as usize;
@@ -3136,7 +3136,7 @@ pub(crate) fn visual_line_move(
     ))
 }
 
-/// Fork: pi-style footer spans live in their own module so upstream
+/// Fork: advanced footer spans live in their own module so upstream
 /// merges only see this declaration.
-#[path = "pi_footer.rs"]
-mod pi_footer;
+#[path = "advanced_footer.rs"]
+mod advanced_footer;

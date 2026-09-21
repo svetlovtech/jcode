@@ -30,11 +30,11 @@ header, concurrent in-flight requests, SSE response bodies correlated by id.
 Legacy SSE: GET stream with `endpoint` event resolution. stdio servers are
 unchanged.
 
-## 2. pi-style footer
+## 2. advanced footer
 
 ```toml
 [display]
-footer_style = "pi"    # or "aabee"; default "classic" = upstream output
+footer_style = "advanced"    # legacy "pi"/"aabee" still work; default "classic" = upstream output
 overscroll_status = "on"   # upstream default "overscroll" reveals the line
                            # only while scrolling past the bottom
 ```
@@ -118,7 +118,7 @@ small, `// Fork:`-marked call sites:
 - `jcode-base/src/chat.rs`, `jcode-base/src/account_login.rs` - chat client,
   account login.
 - `jcode-app-core/src/tool/chat.rs`, `tool/inbox.rs` - agent tools.
-- `jcode-tui/src/tui/pi_footer.rs` - footer styles; `ui_input.rs` delegates
+- `jcode-tui/src/tui/advanced_footer.rs` - footer styles; `ui_input.rs` delegates
   in one `let spans = ...` expression.
 - `jcode-tui/src/tui/app/fork_ask.rs` - ask_user TUI prompt/answer flow;
   `server_events.rs`, `remote.rs`, `input_dispatch.rs`, `key_handling.rs`

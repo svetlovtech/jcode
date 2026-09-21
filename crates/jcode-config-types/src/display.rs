@@ -221,12 +221,13 @@ impl DisplayConfig {
         self.usage_display.eq_ignore_ascii_case("used")
     }
 
-    /// Whether the overscroll status footer should use the compact pi-style
-    /// layout ("pi" or "aabee"); anything else keeps the classic layout.
-    pub fn footer_style_pi(&self) -> bool {
+    /// Whether the overscroll status footer should use the advanced layout
+    /// ("advanced"; legacy "pi"/"aabee" values keep working); anything else
+    /// keeps the classic layout.
+    pub fn footer_style_advanced(&self) -> bool {
         matches!(
             self.footer_style.trim().to_ascii_lowercase().as_str(),
-            "pi" | "aabee"
+            "advanced" | "pi" | "aabee"
         )
     }
 }
@@ -266,5 +267,22 @@ mod tests {
         let used: DisplayConfig =
             serde_json::from_str(r#"{"usage_display":"used"}"#).expect("display config");
         assert!(used.usage_display_used());
+    }
+
+    #[test]
+    fn footer_style_advanced_accepts_new_and_legacy_values() {
+        assert!(!DisplayConfig::default().footer_style_advanced());
+
+        for value in ["advanced", "pi", "aabee", " Pi ", "ADVANCED"] {
+            let config: DisplayConfig = serde_json::from_str(&format!(
+                r#"{{"footer_style":"{value}"}}"#
+            ))
+            .expect("display config");
+            assert!(config.footer_style_advanced(), "value: {value}");
+        }
+
+        let classic: DisplayConfig =
+            serde_json::from_str(r#"{"footer_style":"classic"}"#).expect("display config");
+        assert!(!classic.footer_style_advanced());
     }
 }

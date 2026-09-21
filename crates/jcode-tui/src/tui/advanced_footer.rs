@@ -1,4 +1,4 @@
-//! pi-style footer spans (`display.footer_style = "pi"`), isolated from
+//! Advanced footer spans (`display.footer_style = "advanced"`), isolated from
 //! `ui_input.rs` so upstream merges touch one small call site.
 
 use super::*;
@@ -6,7 +6,7 @@ use super::*;
 /// provider token, reasoning effort, context bar, and (when available) session
 /// cost and total tokens. Unavailable pieces are omitted instead of rendered
 /// as placeholders.
-pub(super) fn overscroll_pi_spans(
+pub(super) fn overscroll_advanced_spans(
     app: &dyn TuiState,
     data: &crate::tui::info_widget::InfoWidgetData,
 ) -> Vec<Span<'static>> {
