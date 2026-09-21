@@ -312,16 +312,6 @@ pub(super) fn handle_modal_key(
     true
 }
 
-/// Entry point used by `fork_ask::on_ask_prompt_with_spec`: record the pending
-/// stdin request and open the structured modal on top of it.
-/// (Currently the construction site lives in `fork_ask`; kept exported for the
-/// coordinator's integration of the protocol `AskSpec` after its merge.)
-#[allow(dead_code)]
-pub(super) fn open_modal(app: &mut App, request_id: String, prompt: &str, spec: AskSpecUi) {
-    app.pending_stdin = Some((request_id.clone(), prompt.to_string()));
-    app.pending_ask_modal = Some(AskModal::new(request_id, spec));
-}
-
 /// Draw the centered ask modal over the (already cleared) full frame.
 pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
     let area = frame.area();
@@ -488,33 +478,6 @@ fn truncate_display(text: &str, max_width: usize) -> String {
     }
     out.push('…');
     out
-}
-
-/// Compose an `AskSpecUi` from raw fields at the single construction site
-/// (`fork_ask::on_ask_prompt_with_spec`); the coordinator replaces this with
-/// the protocol type after its merge.
-#[allow(dead_code)]
-pub fn spec_from_parts(
-    header: impl Into<String>,
-    question: impl Into<String>,
-    options: Vec<(String, String)>,
-    multiple: bool,
-    timeout_secs: u64,
-    question_index: usize,
-    question_total: usize,
-) -> AskSpecUi {
-    AskSpecUi {
-        header: header.into(),
-        question: question.into(),
-        options: options
-            .into_iter()
-            .map(|(label, description)| AskOptionUi { label, description })
-            .collect(),
-        multiple,
-        timeout_secs,
-        question_index,
-        question_total,
-    }
 }
 
 // Fork: adapt the wire `AskSpec` into the local UI shape. Kept as a `From`
