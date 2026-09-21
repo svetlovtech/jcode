@@ -93,12 +93,22 @@ pub(crate) fn scheduled_notification_text(
         return None;
     }
     let next = info.next_reminder_wake.as_deref()?;
+    // Fork: append the absolute wake time in UTC+3 (HH:MM) so the user sees
+    // when the task fires on the wall clock, not only the relative countdown.
+    let abs = info
+        .next_reminder_abs
+        .as_deref()
+        .map(|abs| format!(" ({abs})"))
+        .unwrap_or_default();
     let suffix = if info.reminder_count > 1 {
         format!(" · {} queued", info.reminder_count)
     } else {
         String::new()
     };
-    Some(format!("⏰ next scheduled task {}{}", next, suffix))
+    Some(format!(
+        "⏰ next scheduled task {}{abs}{suffix}",
+        next
+    ))
 }
 
 pub(crate) use self::core::DisplayMessageRoleExt;
@@ -2155,12 +2165,13 @@ mod tests {
             last_summary: None,
             next_wake: Some("in 0s".to_string()),
             next_reminder_wake: Some("in 5m".to_string()),
+            next_reminder_abs: Some("13:05".to_string()),
             budget_percent: None,
         };
 
         assert_eq!(
             scheduled_notification_text(Some(&info)).as_deref(),
-            Some("⏰ next scheduled task in 5m · 2 queued")
+            Some("⏰ next scheduled task in 5m (13:05) · 2 queued")
         );
     }
 

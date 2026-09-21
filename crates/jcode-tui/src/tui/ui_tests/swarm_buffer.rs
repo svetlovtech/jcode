@@ -60,6 +60,7 @@ fn fact_test_state(input: String, scheduled: bool) -> TestState {
         last_summary: None,
         next_wake: None,
         next_reminder_wake: Some("in 4m".to_string()),
+        next_reminder_abs: None,
         budget_percent: None,
     });
     let info_widget_data = info_widget::InfoWidgetData {
