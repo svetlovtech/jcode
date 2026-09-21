@@ -258,9 +258,13 @@ fn test_streaming_tokens() {
 fn test_build_turn_footer_uses_compact_duration_labels() {
     let app = create_test_app();
 
-    assert_eq!(
-        app.build_turn_footer(Some(316.1)),
-        Some("5m 16s".to_string())
+    // Fork: the finished-turn footer also stamps the completion wall-clock
+    // time ("до HH:MM" in UTC+3), so assert on the prefix.
+    let footer_316 = app.build_turn_footer(Some(316.1)).unwrap_or_default();
+    assert!(
+        footer_316.starts_with("5m 16s · до "),
+        "unexpected footer: {footer_316}"
     );
-    assert_eq!(app.build_turn_footer(Some(9.2)), Some("9.2s".to_string()));
+    let footer_9 = app.build_turn_footer(Some(9.2)).unwrap_or_default();
+    assert!(footer_9.starts_with("9.2s · до "), "unexpected footer: {footer_9}");
 }

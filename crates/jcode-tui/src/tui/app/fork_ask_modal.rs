@@ -324,21 +324,23 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         return;
     }
 
-    let list_rows = if modal.custom_mode { 1 } else { modal.spec.options.len() + 1 };
-    let description_rows = if modal.custom_mode {
-        0
-    } else {
-        modal
-            .spec
-            .options
-            .iter()
-            .filter(|option| !option.description.is_empty())
-            .count()
-    };
-    let extra_custom = usize::from(modal.custom_mode) * 2;
-    // 2 extra rows inside the border: the question line and the footer hint.
-    let height = (2 + 2 + list_rows + description_rows + extra_custom)
-        .min(area.height as usize) as u16;
+    // Fork: the box height must be IDENTICAL in every modal state (option
+    // list, custom-answer input). The modal renders as a late overlay on top
+    // of the chat; if the box shrank when custom_mode opened, cells of the
+    // previous, larger box were left on screen (stale "1. …" rows) until some
+    // other keypress forced a full repaint. Always size the box for the full
+    // option list and pad the short custom-mode body with blank background
+    // lines instead.
+    let list_rows = modal.spec.options.len() + 1;
+    let description_rows = modal
+        .spec
+        .options
+        .iter()
+        .filter(|option| !option.description.is_empty())
+        .count();
+    // +2 for the custom-mode input line and its Esc hint (list rows already
+    // cover the custom input's single line).
+    let height = (2 + 2 + list_rows + description_rows + 2).min(area.height as usize) as u16;
 
     let width = (area.width * 3 / 5).min(80).max(1).min(area.width.saturating_sub(4)).max(1);
     let vertical = (area.height.saturating_sub(height)) / 2;
@@ -459,6 +461,11 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         .title(Line::from(title_spans));
 
     let paragraph = Paragraph::new(lines).block(block).style(Style::default().bg(bg));
+    // Fork: wipe the box area first. The modal overlays the live transcript;
+    // without an explicit clear the transcript text showed through every
+    // empty cell of the box (only cells the Paragraph actually wrote got the
+    // background color).
+    frame.render_widget(ratatui::widgets::Clear, box_area);
     frame.render_widget(paragraph, box_area);
 }
 

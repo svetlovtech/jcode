@@ -108,6 +108,15 @@ impl App {
             let duration_ms = (secs.max(0.0) * 1000.0).round() as u64;
             parts.push(Message::format_duration(duration_ms));
         }
+        // Fork: when the turn finished, stamp the completion time in UTC+3
+        // (Moscow) so a later read of the transcript shows when the agent
+        // actually stopped working, not only how long it took.
+        if duration.is_some() {
+            use chrono::FixedOffset;
+            let msk = FixedOffset::east_opt(3 * 3600).expect("UTC+3 offset");
+            let now_msk = chrono::Utc::now().with_timezone(&msk);
+            parts.push(format!("до {}", now_msk.format("%H:%M")));
+        }
         if let Some(tps) = self.compute_streaming_tps() {
             parts.push(format!("{:.1} tps", tps));
         }
