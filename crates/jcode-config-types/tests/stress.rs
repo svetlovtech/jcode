@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use jcode_config_types::QuickPromptsConfig;
+use std::sync::Arc;
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

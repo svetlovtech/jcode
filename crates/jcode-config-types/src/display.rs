@@ -274,10 +274,9 @@ mod tests {
         assert!(!DisplayConfig::default().footer_style_advanced());
 
         for value in ["advanced", "pi", "aabee", " Pi ", "ADVANCED"] {
-            let config: DisplayConfig = serde_json::from_str(&format!(
-                r#"{{"footer_style":"{value}"}}"#
-            ))
-            .expect("display config");
+            let config: DisplayConfig =
+                serde_json::from_str(&format!(r#"{{"footer_style":"{value}"}}"#))
+                    .expect("display config");
             assert!(config.footer_style_advanced(), "value: {value}");
         }
 

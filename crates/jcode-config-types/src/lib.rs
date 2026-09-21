@@ -984,7 +984,11 @@ pub struct QuickPromptsConfig {
 
     /// Flattened map of prompt name -> text: every key under `[prompts]` in
     /// config.toml is one entry. Insertion order follows BTreeMap.
-    #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
     pub prompts: std::collections::BTreeMap<String, String>,
 }
 
@@ -1003,8 +1007,7 @@ impl QuickPromptsConfig {
             }
             return None;
         }
-        jcode_home_dir()
-            .map(|dir| dir.join("prompts"))
+        jcode_home_dir().map(|dir| dir.join("prompts"))
     }
 
     /// Prompts loaded from the prompt directory, fresh from disk. The file

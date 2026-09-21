@@ -196,9 +196,7 @@ pub(crate) fn handle_quick_prompt_command(app: &mut App, input: &str) -> bool {
     app.input = expanded;
     app.cursor_pos = app.input.len();
     app.reset_tab_completion();
-    app.set_status_notice(format!(
-        "Quick prompt /{name} inserted - edit and send"
-    ));
+    app.set_status_notice(format!("Quick prompt /{name} inserted - edit and send"));
     true
 }
 

@@ -618,7 +618,7 @@ pub(in crate::tui::app) fn handle_server_event(
         ServerEvent::TextDelta { text } => {
             // The turn continued -> the pending ask_user was answered elsewhere
             // (e.g. Telegram) or timed out; stop intercepting typed input.
-            crate::tui::app::fork_ask::clear_if_pending(app);
+            app.fork_ask_ops().clear_if_pending();
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
@@ -2303,8 +2303,10 @@ pub(in crate::tui::app) fn handle_server_event(
         }
         ServerEvent::ModelUsageUpdated { route } => {
             for cached in &mut app.remote_model_options {
-                if cached.model == route.model && cached.provider == route.provider
-                    && cached.api_method == route.api_method {
+                if cached.model == route.model
+                    && cached.provider == route.provider
+                    && cached.api_method == route.api_method
+                {
                     cached.usage = route.usage.clone();
                 }
             }
@@ -2912,26 +2914,20 @@ pub(in crate::tui::app) fn handle_server_event(
                 // clients/daemons without the spec fall back to the textual
                 // prompt interception.
                 match ask {
-                    Some(spec) => crate::tui::app::fork_ask::on_ask_prompt_with_spec(
-                        app,
+                    Some(spec) => app.fork_ask_ops().on_ask_prompt_with_spec(
                         request_id.clone(),
                         prompt.clone(),
                         spec.into(),
                     ),
                     None => {
-                        crate::tui::app::fork_ask::on_ask_prompt(
-                            app,
-                            request_id.clone(),
-                            prompt.clone(),
-                        );
+                        app.fork_ask_ops()
+                            .on_ask_prompt(request_id.clone(), prompt.clone());
                     }
                 }
             } else {
                 // Upstream behavior: a running command wants stdin; do not
                 // intercept typed input for it.
-                app.set_status_notice(
-                    "⌨ Interactive terminal detected (command will timeout)",
-                );
+                app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
             }
             false
         }

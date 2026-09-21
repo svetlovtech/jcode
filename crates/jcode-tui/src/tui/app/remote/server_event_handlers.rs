@@ -52,7 +52,7 @@ pub(super) fn handle_tool_done(
     // modal and drop the typed-answer interception. Without this, a timed-out
     // question left the modal on screen until Esc.
     if tool_call.name == "ask_user" {
-        crate::tui::app::fork_ask::clear_if_pending(app);
+        app.fork_ask_ops().clear_if_pending();
     }
     // Only remove the completed call. When the model emits several tool calls
     // in one assistant message, siblings that already streamed their parsed

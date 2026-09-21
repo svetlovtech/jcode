@@ -18,8 +18,8 @@
 //! command like other laptop-local actions.
 
 use super::{App, PendingMcpCommand};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use tokio::sync::RwLock;
 
 /// Entry point for the `/mcp` slash command. Returns `true` when the input
@@ -102,9 +102,20 @@ async fn list_servers(manager: &Arc<RwLock<crate::mcp::McpManager>>) -> String {
 
     let mut lines = vec!["MCP servers:".to_string()];
     for (name, server) in &configured {
-        let state = if connected.contains(&name.to_string()) { "connected" } else { "not connected" };
-        let tool_count = all_tools.iter().filter(|(server, _)| server == name).count();
-        let kind = if server.url.is_some() { "remote" } else { "stdio" };
+        let state = if connected.contains(&name.to_string()) {
+            "connected"
+        } else {
+            "not connected"
+        };
+        let tool_count = all_tools
+            .iter()
+            .filter(|(server, _)| server == name)
+            .count();
+        let kind = if server.url.is_some() {
+            "remote"
+        } else {
+            "stdio"
+        };
         lines.push(format!("  {name} ({kind}, {state}, {tool_count} tools)"));
     }
     lines.join("\n")
@@ -118,8 +129,10 @@ async fn reload_servers(manager: Arc<RwLock<crate::mcp::McpManager>>) -> String 
             if failures.is_empty() {
                 format!("MCP reload complete: {connected_count}/{total} servers connected.")
             } else {
-                let failed: Vec<String> =
-                    failures.iter().map(|(name, error)| format!("  {name}: {error}")).collect();
+                let failed: Vec<String> = failures
+                    .iter()
+                    .map(|(name, error)| format!("  {name}: {error}"))
+                    .collect();
                 format!(
                     "MCP reload complete: {connected_count}/{total} servers connected. Failures:\n{}",
                     failed.join("\n")
@@ -130,7 +143,10 @@ async fn reload_servers(manager: Arc<RwLock<crate::mcp::McpManager>>) -> String 
     }
 }
 
-pub(in crate::tui::app) async fn connect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+pub(in crate::tui::app) async fn connect_server_blocking(
+    manager: &Arc<RwLock<crate::mcp::McpManager>>,
+    name: &str,
+) -> String {
     let configured = {
         let manager = manager.read().await;
         manager.config().servers.get(name).cloned()
@@ -144,11 +160,18 @@ pub(in crate::tui::app) async fn connect_server_blocking(manager: &Arc<RwLock<cr
     let manager = manager.read().await;
     let connected = manager.connected_servers().await;
     if connected.contains(&name.to_string()) {
-        return format!("Server '{name}' is already connected. Use '/mcp disconnect {name}' first.");
+        return format!(
+            "Server '{name}' is already connected. Use '/mcp disconnect {name}' first."
+        );
     }
     match manager.connect(name, &config).await {
         Ok(()) => {
-            let tool_count = manager.all_tools().await.iter().filter(|(s, _)| s == name).count();
+            let tool_count = manager
+                .all_tools()
+                .await
+                .iter()
+                .filter(|(s, _)| s == name)
+                .count();
             format!("Connected to '{name}' ({tool_count} tools).")
         }
         Err(error) => format!("Failed to connect to '{name}': {error}"),
@@ -191,7 +214,10 @@ pub(in crate::tui::app) async fn toggle_server_blocking(
     report
 }
 
-pub(in crate::tui::app) async fn disconnect_server_blocking(manager: &Arc<RwLock<crate::mcp::McpManager>>, name: &str) -> String {
+pub(in crate::tui::app) async fn disconnect_server_blocking(
+    manager: &Arc<RwLock<crate::mcp::McpManager>>,
+    name: &str,
+) -> String {
     let manager = manager.read().await;
     let connected = manager.connected_servers().await;
     if !connected.contains(&name.to_string()) {
@@ -251,22 +277,21 @@ pub(in crate::tui::app) fn open_mcp_picker(app: &mut App) {
         .servers
         .iter()
         .map(|(name, server)| {
-            let kind_label = if server.url.is_some() { "remote" } else { "stdio" };
+            let kind_label = if server.url.is_some() {
+                "remote"
+            } else {
+                "stdio"
+            };
             PickerEntry {
                 name: name.clone(),
                 options: vec![PickerOption {
                     provider: format!("{} - Enter to toggle", kind_label),
                     api_method: String::new(),
                     available: true,
-                    detail: server
-                        .url
-                        .clone()
-                        .unwrap_or_else(|| server.command.clone()),
+                    detail: server.url.clone().unwrap_or_else(|| server.command.clone()),
                     estimated_reference_cost_micros: None,
                 }],
-                action: crate::tui::PickerAction::McpServer {
-                    name: name.clone(),
-                },
+                action: crate::tui::PickerAction::McpServer { name: name.clone() },
                 selected_option: 0,
                 is_current: false,
                 is_default: false,
@@ -298,7 +323,5 @@ pub(in crate::tui::app) fn open_mcp_picker(app: &mut App) {
 
 /// Read the merged MCP config synchronously (same resolution as the manager).
 fn mcp_config() -> crate::mcp::McpConfig {
-    crate::mcp::McpConfig::load_for_dir(
-        std::env::current_dir().ok().as_deref(),
-    )
+    crate::mcp::McpConfig::load_for_dir(std::env::current_dir().ok().as_deref())
 }

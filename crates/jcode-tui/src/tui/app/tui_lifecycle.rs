@@ -410,10 +410,7 @@ impl App {
             messages: Vec::new(),
             session,
             display_messages: Vec::new(),
-            pending_stdin: None,
-            // Fork: ask modal state (see fork_ask_modal.rs).
-            pending_ask_modal: None,
-            pending_ask_answer: None,
+            fork_ask: crate::tui::app::fork_ask::ForkAskState::default(),
             display_messages_version: 0,
             display_user_message_count: 0,
             display_edit_tool_message_count: 0,
@@ -866,10 +863,7 @@ impl App {
             messages: Vec::new(),
             session,
             display_messages: Vec::new(),
-            pending_stdin: None,
-            // Fork: ask modal state (see fork_ask_modal.rs).
-            pending_ask_modal: None,
-            pending_ask_answer: None,
+            fork_ask: crate::tui::app::fork_ask::ForkAskState::default(),
             display_messages_version: 0,
             display_user_message_count: 0,
             display_edit_tool_message_count: 0,

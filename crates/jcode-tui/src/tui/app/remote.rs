@@ -616,7 +616,7 @@ pub(super) async fn handle_bus_event(
         // Fork: the ask_user tool resolved this question on another surface
         // (Telegram won the race); close the local modal immediately.
         Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
-            crate::tui::app::fork_ask::on_question_resolved_elsewhere(app, &answer);
+            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
             true
         }
         Ok(BusEvent::UsageReportProgress(progress)) => {
@@ -1211,26 +1211,19 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
 }
 
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
-    // Fork: an answer staged by the ask modal (fork_ask_modal) is flushed here
-    // because handle_modal_key is sync. `send_answer` reads pending_stdin for
-    // the request id, which the modal keeps intact until the answer goes out.
-    if let Some((_, answer)) = app.pending_ask_answer.take() {
-        crate::tui::app::fork_ask::send_answer(app, remote, &answer).await;
+    // Fork: an answer staged by the ask modal is flushed here because the
+    // modal key handler is sync. The queued-message branch covers typed
+    // answers arriving while the turn is processing.
+    if app.fork_ask.has_staged_answer() && app.fork_ask_ops().flush_staged(remote).await {
         return;
     }
 
     // Fork: a pending ask_user prompt turns the next queued message into the
     // answer (Request::StdinResponse) even while the turn is processing -
     // the blocking tool unblocks the moment it arrives.
-    if app.pending_stdin.is_some() && !app.queued_messages.is_empty() {
-        let messages = std::mem::take(&mut app.queued_messages);
-        let answer = messages.join(" ").trim().to_string();
-        if answer.is_empty() {
-            app.set_status_notice("Пустой ответ — вопрос остаётся открытым");
-        } else {
-            crate::tui::app::fork_ask::send_answer(app, remote, &answer).await;
-            return;
-        }
+    if let Some(answer) = app.fork_ask_ops().take_queued_answer() {
+        app.fork_ask_ops().send_typed_answer(remote, &answer).await;
+        return;
     }
 
     // A pending *server* reload must be dispatched even when the bootstrap

@@ -109,10 +109,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
 ) -> Result<()> {
     // Fork: a pending ask_user prompt intercepts the next typed message and
     // delivers it as the answer (Request::StdinResponse).
-    if app.pending_stdin.is_some() {
-        if crate::tui::app::fork_ask::send_answer(app, remote, prepared.raw_input.trim()).await {
-            return Ok(());
-        }
+    if app.fork_ask.has_pending_prompt()
+        && app
+            .fork_ask_ops()
+            .send_typed_answer(remote, prepared.raw_input.trim())
+            .await
+    {
+        return Ok(());
     }
 
     if app.remote_model_switch_in_flight || app.auth_catalog_refresh_pending {

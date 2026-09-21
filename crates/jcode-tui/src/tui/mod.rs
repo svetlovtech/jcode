@@ -692,9 +692,7 @@ pub trait TuiState {
     fn account_picker_overlay(&self) -> Option<&std::cell::RefCell<account_picker::AccountPicker>>;
     /// Fork: structured ask_user modal (None = no open question). Default None
     /// so test mocks and foreign TuiState impls stay untouched.
-    fn pending_ask_modal(
-        &self,
-    ) -> Option<&crate::tui::app::fork_ask_modal::AskModal> {
+    fn pending_ask_modal(&self) -> Option<&crate::tui::app::fork_ask_modal::AskModal> {
         None
     }
     /// Usage overlay for /usage command

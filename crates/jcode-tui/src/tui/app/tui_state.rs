@@ -1947,7 +1947,7 @@ impl crate::tui::TuiState for App {
 
     // Fork: expose the structured ask_user modal to the shared renderer.
     fn pending_ask_modal(&self) -> Option<&crate::tui::app::fork_ask_modal::AskModal> {
-        self.pending_ask_modal.as_ref()
+        self.fork_ask.modal()
     }
 
     fn usage_overlay(&self) -> Option<&RefCell<crate::tui::usage_overlay::UsageOverlay>> {

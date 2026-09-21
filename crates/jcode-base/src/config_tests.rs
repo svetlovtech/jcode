@@ -1469,13 +1469,14 @@ fn config_save_round_trip_preserves_prompts_section() {
     // The user's file holds both an inline entry and the dir override; a
     // read-modify-write save (e.g. /config toggles) must keep the whole
     // [prompts] section intact, including the flattened entry map.
-    let config: Config = toml::from_str(
-        "[prompts]\ndir = \"myprompts\"\nsum = \"Summarize.\"\n",
-    )
-    .expect("parse config with prompts");
+    let config: Config = toml::from_str("[prompts]\ndir = \"myprompts\"\nsum = \"Summarize.\"\n")
+        .expect("parse config with prompts");
 
     let saved = toml::to_string_pretty(&config).expect("serialize config");
-    assert!(saved.contains("[prompts]"), "prompts section must survive save");
+    assert!(
+        saved.contains("[prompts]"),
+        "prompts section must survive save"
+    );
     assert!(
         saved.contains("dir = \"myprompts\""),
         "the dir override must survive save; got {saved}"

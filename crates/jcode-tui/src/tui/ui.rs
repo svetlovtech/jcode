@@ -3619,9 +3619,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Fork: the structured ask_user modal is the topmost overlay so the user
     // keeps the chat visible behind it.
-    if ask_modal_open
-        && let Some(modal) = app.pending_ask_modal()
-    {
+    if ask_modal_open && let Some(modal) = app.pending_ask_modal() {
         crate::tui::app::fork_ask_modal::draw_ask_modal(frame, modal);
     }
 

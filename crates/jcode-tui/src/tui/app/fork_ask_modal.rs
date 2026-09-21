@@ -11,7 +11,7 @@
 //!    and opens the modal.
 //! 2. `handle_modal_key` (called first from `input::handle_modal_key`)
 //!    dispatches keys into `AskModal::key` and stages the answer in
-//!    `App::pending_ask_answer`.
+//!    `ForkAskState::staged_answer`.
 //! 3. `process_remote_followups` (in `remote`) flushes the staged answer via
 //!    `fork_ask::send_answer` (`Request::StdinResponse`).
 //! 4. `clear_if_pending` closes the modal when the question is answered or
@@ -28,7 +28,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-use super::{App};
+use super::App;
 use crate::tui::color_support::rgb;
 use jcode_tui_style::theme::{accent_color, dim_color};
 
@@ -125,7 +125,8 @@ impl AskModal {
     /// Whether the modal outlived its timeout by the close grace period.
     pub fn is_expired(&self) -> bool {
         self.spec.timeout_secs > 0
-            && self.opened_at.elapsed().as_secs() >= self.spec.timeout_secs + TIMEOUT_CLOSE_GRACE_SECS
+            && self.opened_at.elapsed().as_secs()
+                >= self.spec.timeout_secs + TIMEOUT_CLOSE_GRACE_SECS
     }
 
     /// Countdown label shown in the header: `⏳ mm:ss`.
@@ -170,7 +171,11 @@ impl AskModal {
     }
 
     /// Handle one key press. Returns the resulting action.
-    pub fn key(&mut self, code: ratatui::crossterm::event::KeyCode, _modifiers: ratatui::crossterm::event::KeyModifiers) -> AskModalAction {
+    pub fn key(
+        &mut self,
+        code: ratatui::crossterm::event::KeyCode,
+        _modifiers: ratatui::crossterm::event::KeyModifiers,
+    ) -> AskModalAction {
         use ratatui::crossterm::event::KeyCode;
 
         if self.custom_mode {
@@ -272,7 +277,11 @@ impl AskModal {
 /// Sync key handler called first from `input::handle_modal_key`.
 ///
 /// Submissions cannot be sent from a sync context, so the answer is staged in
-/// `App::pending_ask_answer` and flushed by `process_remote_followups`.
+/// Sync key handler called first from `input::handle_modal_key` (local) and
+/// `remote/key_handling.rs` (wire sessions).
+///
+/// Submissions cannot be sent from a sync context, so the answer is staged in
+/// `ForkAskState::staged_answer` and flushed by `process_remote_followups`.
 /// Returns `true` when the key was consumed (the modal is open).
 pub(super) fn handle_modal_key(
     app: &mut App,
@@ -282,35 +291,40 @@ pub(super) fn handle_modal_key(
     // The daemon should time the question out and send an update, but if the
     // modal somehow outlives the timeout by a grace period, close it here.
     let expired = app
-        .pending_ask_modal
+        .fork_ask
+        .modal
         .as_ref()
         .is_some_and(AskModal::is_expired);
     if expired {
-        if let Some(modal) = app.pending_ask_modal.take() {
+        if let Some(modal) = app.fork_ask.modal.take() {
             let answer = modal.answer_preview();
             app.set_status_notice(format!("Вопрос закрыт по таймауту: {answer}"));
         }
         return true;
     }
 
-    let Some(modal) = app.pending_ask_modal.as_mut() else {
+    let Some(modal) = app.fork_ask.modal.as_mut() else {
         return false;
     };
 
-    match modal.key(code, modifiers) {
+    let action = modal.key(code, modifiers);
+    let request_id = modal.request_id.clone();
+    match action {
         AskModalAction::None => {}
         AskModalAction::Submit(answer) => {
-            app.pending_ask_answer = Some((modal.request_id.clone(), answer));
-            app.pending_ask_modal = None;
+            app.fork_ask.modal = None;
+            let mut arm = false;
+            app.fork_ask.stage(request_id, answer, &mut arm);
             // Fork: the blocking ask_user tool generates no server traffic, so
             // without an explicit dispatch the staged answer would wait for the
             // next unrelated event. Arm the followup dispatcher immediately.
             app.pending_queued_dispatch = true;
         }
         AskModalAction::Cancel => {
-            let request_id = modal.request_id.clone();
-            app.pending_ask_answer = Some((request_id, NO_ANSWER.to_string()));
-            app.pending_ask_modal = None;
+            app.fork_ask.modal = None;
+            let mut arm = false;
+            app.fork_ask
+                .stage(request_id, NO_ANSWER.to_string(), &mut arm);
             app.pending_queued_dispatch = true;
         }
     }
@@ -342,7 +356,11 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
     // cover the custom input's single line).
     let height = (2 + 2 + list_rows + description_rows + 2).min(area.height as usize) as u16;
 
-    let width = (area.width * 3 / 5).min(80).max(1).min(area.width.saturating_sub(4)).max(1);
+    let width = (area.width * 3 / 5)
+        .min(80)
+        .max(1)
+        .min(area.width.saturating_sub(4))
+        .max(1);
     let vertical = (area.height.saturating_sub(height)) / 2;
     let horizontal = (area.width.saturating_sub(width)) / 2;
     let box_area = Rect::new(horizontal, vertical, width, height.max(3));
@@ -382,7 +400,10 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         // One-line free-form input with cursor block.
         lines.push(Line::from(vec![
             Span::styled("> ", Style::default().fg(accent)),
-            Span::raw(truncate_display(&modal.custom_draft, inner_width.saturating_sub(4))),
+            Span::raw(truncate_display(
+                &modal.custom_draft,
+                inner_width.saturating_sub(4),
+            )),
             Span::styled("▏", Style::default().fg(accent)),
         ]));
         lines.push(Line::from(Span::styled(
@@ -409,9 +430,19 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
                 Style::default()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{marker} "), if cursor_here { Style::default().fg(accent) } else { Style::default() }),
+                Span::styled(
+                    format!("{marker} "),
+                    if cursor_here {
+                        Style::default().fg(accent)
+                    } else {
+                        Style::default()
+                    },
+                ),
                 Span::styled(state, state_style),
-                Span::styled(truncate_display(&option.label, inner_width.saturating_sub(6)), label_style),
+                Span::styled(
+                    truncate_display(&option.label, inner_width.saturating_sub(6)),
+                    label_style,
+                ),
             ]));
             if !option.description.is_empty() {
                 lines.push(Line::from(Span::styled(
@@ -428,7 +459,11 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         lines.push(Line::from(vec![
             Span::styled(
                 if cursor_on_custom { "› " } else { "  " },
-                if cursor_on_custom { Style::default().fg(accent) } else { Style::default() },
+                if cursor_on_custom {
+                    Style::default().fg(accent)
+                } else {
+                    Style::default()
+                },
             ),
             Span::styled(
                 "✎ Свой вариант…",
@@ -460,7 +495,9 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         .style(Style::default().bg(bg))
         .title(Line::from(title_spans));
 
-    let paragraph = Paragraph::new(lines).block(block).style(Style::default().bg(bg));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().bg(bg));
     // Fork: wipe the box area first. The modal overlays the live transcript;
     // without an explicit clear the transcript text showed through every
     // empty cell of the box (only cells the Paragraph actually wrote got the
@@ -526,9 +563,18 @@ mod tests {
             header: "Подтверждение".into(),
             question: "Продолжить?".into(),
             options: vec![
-                AskOptionUi { label: "Да".into(), description: "продолжить".into() },
-                AskOptionUi { label: "Нет".into(), description: String::new() },
-                AskOptionUi { label: "Отмена".into(), description: String::new() },
+                AskOptionUi {
+                    label: "Да".into(),
+                    description: "продолжить".into(),
+                },
+                AskOptionUi {
+                    label: "Нет".into(),
+                    description: String::new(),
+                },
+                AskOptionUi {
+                    label: "Отмена".into(),
+                    description: String::new(),
+                },
             ],
             multiple: false,
             timeout_secs: 60,
@@ -552,11 +598,20 @@ mod tests {
     fn navigation_wraps_around() {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         assert_eq!(modal.cursor, 0);
-        assert_eq!(modal.key(KeyCode::Up, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Up, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert_eq!(modal.cursor, 3); // custom row
-        assert_eq!(modal.key(KeyCode::Down, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Down, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert_eq!(modal.cursor, 0);
-        assert_eq!(modal.key(KeyCode::Down, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Down, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert_eq!(modal.cursor, 1);
     }
 
@@ -572,19 +627,34 @@ mod tests {
     #[test]
     fn digit_toggles_in_multi_select() {
         let mut modal = AskModal::new("r1".into(), no_timeout(multi_spec()));
-        assert_eq!(modal.key(KeyCode::Char('1'), KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Char('1'), KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(modal.checked[0]);
-        assert_eq!(modal.key(KeyCode::Char('3'), KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Char('3'), KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(modal.checked[2]);
-        assert_eq!(modal.key(KeyCode::Char('3'), KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Char('3'), KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(!modal.checked[2]);
     }
 
     #[test]
     fn space_toggles_in_multi_select() {
         let mut modal = AskModal::new("r1".into(), no_timeout(multi_spec()));
-        assert_eq!(modal.key(KeyCode::Down, KeyModifiers::NONE), AskModalAction::None);
-        assert_eq!(modal.key(KeyCode::Char(' '), KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Down, KeyModifiers::NONE),
+            AskModalAction::None
+        );
+        assert_eq!(
+            modal.key(KeyCode::Char(' '), KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(modal.checked[1]);
     }
 
@@ -601,7 +671,10 @@ mod tests {
     fn enter_on_custom_row_opens_custom_mode() {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.cursor = modal.custom_row();
-        assert_eq!(modal.key(KeyCode::Enter, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Enter, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(modal.custom_mode);
     }
 
@@ -610,7 +683,10 @@ mod tests {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.custom_mode = true;
         for ch in "почти".chars() {
-            assert_eq!(modal.key(KeyCode::Char(ch), KeyModifiers::NONE), AskModalAction::None);
+            assert_eq!(
+                modal.key(KeyCode::Char(ch), KeyModifiers::NONE),
+                AskModalAction::None
+            );
         }
         assert_eq!(modal.custom_draft, "почти");
         assert_eq!(
@@ -624,7 +700,10 @@ mod tests {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.custom_mode = true;
         modal.custom_draft = "черновик".into();
-        assert_eq!(modal.key(KeyCode::Esc, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Esc, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert!(!modal.custom_mode);
         // Draft survives the trip back to the list.
         assert_eq!(modal.custom_draft, "черновик");
@@ -634,7 +713,10 @@ mod tests {
     fn custom_mode_enter_with_empty_draft_is_ignored() {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.custom_mode = true;
-        assert_eq!(modal.key(KeyCode::Enter, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Enter, KeyModifiers::NONE),
+            AskModalAction::None
+        );
     }
 
     #[test]
@@ -642,20 +724,29 @@ mod tests {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.custom_mode = true;
         modal.custom_draft = "ab".into();
-        assert_eq!(modal.key(KeyCode::Backspace, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Backspace, KeyModifiers::NONE),
+            AskModalAction::None
+        );
         assert_eq!(modal.custom_draft, "a");
     }
 
     #[test]
     fn esc_on_list_cancels() {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
-        assert_eq!(modal.key(KeyCode::Esc, KeyModifiers::NONE), AskModalAction::Cancel);
+        assert_eq!(
+            modal.key(KeyCode::Esc, KeyModifiers::NONE),
+            AskModalAction::Cancel
+        );
     }
 
     #[test]
     fn enter_in_multi_select_without_checks_is_ignored() {
         let mut modal = AskModal::new("r1".into(), no_timeout(multi_spec()));
-        assert_eq!(modal.key(KeyCode::Enter, KeyModifiers::NONE), AskModalAction::None);
+        assert_eq!(
+            modal.key(KeyCode::Enter, KeyModifiers::NONE),
+            AskModalAction::None
+        );
     }
 
     #[test]
@@ -681,7 +772,10 @@ mod tests {
 
     #[test]
     fn timeout_text_shows_remaining_time() {
-        let spec = AskSpecUi { timeout_secs: 95, ..single_spec() };
+        let spec = AskSpecUi {
+            timeout_secs: 95,
+            ..single_spec()
+        };
         let modal = AskModal::new("r1".into(), spec);
         let text = modal.action_timeout_text();
         assert!(text.starts_with("⏳ 01:"), "unexpected timer text: {text}");
@@ -696,8 +790,9 @@ mod tests {
     // ---- render tests ----
 
     fn render_lines(modal: &AskModal, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
-            .expect("failed to create test terminal");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("failed to create test terminal");
         terminal
             .draw(|frame| draw_ask_modal(frame, modal))
             .expect("failed to draw ask modal");
@@ -755,7 +850,9 @@ mod tests {
         let modal = AskModal::new("r1".into(), single_spec());
         let lines = render_lines(&modal, 100, 20);
         assert!(
-            lines.iter().any(|l| l.contains("› [ ]") || l.contains("› 1.")),
+            lines
+                .iter()
+                .any(|l| l.contains("› [ ]") || l.contains("› 1.")),
             "cursor row should have the › marker:\n{}",
             lines.join("\n")
         );
@@ -852,8 +949,8 @@ mod tests {
         let event = stdin_request(Some(wire_spec(false)));
         app.handle_server_event(event, &mut remote);
 
-        assert!(app.pending_ask_modal.is_some(), "modal should open");
-        assert_eq!(app.pending_stdin.as_ref().unwrap().0, "ask-42");
+        assert!(app.fork_ask.modal.is_some(), "modal should open");
+        assert_eq!(app.fork_ask.pending_stdin.as_ref().unwrap().0, "ask-42");
 
         // Digit "2" instantly submits the highlighted option label.
         assert!(super::handle_modal_key(
@@ -861,13 +958,13 @@ mod tests {
             KeyCode::Char('2'),
             KeyModifiers::NONE
         ));
-        assert!(app.pending_ask_modal.is_none(), "modal should close");
-        let (request_id, answer) = app.pending_ask_answer.clone().unwrap();
+        assert!(app.fork_ask.modal.is_none(), "modal should close");
+        let (request_id, answer) = app.fork_ask.staged_answer.clone().unwrap();
         assert_eq!(request_id, "ask-42");
         assert_eq!(answer, "Production");
         // pending_stdin is intentionally kept: send_answer reads request_id
         // from it when flushing the staged answer.
-        assert!(app.pending_stdin.is_some());
+        assert!(app.fork_ask.pending_stdin.is_some());
         // Fork: the dispatcher must be armed so the staged answer flushes at
         // once instead of waiting for the next server event (a blocked
         // ask_user tool produces none).
@@ -883,10 +980,22 @@ mod tests {
 
         app.handle_server_event(stdin_request(Some(wire_spec(true))), &mut remote);
 
-        assert!(super::handle_modal_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE));
-        assert!(super::handle_modal_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE));
-        assert!(super::handle_modal_key(&mut app, KeyCode::Enter, KeyModifiers::NONE));
-        let (_, answer) = app.pending_ask_answer.clone().unwrap();
+        assert!(super::handle_modal_key(
+            &mut app,
+            KeyCode::Char('1'),
+            KeyModifiers::NONE
+        ));
+        assert!(super::handle_modal_key(
+            &mut app,
+            KeyCode::Char('2'),
+            KeyModifiers::NONE
+        ));
+        assert!(super::handle_modal_key(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::NONE
+        ));
+        let (_, answer) = app.fork_ask.staged_answer.clone().unwrap();
         assert_eq!(answer, "Staging; Production");
     }
 
@@ -898,9 +1007,13 @@ mod tests {
         let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
         app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
-        assert!(super::handle_modal_key(&mut app, KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.pending_ask_modal.is_none());
-        let (_, answer) = app.pending_ask_answer.clone().unwrap();
+        assert!(super::handle_modal_key(
+            &mut app,
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        ));
+        assert!(app.fork_ask.modal.is_none());
+        let (_, answer) = app.fork_ask.staged_answer.clone().unwrap();
         assert_eq!(answer, NO_ANSWER);
     }
 
@@ -912,8 +1025,11 @@ mod tests {
         let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
         app.handle_server_event(stdin_request(None), &mut remote);
-        assert!(app.pending_ask_modal.is_none(), "no modal without a spec");
-        assert!(app.pending_stdin.is_some(), "typed-answer interception stays");
+        assert!(app.fork_ask.modal.is_none(), "no modal without a spec");
+        assert!(
+            app.fork_ask.pending_stdin.is_some(),
+            "typed-answer interception stays"
+        );
     }
 
     #[test]
@@ -924,11 +1040,11 @@ mod tests {
         let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
         app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
-        assert!(app.pending_ask_modal.is_some());
-        crate::tui::app::fork_ask::clear_if_pending(&mut app);
-        assert!(app.pending_ask_modal.is_none());
-        assert!(app.pending_stdin.is_none());
-        assert!(app.pending_ask_answer.is_none());
+        assert!(app.fork_ask.modal.is_some());
+        app.fork_ask_ops().clear_if_pending();
+        assert!(app.fork_ask.modal.is_none());
+        assert!(app.fork_ask.pending_stdin.is_none());
+        assert!(app.fork_ask.staged_answer.is_none());
     }
 
     #[test]
@@ -939,12 +1055,13 @@ mod tests {
         let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
         app.handle_server_event(stdin_request(Some(wire_spec(true))), &mut remote);
-        assert!(app.pending_ask_modal.is_some());
+        assert!(app.fork_ask.modal.is_some());
 
-        crate::tui::app::fork_ask::on_question_resolved_elsewhere(&mut app, "из Telegram");
-        assert!(app.pending_ask_modal.is_none());
-        assert!(app.pending_stdin.is_none());
-        assert!(app.pending_ask_answer.is_none());
+        app.fork_ask_ops()
+            .on_question_resolved_elsewhere("из Telegram");
+        assert!(app.fork_ask.modal.is_none());
+        assert!(app.fork_ask.pending_stdin.is_none());
+        assert!(app.fork_ask.staged_answer.is_none());
         // The transcript must say which answer won the race.
         let last = app.display_messages.last().unwrap();
         assert!(last.content.contains("из Telegram"));
@@ -957,7 +1074,7 @@ mod tests {
         let _guard = rt.enter();
 
         // No modal open: a stale event must not push a stray transcript line.
-        crate::tui::app::fork_ask::on_question_resolved_elsewhere(&mut app, "поздно");
+        app.fork_ask_ops().on_question_resolved_elsewhere("поздно");
         assert!(app.display_messages.is_empty());
     }
 }

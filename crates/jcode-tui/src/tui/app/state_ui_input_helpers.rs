@@ -24,13 +24,14 @@ fn prompt_sources_fingerprint() -> u64 {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .map(|name| {
-                        name.bytes()
-                            .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
-                                (acc ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-                            })
+                        name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
+                            (acc ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+                        })
                     })
                     .unwrap_or(0);
-                state ^= name_hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(13);
+                state ^= name_hash
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .rotate_left(13);
                 state = state.rotate_left(7);
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(modified) = meta.modified() {

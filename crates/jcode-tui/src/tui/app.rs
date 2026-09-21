@@ -66,9 +66,6 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
-/// Fork: `/mcp` slash command for managing MCP servers from the TUI (all
-/// logic in the dedicated module; upstream files carry small call sites).
-mod mcp_command;
 /// Fork: agent ask_user prompts surfaced in the TUI (kept separate from
 /// upstream files so merges see one small module).
 pub(crate) mod fork_ask;
@@ -84,6 +81,9 @@ mod inline_interactive;
 mod input;
 mod input_help;
 mod local;
+/// Fork: `/mcp` slash command for managing MCP servers from the TUI (all
+/// logic in the dedicated module; upstream files carry small call sites).
+mod mcp_command;
 mod misc_ui;
 mod model_context;
 mod navigation;
@@ -907,13 +907,9 @@ pub struct App {
     // cached context after compaction, prompt rebuilds, tool-definition refreshes, or message edits.
     context_revision: u64,
     // Track last streaming activity for "stale" detection
-    /// Fork: pending ask_user stdin prompt (daemon ask surfaced to the TUI).
-    /// Some((request_id, prompt)) while waiting for the user's typed answer.
-    pub pending_stdin: Option<(String, String)>,
-    /// Fork: structured ask_user modal state (drawn as a full-screen overlay).
-    pub pending_ask_modal: Option<crate::tui::app::fork_ask_modal::AskModal>,
-    /// Fork: answer staged by the ask modal, flushed by process_remote_followups.
-    pub pending_ask_answer: Option<(String, String)>,
+    /// Fork: ALL pending ask_user state (typed-answer interception, modal,
+    /// staged answer) owned by the fork_ask module. See `fork_ask::ForkAskState`.
+    pub fork_ask: crate::tui::app::fork_ask::ForkAskState,
     last_stream_activity: Option<Instant>,
     // When the user last pressed a key, mouse-scrolled, or pasted.
     //

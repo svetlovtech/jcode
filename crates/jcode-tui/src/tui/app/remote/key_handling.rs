@@ -18,8 +18,10 @@ pub(in crate::tui::app) async fn send_interleave_now(
     }
     // Fork: a pending ask_user prompt turns this interleave into the answer
     // (Request::StdinResponse) so the blocking tool unblocks immediately.
-    if app.pending_stdin.is_some() {
-        crate::tui::app::fork_ask::send_answer(app, remote, content.trim()).await;
+    if app.fork_ask.has_pending_prompt() {
+        app.fork_ask_ops()
+            .send_typed_answer(remote, content.trim())
+            .await;
         return;
     }
     let msg_clone = content.clone();
@@ -327,10 +329,11 @@ async fn handle_remote_key_internal(
     // Fork: the ask_user modal owns all keys in remote/client mode too (the
     // local path gets this from handle_modal_key; this file duplicates the
     // modal chain for wire-attached sessions).
-    if app.pending_ask_modal.is_some()
-        && crate::tui::app::fork_ask_modal::handle_modal_key(app, code, modifiers)
     {
-        return Ok(());
+        use crate::tui::TuiState as _;
+        if app.pending_ask_modal().is_some() && app.fork_ask_ops().modal_key(code, modifiers) {
+            return Ok(());
+        }
     }
 
     if app.session_picker_overlay.is_some() {

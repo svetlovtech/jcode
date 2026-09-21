@@ -197,7 +197,7 @@ pub(super) fn handle_bus_event(
         // Fork: ask_user resolved on another surface (Telegram won); close the
         // local modal (mirror of the remote handler).
         Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
-            crate::tui::app::fork_ask::on_question_resolved_elsewhere(app, &answer);
+            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
             true
         }
         Ok(BusEvent::UsageReport(results)) => {

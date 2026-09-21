@@ -63,7 +63,10 @@ fn inline_config_key_wins_and_dir_may_be_overridden() {
     let doc: toml::Value = toml::from_str(raw).unwrap();
     let cfg: QuickPromptsConfig = doc.get("prompts").unwrap().clone().try_into().unwrap();
     let entries = cfg.valid_entries();
-    assert_eq!(entries, vec![("sum".to_string(), "Inline wins.".to_string())]);
+    assert_eq!(
+        entries,
+        vec![("sum".to_string(), "Inline wins.".to_string())]
+    );
 
     let abs = tempfile::tempdir().unwrap();
     std::fs::write(abs.path().join("elsewhere.md"), "Absolute dir content.").unwrap();
@@ -104,6 +107,10 @@ fn unreadable_prompt_file_is_skipped_without_failing_others() {
 
     let entries = QuickPromptsConfig::default().valid_entries();
     let names: Vec<String> = entries.into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names, vec!["good"], "unreadable file must be skipped, not fatal");
+    assert_eq!(
+        names,
+        vec!["good"],
+        "unreadable file must be skipped, not fatal"
+    );
     restore(temp, prev);
 }

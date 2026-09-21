@@ -1464,9 +1464,7 @@ pub(super) fn queue_message(app: &mut App) {
     // Fork: while an ask_user prompt is pending, a queued message is the
     // answer - arm the followup dispatcher so it goes out as
     // Request::StdinResponse immediately instead of waiting for the turn.
-    if app.pending_stdin.is_some() {
-        app.pending_queued_dispatch = true;
-    }
+    app.fork_ask_ops().arm_dispatch_if_pending();
     app.queued_messages.push(prepared.expanded);
 }
 
@@ -2618,10 +2616,11 @@ pub(super) fn handle_modal_key(
     modifiers: KeyModifiers,
 ) -> Result<bool> {
     // Fork: structured ask_user modal intercepts all keys while open.
-    if app.pending_ask_modal.is_some()
-        && super::fork_ask_modal::handle_modal_key(app, code, modifiers)
     {
-        return Ok(true);
+        use crate::tui::TuiState as _;
+        if app.pending_ask_modal().is_some() && app.fork_ask_ops().modal_key(code, modifiers) {
+            return Ok(true);
+        }
     }
 
     if app.prompt_history_search.is_some() {
