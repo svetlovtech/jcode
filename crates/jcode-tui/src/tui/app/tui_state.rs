@@ -47,6 +47,19 @@ impl WidgetProviderKind {
             Some(provider) if matches!(provider.as_str(), "anthropic" | "claude") => {
                 Self::Anthropic
             }
+            // Fork: user-defined [providers.<key>] sections are billed per
+            // token when they declare requires_api_key (bearer API-key auth).
+            // Classify them as cost-based so the footer can show session
+            // token totals (Σ) and cost instead of rendering nothing.
+            Some(provider)
+                if crate::config::config()
+                    .providers
+                    .get(&provider)
+                    .and_then(|profile| profile.requires_api_key)
+                    .unwrap_or(false) =>
+            {
+                Self::CostBasedApiKey
+            }
             _ => Self::Unknown,
         }
     }

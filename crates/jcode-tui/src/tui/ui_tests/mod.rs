@@ -529,5 +529,7 @@ mod prepared_messages_tests;
 mod rendering;
 #[path = "swarm_buffer.rs"]
 mod swarm_buffer;
+#[path = "advanced_footer.rs"]
+mod advanced_footer;
 #[path = "tools.rs"]
 mod tools;
