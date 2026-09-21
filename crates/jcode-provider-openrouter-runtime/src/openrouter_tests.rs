@@ -2147,6 +2147,107 @@ fn direct_deepseek_profile_uses_static_1m_context_when_catalog_is_absent() {
 }
 
 #[test]
+fn conifer_context_fallback_yields_to_live_and_disk_catalog_without_remapping_aliases() {
+    let _lock = ENV_LOCK.lock();
+    let temp = TempDir::new().expect("create temp home");
+    let _jcode_home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _home = EnvVarGuard::set("HOME", temp.path());
+    let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+    let _key = EnvVarGuard::set("CONIFER_API_KEY", "test-conifer-catalog");
+    let _namespace = EnvVarGuard::set("JCODE_OPENROUTER_CACHE_NAMESPACE", "test-conifer-1274");
+    // Synthetic future catalog deliberately changes latest aliases in both
+    // directions and reintroduces the missing Together route with its own limit.
+    let (api_base, request_rx) = spawn_single_response_models_server(
+        r#"{"data":[
+            {"id":"mistral-large-latest","context_window":128000},
+            {"id":"mistral-medium-latest","context_window":512000},
+            {"id":"mistral-small-latest","context_window":64000},
+            {"id":"nemotron-3-ultra-together","context_window":131072}
+        ]}"#,
+    );
+    let make_provider = || {
+        let mut provider = OpenRouterProvider::new_openai_compatible_profile_runtime(
+            jcode_base::provider_catalog::CONIFER_PROFILE,
+        )
+        .expect("Conifer provider");
+        // Use the real constructor/metadata without sending any vendor requests.
+        provider.api_base = api_base.clone();
+        provider
+    };
+    let provider = make_provider();
+    for (model, expected) in [
+        ("seed-2.0-pro", 256_000),
+        ("gemma-4-31b", 128_000),
+        ("llama-4-scout", 327_680),
+        ("conifer:grok-4.6", 500_000),
+        ("mistral-large-latest", 256_000),
+        ("mistral-medium-latest", 256_000),
+        ("mistral-small-latest", 256_000),
+    ] {
+        provider.set_model(model).expect("select fallback model");
+        assert_eq!(provider.context_window(), expected, "{model}");
+    }
+    let alias = "nemotron-3-ultra-together";
+    assert!(!provider.static_models.iter().any(|model| model == alias));
+    provider
+        .set_model(&format!("conifer:{alias}"))
+        .expect("explicit legacy selection");
+    assert_eq!(
+        provider.model(),
+        alias,
+        "never remap to the DeepInfra route"
+    );
+    assert_eq!(
+        provider.context_window(),
+        jcode_provider_core::DEFAULT_CONTEXT_LIMIT
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let fetched = rt
+        .block_on(provider.refresh_models())
+        .expect("refresh Conifer catalog");
+    assert!(fetched.iter().any(|model| model.id == alias));
+    provider
+        .set_model("mistral-large-latest")
+        .expect("select another model before checking discovery");
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("catalog request");
+    assert!(request.starts_with("GET /v1/models "));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-conifer-catalog")
+    );
+    assert!(
+        provider
+            .available_models_display()
+            .iter()
+            .any(|model| model == alias)
+    );
+
+    let fresh = make_provider();
+    assert!(fresh.models_cache.try_read().unwrap().models.is_empty());
+    for (model, expected) in [
+        ("mistral-large-latest", 128_000),
+        ("mistral-medium-latest", 512_000),
+        ("mistral-small-latest", 64_000),
+        (alias, 131_072),
+    ] {
+        provider.set_model(model).expect("select live model");
+        fresh
+            .set_model(model)
+            .expect("restore model before in-memory hydration");
+        assert_eq!(provider.model(), model);
+        assert_eq!(provider.context_window(), expected, "live: {model}");
+        assert_eq!(fresh.context_window(), expected, "disk: {model}");
+    }
+}
+
+#[test]
 fn explicit_cached_context_window_precedes_zai_family_fallback() {
     let model = "glm-5.3-issue-1087";
     jcode_base::provider::populate_context_limits(HashMap::from([(model.to_string(), 1_000_000)]));
@@ -3602,4 +3703,104 @@ fn opencode_session_header_is_sent_on_the_wire_only_to_opencode_hosts() {
         !raw.contains("x-opencode-session"),
         "non-opencode host received the header:\n{raw}"
     );
+}
+
+#[test]
+fn configured_swarm_root_effort_covers_all_wire_formats() {
+    let unified = make_provider();
+    let deepseek = OpenRouterProvider {
+        profile_id: Some("deepseek".into()),
+        ..make_custom_compatible_provider()
+    };
+    let openai = OpenRouterProvider {
+        profile_id: Some("zai".into()),
+        ..make_custom_compatible_provider()
+    };
+    for mode in ["swarm", "swarm-deep"] {
+        for (provider, strict, field, max) in [
+            (&unified, false, "reasoning", "xhigh"),
+            (&deepseek, false, "reasoning_effort", "max"),
+            (&openai, false, "reasoning_effort", "max"),
+            (&openai, true, "reasoning_effort", "xhigh"),
+        ] {
+            provider.set_reasoning_effort(mode).unwrap();
+            for (resolved, expected) in [("low", "low"), ("medium", "medium"), ("max", max)] {
+                let mut request = serde_json::json!({});
+                assert!(provider.apply_resolved_reasoning_effort(&mut request, resolved, strict));
+                let wire = if field == "reasoning" {
+                    &request[field]["effort"]
+                } else {
+                    &request[field]
+                };
+                assert_eq!(wire, expected);
+                assert_eq!(provider.reasoning_effort().as_deref(), Some(mode));
+            }
+            let mut request = serde_json::json!({});
+            assert_eq!(
+                provider.apply_resolved_reasoning_effort(&mut request, "none", strict),
+                field == "reasoning"
+            );
+            if field == "reasoning" {
+                assert_eq!(request[field]["effort"], "none");
+            } else {
+                assert!(request.get(field).is_none());
+            }
+        }
+    }
+    for (effort, expected) in [("minimal", "low"), ("xhigh", "high")] {
+        let mut request = serde_json::json!({});
+        assert!(deepseek.apply_resolved_reasoning_effort(&mut request, effort, false));
+        assert_eq!(request["reasoning_effort"], expected);
+    }
+}
+
+#[test]
+fn configured_swarm_root_effort_reads_real_config() {
+    // Run this single test in a child process so changing config cannot race
+    // other provider tests or reuse an already-initialized global config cache.
+    if std::env::var_os("JCODE_TEST_SWARM_ROOT_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--nocapture",
+            ])
+            .env("JCODE_TEST_SWARM_ROOT_CHILD", "1")
+            .env("JCODE_SWARM_ROOT_EFFORT", "low")
+            .env("JCODE_SWARM_DEEP_ROOT_EFFORT", "none")
+            .output()
+            .expect("run isolated config test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    for (mode, expected) in [("swarm", "low"), ("swarm-deep", "none")] {
+        let (api_base, request_rx) = spawn_single_response_chat_server();
+        let provider = OpenRouterProvider {
+            api_base,
+            supports_model_catalog: false,
+            ..make_provider()
+        };
+        provider.set_reasoning_effort(mode).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut stream = provider.complete(&[], &[], "test", None).await.unwrap();
+            while let Some(event) = stream.next().await {
+                event.unwrap();
+            }
+        });
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            request.contains(&format!(r#""reasoning":{{"effort":"{expected}"}}"#)),
+            "{request}"
+        );
+        assert_eq!(provider.reasoning_effort().as_deref(), Some(mode));
+    }
 }

@@ -8,7 +8,9 @@ files, so you can tune agent behavior without rebuilding.
 1. **Base system prompt** — built-in `crates/jcode-base/src/prompt/system_prompt.md`,
    overridable by file (see below).
 2. Capability modules (e.g. Mermaid guidance).
-3. Self-dev guidance (self-dev sessions only).
+3. Product-specific self-dev guidance. Sessions rooted in a Jcode Desktop
+   checkout automatically receive the Desktop prompt and `desktop_selfdev` tool,
+   separate from CLI/TUI self-dev flags, `selfdev`, and `debug_socket`.
 4. `AGENTS.md` — project `./AGENTS.md` and global `~/AGENTS.md`.
 5. Prompt overlay — `./.jcode/prompt-overlay.md` and `~/.jcode/prompt-overlay.md`.
 6. Preferred tools — `./.jcode/preferred-tools.md` and `~/.jcode/preferred-tools.md`.
@@ -21,7 +23,11 @@ Append instructions without touching the default prompt:
 - `~/.jcode/prompt-overlay.md` — applies everywhere.
 - `./.jcode/prompt-overlay.md` — applies to one project.
 
-Both are included when present.
+Both are included when present. For layers 4–6, if the project and global paths
+resolve to the same canonical path (for example, when working in `$HOME` or using
+symlink aliases), the file is included once under its project heading. Distinct
+files are still both included, even when their contents match. The global
+`.jcode` directory respects `JCODE_HOME` when set.
 
 ## Replacing the base prompt
 

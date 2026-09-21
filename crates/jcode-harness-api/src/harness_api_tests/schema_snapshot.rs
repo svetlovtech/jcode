@@ -501,3 +501,73 @@ fn hidden_system_reminder_wire_shape_and_legacy_default() {
         }
     ));
 }
+
+#[test]
+fn side_panel_state_shared_types_roundtrip() {
+    let snapshot = SidePanelSnapshot {
+        focus_revision: 0,
+        focused_page_id: Some("notes".into()),
+        pages: vec![SidePanelPage {
+            id: "notes".into(),
+            title: "Notes".into(),
+            file_path: "/notes.md".into(),
+            content: "# Hello\n```mermaid\ngraph LR; A-->B\n```".into(),
+            source: SidePanelPageSource::LinkedFile,
+            updated_at_ms: 42,
+            ..Default::default()
+        }],
+    };
+    let mut pdf_snapshot = snapshot.clone();
+    pdf_snapshot.focus_revision = 123;
+    pdf_snapshot.pages[0].format = jcode_side_panel_types::SidePanelPageFormat::Pdf;
+    pdf_snapshot.pages[0].pdf_data = Some("JVBERi0xLjQKJSVFT0Y=".into());
+    pdf_snapshot.pages[0].content = "PDF document fallback".into();
+    for snapshot in [snapshot, pdf_snapshot, SidePanelSnapshot::default()] {
+        let frame = ServerFrame::event(ApiEvent::SidePanelState {
+            session_id: "s1".into(),
+            snapshot,
+        });
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire["ev"], "side_panel_state");
+        assert_eq!(wire["session_id"], "s1");
+        assert_eq!(serde_json::from_value::<ServerFrame>(wire).unwrap(), frame);
+    }
+}
+
+#[test]
+fn text_framing_is_additive_and_accepts_unframed_legacy_deltas() {
+    let old = r#"{"v":1,"ev":"text_delta","session_id":"s1","text":"hello"}"#;
+    let frame: ServerFrame = serde_json::from_str(old).unwrap();
+    assert!(matches!(
+        frame.event,
+        ApiEvent::TextDelta {
+            message_id: None,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_string(&frame).unwrap(), old);
+    for event in [
+        ApiEvent::TextDelta {
+            session_id: "s1".into(),
+            text: "hi".into(),
+            message_id: Some("m1".into()),
+        },
+        ApiEvent::TextDone {
+            session_id: "s1".into(),
+            message_id: Some("m1".into()),
+        },
+        ApiEvent::TextReplace {
+            session_id: "s1".into(),
+            text: "".into(),
+            message_id: Some("m1".into()),
+        },
+    ] {
+        let frame = ServerFrame::event(event);
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire["message_id"], "m1");
+        assert_eq!(
+            serde_json::from_value::<ServerFrame>(wire).unwrap().event,
+            frame.event
+        );
+    }
+}

@@ -127,6 +127,7 @@ impl Tool for MultiEditTool {
 
         // Write the result
         tokio::fs::write(&path, &content).await?;
+        super::edit_stats::record(&ctx, &original_content, &content, false).await;
 
         // Format output
         let mut output = format!("Edited {}\n\n", params.file_path);
@@ -164,7 +165,15 @@ impl Tool for MultiEditTool {
             &content,
         );
 
-        Ok(ToolOutput::new(output).with_title(params.file_path.clone()))
+        Ok(super::file_diff::attach(
+            ToolOutput::new(output).with_title(params.file_path.clone()),
+            super::file_diff::unified(
+                &params.file_path,
+                &params.file_path,
+                &original_content,
+                &content,
+            ),
+        ))
     }
 }
 

@@ -308,6 +308,8 @@ Memories are automatically consolidated every so often via the ambient mode. Thi
 
 ## UI: Side panels, Diagrams, Info Widgets, rendering, scrolling, alignment
 
+The `panel` tool opens a new desktop panel from Markdown content or a linked Markdown/PDF file, and supports update, focus, close, and list actions. See [Desktop panels](docs/PANELS.md) for the API, PDF limits, and compatibility details.
+
 The side panel is a place for auxiliary information. Tell your jcode agent to load a file into the side panel and see it update in real time, or tell your agent to write directly to the side panel, or use it as a diff viewer. The side panel (and chat) is able to render mermaid diagrams inline. 
 <img width="2877" height="1762" alt="image" src="https://github.com/user-attachments/assets/6c7bec81-ef3f-434d-8a7b-d55f8a54e5cf" />
 
@@ -342,6 +344,21 @@ Spawn two or more agents in the same repo, and they will automatically be manage
 Agents are also able to spawn their own swarms autonomously. They have a swarm tool which allows them to spawn in their own teamates to accomplish tasks in parallel. Doing so turns the main agent into a coordinator and the spawned agents into workers. Groups of agents, their messaging channels, their completion statuses, etc are all automatically managed. This can be done headlessly or headed.
 
 ---
+
+Swarm modes keep root reasoning separate from worker effort. Configure each mode
+in `~/.jcode/config.toml`:
+
+```toml
+[agents]
+swarm_root_effort = "low"        # /effort swarm
+swarm_deep_root_effort = "high"  # /effort swarm-deep
+```
+
+Both default to `max`. Accepted levels are `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`, mapped to the provider's supported range. The effort
+switcher shows the configured root level. These settings do not change worker
+`swarm_effort`. Environment overrides are `JCODE_SWARM_ROOT_EFFORT` and
+`JCODE_SWARM_DEEP_ROOT_EFFORT`.
 
 ## OAuth and Providers
 

@@ -85,6 +85,7 @@ fn test_cold_cache_warning_keeps_redrawing_at_deep_idle() {
         display_messages: vec![DisplayMessage::system("seed".to_string())],
         time_since_activity: Some(deep_idle),
         cache_ttl_status: Some(crate::tui::CacheTtlInfo {
+            is_estimate: false,
             remaining_secs: 0,
             ttl_secs: 300,
             is_cold: true,
@@ -108,6 +109,7 @@ fn test_cold_cache_warning_keeps_redrawing_at_deep_idle() {
         display_messages: vec![DisplayMessage::system("seed".to_string())],
         time_since_activity: Some(deep_idle),
         cache_ttl_status: Some(crate::tui::CacheTtlInfo {
+            is_estimate: false,
             remaining_secs: 30,
             ttl_secs: 300,
             is_cold: false,
@@ -127,6 +129,7 @@ fn test_cold_cache_warning_keeps_redrawing_at_deep_idle() {
         display_messages: vec![DisplayMessage::system("seed".to_string())],
         time_since_activity: Some(deep_idle),
         cache_ttl_status: Some(crate::tui::CacheTtlInfo {
+            is_estimate: false,
             remaining_secs: 300,
             ttl_secs: 3600,
             is_cold: false,
@@ -145,6 +148,7 @@ fn test_cold_cache_warning_keeps_redrawing_at_deep_idle() {
         display_messages: vec![DisplayMessage::system("seed".to_string())],
         time_since_activity: Some(deep_idle),
         cache_ttl_status: Some(crate::tui::CacheTtlInfo {
+            is_estimate: false,
             remaining_secs: 200,
             ttl_secs: 300,
             is_cold: false,
@@ -991,4 +995,71 @@ fn test_flicker_frame_history_ignores_manual_scroll_feedback() {
     let payload = debug_flicker_frame_history(8);
     assert_eq!(payload["buffered_samples"], 3);
     assert_eq!(payload["buffered_events"], 0);
+}
+
+#[test]
+fn test_cache_retention_estimates_never_create_proactive_expiry_ui() {
+    let _lock = viewport_snapshot_test_lock();
+    for ttl_secs in [300, 1800, 86400] {
+        for remaining_secs in [ttl_secs, 180, 30, 0] {
+            let info = crate::tui::CacheTtlInfo {
+                is_estimate: true,
+                remaining_secs,
+                ttl_secs,
+                is_cold: remaining_secs == 0,
+                cold_for_secs: 90,
+                cached_tokens: Some(4000),
+            };
+            assert!(!info.expiring_soon());
+            assert!(!info.expiry_notification_active());
+            let state = TestState {
+                display_messages: vec![DisplayMessage::system("seed")],
+                time_since_activity: Some(
+                    crate::tui::REDRAW_DEEP_IDLE_AFTER + Duration::from_secs(1),
+                ),
+                cache_ttl_status: Some(info),
+                ..Default::default()
+            };
+            let text = crate::tui::ui::input_ui::build_notification_spans(&state)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert!(
+                !text.contains("cache"),
+                "estimated TTL {ttl_secs}, remaining {remaining_secs}: {text}"
+            );
+            assert!(!crate::tui::TuiState::has_notification(&state));
+            assert!(!crate::tui::periodic_redraw_required(&state));
+            assert_eq!(
+                crate::tui::redraw_interval(&state),
+                crate::tui::REDRAW_DEEP_IDLE
+            );
+        }
+    }
+}
+
+#[test]
+fn test_cache_explicit_ttls_keep_expiry_notifications() {
+    let _lock = viewport_snapshot_test_lock();
+    for ttl_secs in [300, 3600] {
+        for (remaining_secs, expected) in [(30, "cache 30s"), (0, "cache cold")] {
+            let state = TestState {
+                cache_ttl_status: Some(crate::tui::CacheTtlInfo {
+                    is_estimate: false,
+                    remaining_secs,
+                    ttl_secs,
+                    is_cold: remaining_secs == 0,
+                    cold_for_secs: 10,
+                    cached_tokens: Some(4000),
+                }),
+                ..Default::default()
+            };
+            assert!(crate::tui::TuiState::has_notification(&state));
+            let text = crate::tui::ui::input_ui::build_notification_spans(&state)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert!(text.contains(expected), "{text}");
+        }
+    }
 }

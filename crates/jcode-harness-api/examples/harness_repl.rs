@@ -117,6 +117,7 @@ fn run_demo() {
                     id,
                     ApiEvent::Attached {
                         session: jcode_harness_api::SessionInfo {
+                            edit_stats: None,
                             parent_session_id: None,
                             agent_label: None,
                             swarm_status: None,
@@ -136,6 +137,7 @@ fn run_demo() {
                 "send_message" => {
                     for word in ["Hello ", "from ", "the ", "demo ", "server.\n"] {
                         reply(&ServerFrame::event(ApiEvent::TextDelta {
+                            message_id: None,
                             session_id: "demo-1".into(),
                             text: word.into(),
                         }));

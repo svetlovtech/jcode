@@ -141,6 +141,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/terminal-setup", "Fix Shift+Enter newlines"),
     RegisteredCommand::public("/commit", "Make logical commits from current changes"),
     RegisteredCommand::public(
+        "/merge",
+        "Merge current branch into main/master and switch to it (no push)",
+    ),
+    RegisteredCommand::public(
         "/commit-push",
         "Make logical commits from current changes, then push",
     ),
@@ -242,7 +246,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/keybindings", "Alias for /keys"),
     RegisteredCommand::public(
         "/diff",
-        "Cycle or set diff display mode (off/inline/full/pinned/file)",
+        "Cycle or set diff display mode (off/inline/full/file)",
     ),
     RegisteredCommand::public(
         "/onboarding-preview",
@@ -277,7 +281,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/logout", "Log out of a provider"),
     RegisteredCommand::public("/account", "Open the combined account picker"),
     RegisteredCommand::public("/accounts", "Alias for /account"),
-    RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
+    RegisteredCommand::public("/cache", "Show cache stats; extend/5m saves Anthropic TTL"),
     RegisteredCommand::public("/debug-visual", "Toggle visual debug overlay"),
     RegisteredCommand::public("/screenshot-mode", "Toggle screenshot capture mode"),
     RegisteredCommand::public("/screenshot", "Capture a screenshot debug state"),
@@ -648,7 +652,10 @@ impl App {
                     ("/agents swarm".into(), "Configure swarm/subagent model"),
                     ("/agents review".into(), "Configure code review model"),
                     ("/agents judge".into(), "Configure judge model"),
-                    ("/agents memory".into(), "Configure memory sidecar model"),
+                    (
+                        "/agents memory".into(),
+                        "Configure optional memory extraction model",
+                    ),
                     ("/agents ambient".into(), "Configure ambient model"),
                 ],
             );
@@ -855,7 +862,17 @@ impl App {
         }
 
         if prefix.starts_with("/effort ") {
-            let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+            let efforts = [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "swarm",
+                "swarm-deep",
+            ];
             return self.rank_suggestions(
                 input,
                 efforts
@@ -923,8 +940,9 @@ impl App {
             let suggestions = vec![
                 ("/cache stats".into(), "Show KV cache stats"),
                 ("/cache status".into(), "Alias for /cache stats"),
-                ("/cache 1h".into(), "Use 1 hour cache TTL"),
-                ("/cache 5m".into(), "Use 5 minute cache TTL"),
+                ("/cache extend".into(), "Save 1 hour Anthropic cache TTL"),
+                ("/cache 1h".into(), "Save 1 hour Anthropic cache TTL"),
+                ("/cache 5m".into(), "Save 5 minute Anthropic cache TTL"),
             ];
             return self.rank_suggestions(input, suggestions);
         }

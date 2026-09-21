@@ -539,6 +539,7 @@ impl Agent {
                         saw_message_end = false;
                         stop_reason = None;
                     }
+                    StreamEvent::TextDone => {}
                     StreamEvent::MessageEnd {
                         stop_reason: reason,
                     } => {
@@ -803,17 +804,17 @@ impl Agent {
                 content_blocks.extend(openai_reasoning_items.iter().cloned());
             }
             for tc in &tool_calls {
-                content_blocks.push(ContentBlock::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.input.clone(),
-                    thought_signature: tc.thought_signature.clone(),
-                });
+                content_blocks.push(tc.to_tool_use_block());
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
                 crate::telemetry::record_assistant_response();
                 let token_usage = Some(crate::session::StoredTokenUsage {
+                    prompt_tokens: Some(self.effective_context_tokens_from_usage(
+                        self.last_usage.input_tokens,
+                        self.last_usage.cache_read_input_tokens,
+                        self.last_usage.cache_creation_input_tokens,
+                    )),
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
                     cache_read_input_tokens: self.last_usage.cache_read_input_tokens,

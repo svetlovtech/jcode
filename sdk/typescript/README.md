@@ -112,12 +112,48 @@ console.log("tokens:", turn.usage);
 client.close();
 ```
 
+### Assistant messages and final answers
+
+`turn.text` is the concatenation of **all** assistant text in the turn, including
+intermediate narration before tools. This behavior is preserved for compatibility.
+Use `turn.finalText` to forward only the last completed assistant message, or
+`turn.messages` to retain each completed message separately:
+
+```ts
+const turn = await client.run(session.session_id, "Investigate the failure");
+console.log(turn.finalText);
+// turn.messages: [{ messageId?: string, text: string }, ...]
+```
+
+Framing-capable bridges attach `message_id` to `text_delta` and emit `text_done`
+with the same id when that message ends. Reasoning may interleave within one
+message and is **not** a text boundary. These ids correlate a live stream, not
+persisted history entries, and should be scoped to the connection and session.
+`text_replace` replaces the text for its `message_id`, including a previously
+completed message. An empty replacement retracts discarded retry output. Streaming
+clients should apply these corrections, and wait for `turn_done` before publishing
+an irreversible final answer. The SDK applies them to `text`, `messages`, and
+`finalText` automatically.
+With older bridges, `messages` is empty and `finalText` falls back to whole-turn
+`text`. Exact message boundaries cannot be reconstructed from that older stream.
+
+To verify message framing and concurrent history reads against a real provider
+in a private instance, run the opt-in acceptance check from the repository root:
+
+```sh
+JCODE_SDK_TEST_MODEL="your-model-id" node sdk/typescript/test/live-text-framing.mjs ./target/selfdev/jcode
+```
+
+This uses your existing provider login and quota, runs one harmless bash tool,
+and cleans up its private instance. It does not restart the shared daemon.
+
 ## Structured output
 
 `runStructured()` asks the model for JSON, validates the response with Ajv, and
 sends bounded corrective retries when the response is not valid JSON or does not
 match your JSON Schema. It returns the normal turn metadata plus validated
-`data` and an `attempts` audit trail.
+`data` and an `attempts` audit trail. On framing-capable bridges it validates
+`finalText`, so intermediate narration does not contaminate the JSON answer.
 
 ```ts
 const result = await client.runStructured<{ summary: string; count: number }>(

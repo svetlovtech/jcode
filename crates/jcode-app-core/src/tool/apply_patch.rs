@@ -86,6 +86,23 @@ impl Tool for ApplyPatchTool {
         // threading before/after content through each branch.
         let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
 
+        // Capture whole-file states, including move destinations and AddFile
+        // overwrites. Diff the final state so repeated hunks share one coordinate
+        // system and failed operations cannot produce a speculative preview.
+        let mut before = std::collections::BTreeMap::new();
+        for hunk in &hunks {
+            let (path, destination) = match hunk {
+                PatchHunk::AddFile { path, .. } | PatchHunk::DeleteFile { path } => (path, None),
+                PatchHunk::UpdateFile { path, move_to, .. } => (path, move_to.as_ref()),
+            };
+            for path in std::iter::once(path).chain(destination) {
+                if !before.contains_key(path) {
+                    let resolved = ctx.resolve_path(Path::new(path));
+                    before.insert(path.clone(), super::file_diff::snapshot(&resolved).await);
+                }
+            }
+        }
+
         let mut results = Vec::new();
         let mut touched_paths = Vec::new();
 
@@ -96,7 +113,16 @@ impl Tool for ApplyPatchTool {
                     if let Some(parent) = resolved.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
+                    let existed = resolved.exists();
+                    let old = tokio::fs::read_to_string(&resolved).await.ok();
                     tokio::fs::write(&resolved, contents).await?;
+                    super::edit_stats::record(
+                        &ctx,
+                        old.as_deref().unwrap_or(""),
+                        contents,
+                        existed && old.is_none(),
+                    )
+                    .await;
                     let diff = generate_diff_summary("", contents);
                     publish_file_touch(
                         &ctx,
@@ -130,10 +156,10 @@ impl Tool for ApplyPatchTool {
                         ));
                         continue;
                     }
-                    let old_contents = tokio::fs::read_to_string(&resolved)
-                        .await
-                        .unwrap_or_default();
+                    let old = tokio::fs::read_to_string(&resolved).await.ok();
+                    let old_contents = old.as_deref().unwrap_or("");
                     if tokio::fs::remove_file(&resolved).await.is_ok() {
+                        super::edit_stats::record(&ctx, old_contents, "", old.is_none()).await;
                         let diff = generate_diff_summary(&old_contents, "");
                         publish_file_touch(
                             &ctx,
@@ -167,8 +193,35 @@ impl Tool for ApplyPatchTool {
                                 if let Some(parent) = dest_resolved.parent() {
                                     tokio::fs::create_dir_all(parent).await?;
                                 }
+                                let dest_existed = dest_resolved.exists();
+                                let dest_old = tokio::fs::read_to_string(&dest_resolved).await.ok();
                                 tokio::fs::write(&dest_resolved, &new_contents).await?;
-                                let _ = tokio::fs::remove_file(&resolved).await;
+                                if tokio::fs::remove_file(&resolved).await.is_ok() {
+                                    super::edit_stats::record(
+                                        &ctx,
+                                        &old_contents,
+                                        &new_contents,
+                                        false,
+                                    )
+                                    .await;
+                                    if dest_existed {
+                                        super::edit_stats::record(
+                                            &ctx,
+                                            dest_old.as_deref().unwrap_or(""),
+                                            "",
+                                            dest_old.is_none(),
+                                        )
+                                        .await;
+                                    }
+                                } else {
+                                    super::edit_stats::record(
+                                        &ctx,
+                                        dest_old.as_deref().unwrap_or(""),
+                                        &new_contents,
+                                        dest_existed && dest_old.is_none(),
+                                    )
+                                    .await;
+                                }
                                 publish_file_touch(
                                     &ctx,
                                     &resolved,
@@ -205,6 +258,13 @@ impl Tool for ApplyPatchTool {
                                 }
                             } else {
                                 tokio::fs::write(&resolved, &new_contents).await?;
+                                super::edit_stats::record(
+                                    &ctx,
+                                    &old_contents,
+                                    &new_contents,
+                                    false,
+                                )
+                                .await;
                                 publish_file_touch(
                                     &ctx,
                                     &resolved,
@@ -243,7 +303,67 @@ impl Tool for ApplyPatchTool {
         } else {
             let mut body = results.join("\n");
             config_watch.finish(&mut body);
-            let output = ToolOutput::new(body);
+            let mut unified = String::new();
+            let mut after = std::collections::BTreeMap::new();
+            for path in before.keys() {
+                after.insert(
+                    path.clone(),
+                    super::file_diff::snapshot(&ctx.resolve_path(Path::new(path))).await,
+                );
+            }
+            let mut combined = std::collections::BTreeSet::new();
+            // A simple successful move to a new path can retain the source's
+            // coordinates. For overwrites or move chains, keep net per-path
+            // diffs instead of hiding destination text that was overwritten.
+            for hunk in &hunks {
+                if let PatchHunk::UpdateFile {
+                    path,
+                    move_to: Some(dest),
+                    ..
+                } = hunk
+                    && let (
+                        Some(Some((true, old))),
+                        Some(Some((false, _))),
+                        Some(Some((false, _))),
+                        Some(Some((true, new))),
+                    ) = (
+                        before.get(path),
+                        before.get(dest),
+                        after.get(path),
+                        after.get(dest),
+                    )
+                    && !combined.contains(path)
+                    && !combined.contains(dest)
+                {
+                    unified.push_str(&super::file_diff::unified(path, dest, old, new));
+                    combined.insert(path.clone());
+                    combined.insert(dest.clone());
+                }
+            }
+            for (path, old) in before {
+                if combined.contains(&path) {
+                    continue;
+                }
+                if let (Some((old_exists, old)), Some(Some((new_exists, new)))) =
+                    (old, after.remove(&path))
+                {
+                    unified.push_str(&super::file_diff::unified(
+                        if old_exists || !new_exists {
+                            &path
+                        } else {
+                            "/dev/null"
+                        },
+                        if new_exists || !old_exists {
+                            &path
+                        } else {
+                            "/dev/null"
+                        },
+                        &old,
+                        &new,
+                    ));
+                }
+            }
+            let output = super::file_diff::attach(ToolOutput::new(body), unified);
             if touched_paths.len() == 1 {
                 Ok(output.with_title(touched_paths[0].clone()))
             } else {

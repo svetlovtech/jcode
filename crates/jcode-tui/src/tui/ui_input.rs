@@ -1138,6 +1138,18 @@ mod tests {
     use ratatui::style::Modifier;
 
     #[test]
+    fn swarm_effort_model_status_uses_shared_label() {
+        for mode in ["swarm", "swarm-deep"] {
+            assert_eq!(
+                overscroll_short_reasoning(mode),
+                Some(crate::tui::app::effort_display_label(mode))
+            );
+        }
+        assert_eq!(overscroll_short_reasoning(" high "), Some("high"));
+        assert_eq!(overscroll_short_reasoning(" "), None);
+    }
+
+    #[test]
     fn running_tool_header_emphasizes_detail_over_tool_name() {
         let accent = Color::Rgb(12, 34, 56);
         let spans = running_tool_header_spans("*", "bash", Some("cargo test"), accent);
@@ -1850,7 +1862,9 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
             ));
         }
 
-        if let Some(cache_info) = app.cache_ttl_status() {
+        if let Some(cache_info) = app.cache_ttl_status()
+            && cache_info.expiry_notification_active()
+        {
             if cache_info.is_cold {
                 let tokens_str = cache_info
                     .cached_tokens
@@ -1869,7 +1883,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
                     format!("🧊 cache cold{}", tokens_str),
                     Style::default().fg(rgb(140, 180, 255)),
                 ));
-                // Small gray "how long ago it went cold" hint, e.g. `1h 1m`.
+                // Small gray age since the retention window elapsed, e.g. `1h 1m`.
                 spans.push(Span::styled(
                     format!(
                         " {}",
@@ -2147,6 +2161,7 @@ fn overscroll_short_reasoning(effort: &str) -> Option<&str> {
         return None;
     }
     Some(match effort {
+        "swarm" | "swarm-deep" => crate::tui::app::effort_display_label(effort),
         "max" => "max",
         "xhigh" => "xhigh",
         "high" => "high",

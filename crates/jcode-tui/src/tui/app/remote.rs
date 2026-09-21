@@ -87,6 +87,7 @@ pub(super) enum RemoteEventOutcome {
 }
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
+    app.refresh_terminal_title_metrics();
     crate::tui::ui::set_frame_input_attribution(crate::tui::ui::FrameInputAttribution {
         event: Some("tick".to_string()),
         scroll_delta: None,
@@ -397,7 +398,7 @@ async fn apply_terminal_event(
     };
     match event {
         Some(Ok(Event::FocusGained)) => {
-            crate::tui::reapply_configured_terminal_modes();
+            crate::tui::reapply_configured_terminal_modes_after_focus();
             input_attribution.event = Some("focus_gained".to_string());
             needs_redraw |= app.set_client_focused(true);
             app.note_client_focus(true);
@@ -788,7 +789,7 @@ fn handle_terminal_event_while_disconnected(
 
     match event {
         Some(Ok(Event::FocusGained)) => {
-            crate::tui::reapply_configured_terminal_modes();
+            crate::tui::reapply_configured_terminal_modes_after_focus();
             needs_redraw |= app.set_client_focused(true);
             app.note_client_focus(true);
         }

@@ -45,7 +45,29 @@ pub enum ApiEvent {
 
     // --- Streaming events (carry session_id, not tied to a request id) ---
     /// Assistant text delta.
-    TextDelta { session_id: String, text: String },
+    TextDelta {
+        session_id: String,
+        text: String,
+        /// Stream correlation id, not a persisted history message id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+
+    /// Assistant message text ended. Reasoning alone is not a boundary.
+    TextDone {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+
+    /// Replace previously streamed text for this message, including rollback.
+    /// An empty replacement retracts the message, even after TextDone.
+    TextReplace {
+        session_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
 
     /// Model reasoning delta (render dim/italic; safe to ignore).
     ReasoningDelta { session_id: String, text: String },
@@ -87,6 +109,14 @@ pub enum ApiEvent {
     SidePaneImages {
         session_id: String,
         images: Vec<RenderedImage>,
+    },
+
+    /// Complete session-scoped Markdown side-panel state. Replace the previous
+    /// snapshot, including when pages is empty. Sent live and during attachment
+    /// hydration, possibly before `Attached`. Subscribe before attaching.
+    SidePanelState {
+        session_id: String,
+        snapshot: crate::SidePanelSnapshot,
     },
 
     /// Usage for the latest provider call, not cumulative session or turn totals.
@@ -293,6 +323,9 @@ pub enum ErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionInfo {
+    /// Cumulative built-in file-tool changes. Absent when unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_stats: Option<crate::SessionEditStats>,
     pub session_id: String,
     /// Swarm owner this agent reports to, not the transcript's fork parent.
     /// Absent for ordinary sessions and user-created forks.

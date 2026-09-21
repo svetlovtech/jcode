@@ -83,8 +83,9 @@ fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
 
 #[test]
 fn test_alt_shift_i_toggles_inline_images_and_persists() {
-    let _render_lock = scroll_render_test_lock();
+    // App setup also takes the render lock, so always acquire env first.
     let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
@@ -709,12 +710,14 @@ fn test_mouse_click_in_main_chat_switches_focus_from_side_panel() {
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.diff_pane_focus = true;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: String::new(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,
@@ -754,12 +757,14 @@ fn test_mouse_click_in_input_switches_focus_from_side_panel() {
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.diff_pane_focus = true;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: String::new(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,

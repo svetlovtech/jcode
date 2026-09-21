@@ -49,6 +49,7 @@ uuid = { version = "1", features = ["v4", "v5"] }
 
 # Embeddings (local inference) live in jcode-base; this crate forwards the
 # `embeddings` feature to jcode-base rather than depending on jcode-embedding.
+jcode-harness-api = { path = "../jcode-harness-api" }
 jcode-import-core = { path = "../jcode-import-core" }
 
 # OAuth
@@ -108,7 +109,7 @@ tempfile = "3"
 agentgrep = { git = "https://github.com/1jehuang/agentgrep.git", tag = "v0.1.6" }
 
 [features]
-default = ["pdf", "embeddings", "bedrock"]
+default = ["pdf", "bedrock"]
 # jemalloc allocator stats live in jcode-base (process_memory); forward there.
 jemalloc = ["jcode-base/jemalloc"]
 jemalloc-prof = ["jcode-base/jemalloc-prof"]

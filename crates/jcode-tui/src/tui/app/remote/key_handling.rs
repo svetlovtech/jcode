@@ -2031,6 +2031,7 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/commit"
+                    || trimmed == "/merge"
                     || trimmed == "/commit-push"
                     || trimmed == "/commit-and-push"
                     || trimmed == "/fast-release"
@@ -2048,8 +2049,11 @@ async fn handle_remote_key_internal(
                     );
                     let is_remote_release = trimmed == "/remote-release";
                     let is_fast_macos_release = trimmed == "/fast-macos-release";
-                    let is_push = trimmed != "/commit";
-                    let prompt = if is_triage {
+                    let is_merge = trimmed == "/merge";
+                    let is_push = matches!(trimmed, "/commit-push" | "/commit-and-push");
+                    let prompt = if is_merge {
+                        app_mod::commands::build_merge_prompt()
+                    } else if is_triage {
                         app_mod::commands::build_triage_prompt(
                             trimmed.strip_prefix("/triage").unwrap_or_default(),
                         )
@@ -2065,7 +2069,9 @@ async fn handle_remote_key_internal(
                         app_mod::commands::build_commit_prompt()
                     };
                     let launch_notice = |interrupted: bool| {
-                        if is_triage {
+                        if is_merge {
+                            app_mod::commands::merge_launch_notice(interrupted)
+                        } else if is_triage {
                             app_mod::commands::triage_launch_notice(interrupted)
                         } else if is_fast_macos_release {
                             app_mod::commands::fast_macos_release_launch_notice(interrupted)
@@ -2079,7 +2085,9 @@ async fn handle_remote_key_internal(
                             app_mod::commands::commit_launch_notice(interrupted)
                         }
                     };
-                    let cmd_label = if is_triage {
+                    let cmd_label = if is_merge {
+                        "/merge"
+                    } else if is_triage {
                         "/triage"
                     } else if is_fast_macos_release {
                         "/fast-macos-release"

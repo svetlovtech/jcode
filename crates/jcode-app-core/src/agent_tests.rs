@@ -14,6 +14,12 @@ mod concurrency;
 #[path = "agent_tests/concurrency_construction.rs"]
 mod concurrency_construction;
 
+#[path = "agent_tests/desktop_selfdev.rs"]
+mod desktop_selfdev;
+
+#[path = "agent_tests/compile_remote.rs"]
+mod compile_remote;
+
 struct DelayedProvider {
     open_delay: Duration,
     first_event_delay: Duration,
@@ -22,6 +28,120 @@ struct DelayedProvider {
 struct NativeAutoCompactionProvider;
 
 struct NativeCompactionStreamProvider;
+
+#[derive(Clone, Default)]
+struct SignatureSessionProvider {
+    requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl Provider for SignatureSessionProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let first = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(messages.to_vec());
+            requests.len() == 1
+        };
+        let mut events = vec![StreamEvent::SessionId("provider-resume-handle".into())];
+        if first {
+            events.extend([
+                StreamEvent::ToolUseStart {
+                    id: "signed-call".into(),
+                    name: "provider_owned_probe".into(),
+                },
+                StreamEvent::ToolInputDelta("{}".into()),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::ToolUseSignature("test-thought-signature".into()),
+                StreamEvent::ToolResult {
+                    tool_use_id: "signed-call".into(),
+                    content: "done".into(),
+                    is_error: false,
+                },
+            ]);
+        }
+        events.extend([
+            StreamEvent::TextDelta("completed".into()),
+            StreamEvent::MessageEnd {
+                stop_reason: Some("end_turn".into()),
+            },
+        ]);
+        Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
+    }
+
+    fn name(&self) -> &str {
+        "signature-session-test"
+    }
+    fn handles_tools_internally(&self) -> bool {
+        true
+    }
+    fn supports_compaction(&self) -> bool {
+        false
+    }
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+#[tokio::test]
+async fn mpsc_preserves_signatures_and_never_rebinds_to_provider_session_id() {
+    let _lock = crate::storage::lock_test_env();
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            if let Some(home) = &self.0 {
+                crate::env::set_var("JCODE_HOME", home);
+            } else {
+                crate::env::remove_var("JCODE_HOME");
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let _restore = RestoreHome(std::env::var_os("JCODE_HOME"));
+    crate::env::set_var("JCODE_HOME", home.path());
+    crate::config::Config::invalidate_cache();
+    let provider = Arc::new(SignatureSessionProvider::default());
+    let mut agent = Agent::new(provider.clone(), Registry::empty());
+    let jcode_id = agent.session_id().to_string();
+    for prompt in ["first turn", "second turn"] {
+        agent.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: prompt.into(),
+                cache_control: None,
+            }],
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.run_turn_streaming_mpsc(tx).await.unwrap();
+        while let Ok(event) = rx.try_recv() {
+            if let ServerEvent::SessionId { session_id } = event {
+                assert_eq!(
+                    session_id, jcode_id,
+                    "provider handle must not replace jcode identity"
+                );
+            }
+        }
+    }
+    assert_eq!(agent.session_id(), jcode_id);
+    let saved = Session::load(&jcode_id).unwrap();
+    assert_eq!(
+        saved.provider_session_id.as_deref(),
+        Some("provider-resume-handle")
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].iter().flat_map(|message| &message.content).any(|block| matches!(
+        block, ContentBlock::ToolUse { thought_signature: Some(signature), .. } if signature == "test-thought-signature"
+    )), "second request must replay the persisted signature");
+    let saved_json = serde_json::to_value(&saved).unwrap();
+    assert!(saved_json.to_string().contains("test-thought-signature"));
+}
 
 #[derive(Clone)]
 struct ExplicitPinProvider {
@@ -1192,19 +1312,49 @@ async fn restore_session_rehydrates_injected_memory_ids() {
 #[tokio::test]
 async fn build_memory_prompt_nonblocking_defers_pending_memory_during_tool_loop() {
     let _guard = crate::storage::lock_test_env();
+    struct RestoreMemoryHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreMemoryHome {
+        fn drop(&mut self) {
+            crate::memory::clear_all_pending_memory();
+            match &self.0 {
+                Some(home) => crate::env::set_var("JCODE_HOME", home),
+                None => crate::env::remove_var("JCODE_HOME"),
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+    let home = tempfile::tempdir().expect("isolated memory home");
+    let _restore = RestoreMemoryHome(std::env::var_os("JCODE_HOME"));
+    crate::env::set_var("JCODE_HOME", home.path());
+    crate::config::Config::invalidate_cache();
     crate::memory::clear_all_pending_memory();
 
     let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
     let registry = Registry::new(provider.clone()).await;
-    let agent = Agent::new(provider, registry);
+    let mut agent = Agent::new(provider, registry);
+    agent.memory_enabled = true;
+    let project = home.path().join("project");
+    std::fs::create_dir(&project).expect("isolated project");
+    agent.session.working_dir = Some(project.to_string_lossy().into_owned());
     let session_id = agent.session.id.clone();
 
-    crate::memory::set_pending_memory_with_ids(
+    let entry =
+        crate::memory::MemoryEntry::new(crate::memory::MemoryCategory::Fact, "remember this later");
+    crate::memory::MemoryManager::new()
+        .with_project_dir(&project)
+        .remember_project(entry.clone())
+        .expect("persist the selected memory for scoped revalidation");
+    let prompt = crate::memory::format_relevant_prompt(std::slice::from_ref(&entry), 1)
+        .expect("canonical memory prompt");
+    crate::memory::set_pending_memory_for_project(
         &session_id,
-        "remember this later".to_string(),
+        prompt.clone(),
         1,
-        vec!["memory-deferred".to_string()],
+        vec![entry.id.clone()],
+        None,
+        agent.session.working_dir.as_deref(),
     );
+    assert!(crate::memory::has_pending_memory(&session_id));
 
     let tool_loop_messages = vec![
         Message::user("hello"),
@@ -1225,6 +1375,7 @@ async fn build_memory_prompt_nonblocking_defers_pending_memory_during_tool_loop(
     let pending = agent.build_memory_prompt_nonblocking(&tool_loop_messages, None);
     assert!(pending.is_none(), "memory should not inject mid tool loop");
     assert!(crate::memory::has_pending_memory(&session_id));
+    assert!(!crate::memory::is_memory_injected(&session_id, &entry.id));
 
     let next_turn_messages = vec![Message::user("follow up")];
     let pending = agent.build_memory_prompt_nonblocking(&next_turn_messages, None);
@@ -1232,6 +1383,10 @@ async fn build_memory_prompt_nonblocking_defers_pending_memory_during_tool_loop(
         pending.is_some(),
         "memory should inject on the next real user turn"
     );
+    let pending = pending.unwrap();
+    assert_eq!(pending.prompt, prompt);
+    assert_eq!(pending.memory_ids, vec![entry.id.clone()]);
+    assert!(crate::memory::is_memory_injected(&session_id, &entry.id));
     assert!(!crate::memory::has_pending_memory(&session_id));
 
     crate::memory::clear_all_pending_memory();

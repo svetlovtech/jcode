@@ -961,7 +961,6 @@ fn parse_diff_mode_name(value: &str) -> Option<crate::config::DiffDisplayMode> {
         "full" | "full-inline" | "full_inline" | "fullinline" | "inline-full" => {
             Some(DiffDisplayMode::FullInline)
         }
-        "pinned" | "pin" | "pane" => Some(DiffDisplayMode::Pinned),
         "file" | "fullfile" | "full-file" => Some(DiffDisplayMode::File),
         _ => None,
     }
@@ -989,7 +988,7 @@ pub(super) fn handle_diff_command(app: &mut App, trimmed: &str) -> bool {
 
     if arg.eq_ignore_ascii_case("status") {
         app.push_display_message(DisplayMessage::system(format!(
-            "Diff mode: {} (use /diff [off|inline|full|pinned|file] or /diff to cycle)",
+            "Diff mode: {} (use /diff [off|inline|full|file] or /diff to cycle)",
             app.diff_mode.label()
         )));
         return true;
@@ -998,7 +997,7 @@ pub(super) fn handle_diff_command(app: &mut App, trimmed: &str) -> bool {
     match parse_diff_mode_name(arg) {
         Some(mode) => apply_diff_mode(app, mode),
         None => app.push_display_message(DisplayMessage::error(
-            "Usage: /diff [off|inline|full|pinned|file|cycle|status]".to_string(),
+            "Usage: /diff [off|inline|full|file|cycle|status]".to_string(),
         )),
     }
     true
@@ -1689,6 +1688,11 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    if trimmed == "/merge" {
+        handle_merge_command_local(app);
+        return true;
+    }
+
     if trimmed == "/commit-push" || trimmed == "/commit-and-push" {
         handle_commit_push_command_local(app);
         return true;
@@ -2156,6 +2160,23 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
     false
 }
 
+pub(super) fn build_merge_prompt() -> String {
+    String::from(
+        "Merge the current Git branch into the repository's main or master branch, then leave HEAD attached to that destination branch in the session's working directory. \
+        This is an explicit request to integrate this branch and switch to the destination, not merely to reset HEAD. \
+        First inspect the repository, current branch, git status (including staged, unstaged, and untracked files), worktrees, and any merge/rebase/cherry-pick/revert in progress. \
+        If there are uncommitted changes, an operation in progress, or a detached/unborn HEAD, stop and explain without changing anything. Do not auto-commit, stash, clean, or discard work. \
+        Select an existing local main or master branch. If both exist, use the configured remote default only when it unambiguously names one of them; otherwise ask which to use. If neither exists, stop rather than inventing a destination. \
+        If already on the destination branch, report that and do nothing. If the destination is checked out in another worktree, stop rather than forcing a checkout or modifying that worktree. \
+        Record the source branch and both commit IDs, inspect the commits and diff being integrated, and honor the repository's validation requirements before merging. Stop if validation fails. \
+        Recheck that the worktree is clean and both branch tips are unchanged before switching. Use git switch to the destination and a normal non-interactive git merge --no-edit of the recorded source commit, allowing a fast-forward when possible. \
+        Never reset, rebase, squash, force-update refs, bypass hooks, push, delete branches, or include unrelated branches. \
+        If this merge conflicts, do not resolve conflicts automatically: abort only the merge you just started and return to the original branch when safe. If recovery fails, stop and report the exact state without destructive cleanup. \
+        After a successful merge, rerun the appropriate validation against the combined result. If it fails, report the failure and leave the completed merge intact rather than resetting it or claiming success. \
+        Verify the final branch, clean status, and that the source commit is an ancestor of HEAD before claiming success. Report the source, destination, resulting commit, validation, and that nothing was pushed.",
+    )
+}
+
 pub(super) fn build_commit_prompt() -> String {
     "Make interactive, logical commits for the current uncommitted work. Inspect the git state first, including unstaged and staged changes. Group related changes into small coherent commits, staging only the files or hunks that belong together. Preserve unrelated user or agent work, do not discard changes, and do not amend existing commits unless clearly necessary. For each commit, use a concise conventional-style message when possible. Validate as appropriate for the changed files before committing, and report the commits created plus any remaining uncommitted changes.".to_string()
 }
@@ -2244,6 +2265,29 @@ fn handle_triage_command_local(app: &mut App, rest: &str) {
         );
     } else {
         app.push_display_message(DisplayMessage::system(triage_launch_notice(false)));
+        super::commands_improve::start_synthetic_user_turn(app, prompt);
+    }
+}
+
+pub(super) fn merge_launch_notice(interrupted: bool) -> String {
+    if interrupted {
+        "👉 Interrupting and starting merge into main/master...".to_string()
+    } else {
+        "🚀 Starting merge into main/master...".to_string()
+    }
+}
+
+fn handle_merge_command_local(app: &mut App) {
+    let prompt = build_merge_prompt();
+    if app.is_processing {
+        super::commands_improve::interrupt_and_queue_synthetic_message(
+            app,
+            prompt,
+            "Interrupting for /merge...",
+            merge_launch_notice(true),
+        );
+    } else {
+        app.push_display_message(DisplayMessage::system(merge_launch_notice(false)));
         super::commands_improve::start_synthetic_user_turn(app, prompt);
     }
 }

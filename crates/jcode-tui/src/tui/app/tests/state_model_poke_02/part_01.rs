@@ -30,12 +30,14 @@ fn test_tool_side_panel_focus_supports_horizontal_pan_keys() {
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: "".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,
@@ -60,12 +62,14 @@ fn test_tool_side_panel_focus_supports_image_zoom_keys() {
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: "".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,
@@ -97,12 +101,14 @@ fn test_mouse_horizontal_scroll_over_tool_side_panel_pans_without_focus_change()
     app.diff_pane_scroll_x = 0;
     app.diff_pane_focus = false;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: "".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,
@@ -138,12 +144,14 @@ fn test_ctrl_mouse_scroll_over_tool_side_panel_zooms_images() {
     app.side_panel_image_zoom_percent = 100;
     app.diff_pane_focus = false;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: "".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "hello".to_string(),
             updated_at_ms: 1,
@@ -622,6 +630,25 @@ fn test_fuzzy_command_suggestions() {
 }
 
 #[test]
+fn test_swarm_effort_autocomplete_and_help() {
+    let app = create_test_app();
+    let suggestions = app.get_suggestions_for("/effort swarm");
+    for mode in ["swarm", "swarm-deep"] {
+        let command = format!("/effort {mode}");
+        let (_, label) = suggestions
+            .iter()
+            .find(|(cmd, _)| cmd == &command)
+            .expect("both swarm modes should be suggested");
+        assert_eq!(*label, super::effort_display_label(mode));
+        assert!(label.contains("[Beta]"));
+    }
+    let help = app.command_help("effort").expect("effort help");
+    assert!(help.contains("swarm_root_effort"));
+    assert!(help.contains("swarm_deep_root_effort"));
+    assert!(!help.contains("run at max reasoning"));
+}
+
+#[test]
 fn test_refresh_model_list_command_suggestions() {
     let app = create_test_app();
     let suggestions = app.get_suggestions_for("/refresh");
@@ -1073,12 +1100,14 @@ fn test_context_command_reports_session_context_snapshot() {
         app.pending_images
             .push(("image/png".to_string(), "abc".to_string()));
         app.side_panel = crate::side_panel::SidePanelSnapshot {
+            focus_revision: 0,
             focused_page_id: Some("goals".to_string()),
             pages: vec![crate::side_panel::SidePanelPage {
                 id: "goals".to_string(),
                 title: "Goals".to_string(),
                 file_path: "".to_string(),
                 format: crate::side_panel::SidePanelPageFormat::Markdown,
+                pdf_data: None,
                 source: crate::side_panel::SidePanelPageSource::Managed,
                 content: "goal details".to_string(),
                 updated_at_ms: 0,
@@ -1457,12 +1486,14 @@ fn test_panel_image_preview_click_render_dismiss_and_restore() {
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("preview".into()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "preview".into(),
             title: "Preview fixture".into(),
             file_path: "".into(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: format!(
                 "# Preview fixture\n\n![Image]({})\n\nAfter image",

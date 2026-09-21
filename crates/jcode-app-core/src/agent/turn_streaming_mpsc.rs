@@ -525,6 +525,9 @@ impl Agent {
                             });
                         }
                     }
+                    StreamEvent::TextDone => {
+                        let _ = event_tx.send(ServerEvent::TextDone);
+                    }
                     StreamEvent::TextDelta(text) => {
                         // Close any open reasoning region before real output so the
                         // answer renders as a normal paragraph rather than as reasoning.
@@ -804,9 +807,16 @@ impl Agent {
                         });
                     }
                     StreamEvent::SessionId(sid) => {
+                        // This is the *provider's* session id (Gemini/Claude
+                        // CLI/Grok resume handle). It must never be forwarded
+                        // as `ServerEvent::SessionId`: the client treats that
+                        // event as the jcode session id and rebinds
+                        // `remote_session_id` to it, so the next reload or
+                        // reconnect resumes a session that does not exist and
+                        // the user lands in an empty new session while the
+                        // real transcript sits untouched on disk.
                         self.provider_session_id = Some(sid.clone());
-                        self.session.provider_session_id = Some(sid.clone());
-                        let _ = event_tx.send(ServerEvent::SessionId { session_id: sid });
+                        self.session.provider_session_id = Some(sid);
                     }
                     StreamEvent::OpenAIReasoning {
                         id,
@@ -988,10 +998,13 @@ impl Agent {
 
                 let input = usage_input.unwrap_or(0);
                 let output = usage_output.unwrap_or(0);
-                let total = input
-                    .saturating_add(output)
-                    .saturating_add(usage_cache_read.unwrap_or(0))
-                    .saturating_add(usage_cache_creation.unwrap_or(0));
+                let total = self
+                    .effective_context_tokens_from_usage(
+                        input,
+                        usage_cache_read,
+                        usage_cache_creation,
+                    )
+                    .saturating_add(output);
                 crate::session_metrics::record_token_usage(&self.session.id, total, output);
             }
 
@@ -1089,17 +1102,17 @@ impl Agent {
                 content_blocks.extend(openai_reasoning_items.iter().cloned());
             }
             for tc in &tool_calls {
-                content_blocks.push(ContentBlock::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.input.clone(),
-                    thought_signature: None,
-                });
+                content_blocks.push(tc.to_tool_use_block());
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
                 crate::telemetry::record_assistant_response();
                 let token_usage = Some(crate::session::StoredTokenUsage {
+                    prompt_tokens: Some(self.effective_context_tokens_from_usage(
+                        self.last_usage.input_tokens,
+                        self.last_usage.cache_read_input_tokens,
+                        self.last_usage.cache_creation_input_tokens,
+                    )),
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
                     cache_read_input_tokens: self.last_usage.cache_read_input_tokens,

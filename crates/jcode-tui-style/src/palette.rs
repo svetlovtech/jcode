@@ -327,11 +327,33 @@ pub fn palette() -> Palette {
     .unwrap_or_default()
 }
 
+/// Avoid locking/copying the palette on the default render path.
+pub(crate) fn configured_palette() -> Option<Palette> {
+    HAS_OVERRIDES.load(Ordering::Relaxed).then(palette)
+}
+
+/// Resolve an override from the original, native-palette color, before light
+/// contrast repair can collapse two distinct muted roles to the same ink.
+pub(crate) fn configured_native_color(palette: &Palette, color: Color) -> Option<Color> {
+    let source = match color {
+        Color::Reset => return None,
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(index) => crate::color::indexed_to_rgb(index),
+        named => {
+            let mapped = remap_named_with(palette, named);
+            return (mapped != named).then_some(mapped);
+        }
+    };
+    remap_literal_using(palette, source, Role::default_rgb)
+        .map(|(r, g, b)| crate::color::rgb(r, g, b))
+}
+
 /// Resolve a role to a renderable color.
 ///
 /// This deliberately returns the role's *default* color, not the configured
 /// one: substitution happens once per frame in
-/// [`adapt_buffer_for_palette`]. Returning the configured color here would let
+/// [`crate::theme_mode::adapt_buffer_for_display`]. Returning the configured
+/// color here would let
 /// the same cell be remapped twice (once by the accessor, once by the buffer
 /// pass), which compounds the hue/lightness offsets.
 pub fn role_color(role: Role) -> Color {
@@ -346,16 +368,13 @@ pub fn role_color(role: Role) -> Color {
 /// hundreds of ad hoc `rgb(...)` literals and ratatui's named colors, without
 /// editing each call site. No-op when nothing is configured.
 ///
-/// # Ordering with the light-theme pass
+/// Legacy palette-only adapter for colors that have only had their luminance
+/// flipped. Role defaults are pre-flipped the same way before comparison.
 ///
-/// This must run **after** [`crate::theme_mode::adapt_buffer_for_theme`]. That
-/// pass exists because jcode's *built-in* palette is designed for dark
-/// terminals, so it flips luminance to make the built-in colors work on light
-/// ones. A color the user configured is already the color they want, so letting
-/// the flip touch it turns a deliberately dark red into an unreadable pale one.
-///
-/// Running last means an incoming literal has already been flipped, so role
-/// defaults are pre-flipped the same way before comparison. See `match_target`.
+/// Production rendering should use
+/// [`crate::theme_mode::adapt_buffer_for_display`] instead. It attributes roles
+/// from native colors before contrast repair can collapse distinct muted colors
+/// to the same output, and preserves explicit user colors without inversion.
 pub fn adapt_buffer_for_palette(buf: &mut ratatui::buffer::Buffer) {
     if !HAS_OVERRIDES.load(Ordering::Relaxed) {
         return;
@@ -487,35 +506,43 @@ pub fn role_for_rendered(color: Color) -> Option<Role> {
 
 /// Palette-explicit variant of [`remap_literal`], for tests and tooling.
 pub fn remap_literal_with(palette: &Palette, rgb: (u8, u8, u8)) -> (u8, u8, u8) {
+    remap_literal_using(palette, rgb, match_target).unwrap_or(rgb)
+}
+
+fn remap_literal_using(
+    palette: &Palette,
+    rgb: (u8, u8, u8),
+    target_default: fn(Role) -> (u8, u8, u8),
+) -> Option<(u8, u8, u8)> {
     let source = crate::harmony::Oklab::from_rgb(rgb);
     let mut best: Option<(f32, Role)> = None;
     for role in ALL_ROLES.iter().copied() {
         if !palette.is_overridden(role) {
             continue;
         }
-        let default = crate::harmony::Oklab::from_rgb(match_target(role));
+        let default = crate::harmony::Oklab::from_rgb(target_default(role));
         let distance = source.distance(default);
         if distance <= FAMILY_RADIUS && best.is_none_or(|(previous, _)| distance < previous) {
             best = Some((distance, role));
         }
     }
 
-    let Some((_, role)) = best else {
-        return rgb;
-    };
+    let (_, role) = best?;
 
     // Re-express the literal relative to the new role color, keeping its
     // lightness/chroma offset from the role default. The configured color is
     // used exactly as given: the user picked it for their own terminal, so it
     // must not be luminance-flipped.
-    let default = crate::harmony::Oklab::from_rgb(match_target(role));
+    let default = crate::harmony::Oklab::from_rgb(target_default(role));
     let target = crate::harmony::Oklab::from_rgb(palette.rgb(role));
-    crate::harmony::Oklab {
-        l: (target.l + (source.l - default.l)).clamp(0.0, 1.0),
-        a: target.a + (source.a - default.a),
-        b: target.b + (source.b - default.b),
-    }
-    .to_rgb()
+    Some(
+        crate::harmony::Oklab {
+            l: (target.l + (source.l - default.l)).clamp(0.0, 1.0),
+            a: target.a + (source.a - default.a),
+            b: target.b + (source.b - default.b),
+        }
+        .to_rgb(),
+    )
 }
 
 #[cfg(test)]
@@ -720,7 +747,7 @@ mod buffer_tests {
 #[cfg(test)]
 mod light_theme_interaction {
     use super::*;
-    use crate::theme_mode::{ThemeMode, adapt_buffer};
+    use crate::theme_mode::{ThemeMode, adapt_buffer_for_display};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
@@ -755,9 +782,8 @@ mod light_theme_interaction {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         buf.content[0].fg = Color::Rgb(255, 100, 100); // the error default
-        // Same order as `ui::draw`: theme adaptation first, palette last.
-        adapt_buffer(&mut buf, ThemeMode::Light);
-        adapt_buffer_for_palette(&mut buf);
+        // The actual display pipeline attributes overrides before contrast repair.
+        adapt_buffer_for_display(&mut buf);
 
         let rendered = match buf.content[0].fg {
             Color::Rgb(r, g, b) => (r, g, b),
@@ -768,6 +794,34 @@ mod light_theme_interaction {
             rendered, chosen,
             "the user's configured color must reach the terminal unmodified"
         );
+
+        // These three native grays all need contrast repair. Matching after
+        // clamping loses their identities and sends all three to Tool's color.
+        let roles = [
+            (Role::Tool, (171, 60, 58)),
+            (Role::Dim, (20, 80, 100)),
+            (Role::Pending, (125, 64, 110)),
+        ];
+        let mut palette = Palette::default();
+        for (role, chosen) in roles {
+            palette.set(role, chosen);
+        }
+        palette.set(Role::UserBg, (232, 235, 238));
+        set_palette(palette);
+        for background in [Color::Reset, role_color(Role::UserBg)] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+            for (cell, (role, _)) in buf.content.iter_mut().zip(roles) {
+                cell.fg = role_color(role);
+                cell.bg = background;
+            }
+            adapt_buffer_for_display(&mut buf);
+            for (cell, (_, (r, g, b))) in buf.content.iter().zip(roles) {
+                assert_eq!(cell.fg, crate::color::rgb(r, g, b));
+                if background != Color::Reset {
+                    assert_eq!(cell.bg, crate::color::rgb(232, 235, 238));
+                }
+            }
+        }
     }
 }
 

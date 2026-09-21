@@ -366,6 +366,16 @@ impl Drop for JcodeClient {
 }
 
 impl JcodeClient {
+    /// Retain this client's shared SSH master for reconnecting independent API
+    /// channels. Returns None for isolated or already closed SSH channels.
+    #[cfg(unix)]
+    pub fn shared_ssh_transport(&self) -> Option<crate::SharedSshTransport> {
+        self.inner
+            .ssh_process
+            .as_ref()
+            .and_then(|process| process.shared_transport())
+    }
+
     /// Connect to a remote shared harness using system SSH credentials/config.
     ///
     /// The remote must have `jcode api --stdio`. Dropping the last client clone
@@ -1203,12 +1213,27 @@ impl JcodeClient {
             Some(Duration::from_secs(10)),
         )?;
         let mut result = TurnResult::default();
+        let mut text_stream = TextCollector::default();
         while let Some(event) = stream.next() {
             if let Some(on_event) = &options.on_event {
                 on_event(&event);
             }
             match event {
-                ApiEvent::TextDelta { text, .. } => result.text.push_str(&text),
+                ApiEvent::TextDelta {
+                    text, message_id, ..
+                } => {
+                    text_stream.message(message_id).0.text.push_str(&text);
+                }
+                ApiEvent::TextReplace {
+                    text, message_id, ..
+                } => {
+                    text_stream.message(message_id).0.text = text;
+                }
+                ApiEvent::TextDone { message_id, .. } => {
+                    if let Some(index) = text_stream.index(&message_id) {
+                        text_stream.parts[index].1 = true;
+                    }
+                }
                 ApiEvent::ReasoningDelta { text, .. } => result.reasoning.push_str(&text),
                 ApiEvent::ToolDone {
                     call_id,
@@ -1239,7 +1264,10 @@ impl JcodeClient {
                 ApiEvent::PermissionRequest { request_id, .. } if options.auto_approve => {
                     self.respond_to_permission(session_id, &request_id, PermissionDecision::Allow)?;
                 }
-                ApiEvent::TurnDone { .. } => return Ok(result),
+                ApiEvent::TurnDone { .. } => {
+                    text_stream.finish(&mut result);
+                    return Ok(result);
+                }
                 ApiEvent::Error { code, message } => {
                     return Err(Error::new(ErrorKind::Harness(code), message));
                 }
@@ -1314,11 +1342,69 @@ pub struct FileStatus {
 /// What one turn produced.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TurnResult {
+    /// All assistant text in the turn, including tool narration.
     pub text: String,
+    /// Last completed assistant message, or aggregate text on older bridges.
+    pub final_text: String,
+    /// Framed messages. Empty when connected to an older, unframed bridge.
+    pub messages: Vec<AssistantTextMessage>,
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     /// Usage from the latest provider call in this turn, not a sum of calls.
     pub usage: Option<Usage>,
+}
+
+/// One assistant text message, excluding interleaved reasoning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssistantTextMessage {
+    /// Stream-local correlator, not a persisted history message id.
+    pub message_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Default)]
+struct TextCollector {
+    parts: Vec<(AssistantTextMessage, bool)>,
+}
+
+impl TextCollector {
+    fn index(&self, id: &Option<String>) -> Option<usize> {
+        self.parts
+            .iter()
+            .rposition(|(part, done)| &part.message_id == id && (id.is_some() || !done))
+    }
+
+    fn message(&mut self, id: Option<String>) -> &mut (AssistantTextMessage, bool) {
+        let index = self.index(&id).unwrap_or_else(|| {
+            self.parts.push((
+                AssistantTextMessage {
+                    message_id: id,
+                    text: String::new(),
+                },
+                false,
+            ));
+            self.parts.len() - 1
+        });
+        &mut self.parts[index]
+    }
+
+    fn finish(self, result: &mut TurnResult) {
+        result.text = self
+            .parts
+            .iter()
+            .map(|(part, _)| part.text.as_str())
+            .collect();
+        result.messages = self
+            .parts
+            .into_iter()
+            .filter_map(|(part, done)| (done && !part.text.is_empty()).then_some(part))
+            .collect();
+        result.final_text = result
+            .messages
+            .last()
+            .map(|part| part.text.clone())
+            .unwrap_or_else(|| result.text.clone());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1401,6 +1487,25 @@ fn start_global_child(parent: &JcodeClient, control: &Arc<GlobalEventControl>, s
     let connection = if let Some(options) = &parent.ssh_options {
         let mut options = options.clone();
         options.client_name = format!("{}/global-events", parent.inner.client_name);
+        #[cfg(unix)]
+        let shared = parent.shared_ssh_transport();
+        #[cfg(unix)]
+        if let Some(shared) = shared {
+            shared.connect()
+        } else if parent
+            .inner
+            .ssh_process
+            .as_ref()
+            .is_some_and(|process| process.was_shared)
+        {
+            Err(Error::new(
+                ErrorKind::Disconnected,
+                "shared SSH parent channel is closed",
+            ))
+        } else {
+            JcodeClient::connect_ssh(options)
+        }
+        #[cfg(not(unix))]
         JcodeClient::connect_ssh(options)
     } else {
         JcodeClient::connect(ConnectOptions {
@@ -1539,12 +1644,15 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
     use ApiEvent::*;
     match event {
         TextDelta { session_id, .. }
+        | TextDone { session_id, .. }
+        | TextReplace { session_id, .. }
         | ReasoningDelta { session_id, .. }
         | ReasoningDone { session_id, .. }
         | ToolStart { session_id, .. }
         | ToolInputDelta { session_id, .. }
         | ToolExec { session_id, .. }
         | ToolDone { session_id, .. }
+        | SidePanelState { session_id, .. }
         | TokenUsage { session_id, .. }
         | TurnDone { session_id, .. }
         | BackgroundProgress { session_id, .. }
