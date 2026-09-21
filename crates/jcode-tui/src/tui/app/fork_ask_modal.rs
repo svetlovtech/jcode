@@ -302,11 +302,16 @@ pub(super) fn handle_modal_key(
         AskModalAction::Submit(answer) => {
             app.pending_ask_answer = Some((modal.request_id.clone(), answer));
             app.pending_ask_modal = None;
+            // Fork: the blocking ask_user tool generates no server traffic, so
+            // without an explicit dispatch the staged answer would wait for the
+            // next unrelated event. Arm the followup dispatcher immediately.
+            app.pending_queued_dispatch = true;
         }
         AskModalAction::Cancel => {
             let request_id = modal.request_id.clone();
             app.pending_ask_answer = Some((request_id, NO_ANSWER.to_string()));
             app.pending_ask_modal = None;
+            app.pending_queued_dispatch = true;
         }
     }
     true
@@ -856,6 +861,10 @@ mod tests {
         // pending_stdin is intentionally kept: send_answer reads request_id
         // from it when flushing the staged answer.
         assert!(app.pending_stdin.is_some());
+        // Fork: the dispatcher must be armed so the staged answer flushes at
+        // once instead of waiting for the next server event (a blocked
+        // ask_user tool produces none).
+        assert!(app.pending_queued_dispatch);
     }
 
     #[test]
