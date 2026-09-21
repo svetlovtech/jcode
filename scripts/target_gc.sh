@@ -12,22 +12,33 @@
 # builds stay fast after a cleanup.
 #
 # Usage:
-#   scripts/target_gc.sh [--dry-run]     # default: clean debug + selfdev
+#   scripts/target_gc.sh [--dry-run] [--max-age-days N] [profile...]
+#
+# Besides orphaned deps artifacts, the script optionally prunes stale
+# incremental-cache sessions: `target/<profile>/incremental/<pkg>-<hash>`
+# directories whose last modification is older than --max-age-days (default 7).
+# Cargo recreates them on the next build; only cold sessions are removed.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
 dry_run=0
-profiles=(debug selfdev)
+max_age_days=7
+profiles=()
 args=()
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) dry_run=1 ;;
-    *) args+=("$arg") ;;
+    --max-age-days)
+      shift
+      max_age_days="${1:?--max-age-days needs a value}"
+      ;;
+    *) profiles+=("$1") ;;
   esac
+  shift
 done
-if [ ${#args[@]} -gt 0 ]; then profiles=("${args[@]}"); fi
+if [ ${#profiles[@]} -eq 0 ]; then profiles=(debug selfdev); fi
 
 total_freed=0
 
@@ -69,8 +80,28 @@ for profile in "${profiles[@]}"; do
     fi
   done < <(find "$deps" -maxdepth 1 -type f -name '*.d' -print0)
 
-  echo "$profile: $removed orphans, $((bytes / 1048576)) MB"
+  echo "$profile: $removed orphan artifacts, $((bytes / 1048576)) MB"
   total_freed=$((total_freed + bytes))
+
+  # Stale incremental-cache sessions (cold for --max-age-days).
+  incr="target/$profile/incremental"
+  if [ -d "$incr" ] && [ "$max_age_days" -gt 0 ]; then
+    inc_removed=0
+    inc_bytes=0
+    while IFS= read -r -d '' d; do
+      if [ -z "$(find "$d" -type f -mtime -"$max_age_days" -print -quit)" ]; then
+        size=$(du -sb "$d" | cut -f1)
+        if [ "$dry_run" -eq 1 ]; then
+          echo "[dry-run] would remove $d ($((size / 1048576)) MB, cold ${max_age_days}d+)"
+        else
+          rm -rf "$d"
+        fi
+        inc_removed=$((inc_removed + 1)); inc_bytes=$((inc_bytes + size))
+      fi
+    done < <(find "$incr" -mindepth 1 -maxdepth 1 -type d -print0)
+    echo "$profile: $inc_removed stale incremental sessions, $((inc_bytes / 1048576)) MB"
+    total_freed=$((total_freed + inc_bytes))
+  fi
 done
 
 echo "total: $((total_freed / 1048576)) MB $([ "$dry_run" -eq 1 ] && echo '(dry-run)')"
