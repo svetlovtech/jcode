@@ -923,4 +923,34 @@ mod tests {
         assert!(app.pending_stdin.is_none());
         assert!(app.pending_ask_answer.is_none());
     }
+
+    #[test]
+    fn resolved_elsewhere_closes_modal_and_reports_answer() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(true))), &mut remote);
+        assert!(app.pending_ask_modal.is_some());
+
+        crate::tui::app::fork_ask::on_question_resolved_elsewhere(&mut app, "из Telegram");
+        assert!(app.pending_ask_modal.is_none());
+        assert!(app.pending_stdin.is_none());
+        assert!(app.pending_ask_answer.is_none());
+        // The transcript must say which answer won the race.
+        let last = app.display_messages.last().unwrap();
+        assert!(last.content.contains("из Telegram"));
+    }
+
+    #[test]
+    fn resolved_elsewhere_is_noop_without_open_modal() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        // No modal open: a stale event must not push a stray transcript line.
+        crate::tui::app::fork_ask::on_question_resolved_elsewhere(&mut app, "поздно");
+        assert!(app.display_messages.is_empty());
+    }
 }
