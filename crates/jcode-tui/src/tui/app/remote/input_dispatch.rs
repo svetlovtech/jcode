@@ -187,7 +187,7 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
     // the composer instead of dispatching, in remote mode too. Handled here
     // (before skills) so a prompt named like a skill wins - prompts are the
     // lighter, user-owned surface.
-    if app_mod::commands_dispatch::handle_quick_prompt_command(app, raw_input.trim()) {
+    if app_mod::quick_prompts::handle_quick_prompt_command(app, raw_input.trim()) {
         return Ok(());
     }
 

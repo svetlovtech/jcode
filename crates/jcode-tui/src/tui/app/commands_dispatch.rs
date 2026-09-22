@@ -140,66 +140,6 @@ pub(super) fn handle_ssh_unsupported_command(app: &mut App, input: &str) -> bool
         )
 }
 
-/// Fork: insert a quick prompt's text into the composer.
-///
-/// `/name` (optionally followed by extra typed text) resolves against
-/// `[prompts]` in config.toml. The prompt text replaces the command; any
-/// trailing text the user typed after the command name is appended so
-/// `/review focus on the auth module` expands to "<review text> focus on
-/// the auth module". `$ARGUMENTS` / `$1`-`$9` in the text are substituted
-/// from the trailing words when present, otherwise left as-is for editing.
-/// Returns `true` when `input` named a configured quick prompt.
-pub(crate) fn handle_quick_prompt_command(app: &mut App, input: &str) -> bool {
-    let Some(command) = input.strip_prefix('/') else {
-        return false;
-    };
-    let (name, trailing) = match command.split_once(char::is_whitespace) {
-        Some((name, rest)) => (name, Some(rest.trim())),
-        None => (command, None),
-    };
-    if name.is_empty() {
-        return false;
-    }
-
-    let Some((_, text)) = crate::config::config()
-        .prompts
-        .valid_entries()
-        .into_iter()
-        .find(|(entry_name, _)| entry_name == name)
-    else {
-        return false;
-    };
-
-    // Trailing words substitute $ARGUMENTS / positional placeholders.
-    let args: Vec<&str> = trailing
-        .filter(|rest| !rest.is_empty())
-        .map(|rest| rest.split_whitespace().collect())
-        .unwrap_or_default();
-    let expanded = if args.is_empty() {
-        text
-    } else {
-        let mut out = text;
-        for (index, arg) in args.iter().enumerate() {
-            out = out.replace(&format!("${}", index + 1), arg);
-        }
-        let joined = args.join(" ");
-        if out.contains("$ARGUMENTS") {
-            out.replace("$ARGUMENTS", &joined)
-        } else {
-            out
-        }
-    };
-
-    // Replace the composer content with the expanded prompt (undo-able), as
-    // if the user typed it.
-    app.remember_input_undo_state();
-    app.input = expanded;
-    app.cursor_pos = app.input.len();
-    app.reset_tab_completion();
-    app.set_status_notice(format!("Quick prompt /{name} inserted - edit and send"));
-    true
-}
-
 /// Run `trimmed` against every locally handled slash command.
 ///
 /// Returns `true` when a handler claimed the input. Callers own presentation
@@ -212,7 +152,7 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
     // Fork: quick prompts ([prompts] in config.toml). A matching /name
     // replaces the command with the prompt text in the composer so the user
     // can edit and extend it before sending - never dispatched to the turn.
-    if handle_quick_prompt_command(app, trimmed) {
+    if super::quick_prompts::handle_quick_prompt_command(app, trimmed) {
         return true;
     }
     // Anything not explicitly audited as presentation-only must stay on the

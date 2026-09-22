@@ -1,9 +1,9 @@
 #![cfg_attr(test, allow(clippy::items_after_test_module))]
 
 use super::{
-    App, ContentBlock, CostState, DisplayMessage, Message, ProcessingStatus, Role, SendAction,
-    TokenAccounting, commands, ctrl_bracket_fallback_to_esc, is_context_limit_error,
-    is_request_payload_too_large_error, remote,
+    App, ContentBlock, DisplayMessage, Message, ProcessingStatus, Role, SendAction, commands,
+    ctrl_bracket_fallback_to_esc, is_context_limit_error, is_request_payload_too_large_error,
+    remote,
 };
 use crate::bus::{
     Bus, BusEvent, ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
@@ -3661,26 +3661,6 @@ impl App {
         self.streaming.streaming_context_stale = false;
         self.streaming.streaming_usage_call_reset_pending = false;
         self.kv_cache.current_api_usage_recorded = false;
-    }
-
-    /// Reset the accumulated session usage totals that survive a turn: the
-    /// aggregate token counters, the priced dollar cost, and the cached
-    /// per-turn stats. `/clear` discards the whole transcript, so its totals
-    /// (the "Σ tokens" footer, the session cost, `/cache` and `/info`) must
-    /// restart from zero like everything else. Both the local
-    /// (`reset_current_session`) and remote (`/clear` in remote/key_handling)
-    /// paths call this so they cannot drift apart.
-    pub(super) fn reset_session_usage_totals(&mut self) {
-        self.token_accounting = TokenAccounting::default();
-        self.cost = CostState::default();
-        self.last_turn_input_tokens = None;
-        self.last_api_completed = None;
-        self.last_api_completed_provider = None;
-        self.last_api_completed_model = None;
-        // Restored-from-history totals: the new session has no history, so a
-        // later History event (e.g. a reload) must re-seed them from scratch.
-        self.remote_total_tokens = None;
-        self.remote_token_usage_totals = None;
     }
 
     /// Discard all client-side render state for the current streaming attempt:

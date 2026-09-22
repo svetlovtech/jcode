@@ -78,6 +78,9 @@ pub(crate) mod helpers;
 mod hotkey_feedback;
 pub(crate) mod idle_animation_repaint;
 mod idle_heap_release;
+/// Fork: quick prompts ([prompts] in config.toml) - expansion, palette
+/// fingerprint, and hint interning (all logic in the dedicated module).
+pub(crate) mod quick_prompts;
 mod inline_interactive;
 mod input;
 mod input_help;
@@ -88,6 +91,9 @@ mod mcp_command;
 mod misc_ui;
 mod model_context;
 mod navigation;
+/// Fork: session usage-total lifecycle (the `/clear` reset for accumulated
+/// token/cost totals, shared by both clear paths).
+mod session_usage;
 mod observe;
 pub(crate) mod onboarding_flow;
 mod onboarding_flow_control;

@@ -111,7 +111,8 @@ attached to a running daemon (wire clients) are told to use the agent's
 
 
 Fork code is concentrated in dedicated modules; upstream files carry only
-small, `// Fork:`-marked call sites:
+small, `// Fork:`-marked call sites. The authoritative module map, hook-site
+inventory, and sync recipe live in [FORK.md](FORK.md). Summary:
 
 - `jcode-base/src/mcp/remote.rs` - remote transport, `client.rs` keeps one
   branch point (`ClientTransport::{Stdio, Remote}`).
@@ -123,6 +124,12 @@ small, `// Fork:`-marked call sites:
 - `jcode-tui/src/tui/app/fork_ask.rs` - ask_user TUI prompt/answer flow;
   `server_events.rs`, `remote.rs`, `input_dispatch.rs`, `key_handling.rs`
   each hold a 3-10 line hook.
+- `jcode-tui/src/tui/app/fork_ask_modal.rs` - the interactive ask_user modal.
+- `jcode-tui/src/tui/app/mcp_command.rs` - `/mcp` slash command + picker.
+- `jcode-tui/src/tui/app/quick_prompts.rs` - quick-prompt expansion, palette
+  fingerprint, hint interning.
+- `jcode-tui/src/tui/app/session_usage.rs` - `/clear` reset for accumulated
+  token/cost totals (shared by both clear paths).
 
 `jcode-tui/src/tui/backend.rs` and other files with formatting-only drift
 are kept byte-identical to upstream.
@@ -134,4 +141,5 @@ cargo check -p jcode-base -p jcode-app-core -p jcode-tui
 cargo test -p jcode-base --lib chat::
 cargo test -p jcode-base --lib mcp::
 cargo test -p jcode-app-core --lib permissions::
+cargo test -p jcode-tui --lib fork_ask_modal
 ```
