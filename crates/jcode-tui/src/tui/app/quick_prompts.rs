@@ -70,6 +70,33 @@ pub(crate) fn handle_quick_prompt_command(app: &mut App, input: &str) -> bool {
     true
 }
 
+/// Fork: promote quick-prompt entries to the front of the slash palette.
+///
+/// The palette shows only `COMMAND_SUGGESTION_VISIBLE_LIMIT` rows, and a bare
+/// `/` prefix-matches ~60 commands that then sort by length - the user's own
+/// prompts end up on the invisible second screen. Quick prompts are
+/// deliberate user-owned shortcuts, so any of them that survived ranking are
+/// moved to the front; relative order of everything else is preserved.
+/// Non-matching prompts were already filtered out by the ranker, so typing a
+/// specific command never drags unrelated prompts in.
+pub(crate) fn promote_in_suggestions(
+    suggestions: Vec<(String, &'static str)>,
+) -> Vec<(String, &'static str)> {
+    let names: std::collections::HashSet<String> = crate::config::config()
+        .prompts
+        .valid_entries()
+        .into_iter()
+        .map(|(name, _)| format!("/{name}"))
+        .collect();
+    if names.is_empty() || !suggestions.iter().any(|(cmd, _)| names.contains(cmd)) {
+        return suggestions;
+    }
+    let (promoted, rest): (Vec<_>, Vec<_>) = suggestions
+        .into_iter()
+        .partition(|(cmd, _)| names.contains(cmd));
+    promoted.into_iter().chain(rest).collect()
+}
+
 /// Fingerprint the quick-prompt sources so the palette notices prompt-file
 /// changes without polling: the config reload generation (catches config.toml
 /// edits) hashed with each prompt file's NAME and mtime. Names matter as much
@@ -147,13 +174,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fingerprint_is_stable_for_identical_sources() {
-        let first = prompt_sources_fingerprint();
-        let second = prompt_sources_fingerprint();
-        assert_eq!(first, second, "same sources must hash identically");
-    }
-
-    #[test]
     fn intern_hint_deduplicates_by_content() {
         let a = intern_hint("Insert prompt: review");
         let b = intern_hint("Insert prompt: review");
@@ -162,4 +182,9 @@ mod tests {
         let c = intern_hint("Insert prompt: other");
         assert!(!std::ptr::eq(a, c), "distinct content must not alias");
     }
+
+    // `prompt_sources_fingerprint` stability is covered end-to-end by
+    // `tests/quick_prompts.rs::prompt_file_edits_are_visible_without_restart`;
+    // a direct stability assert here would race the parallel suite's
+    // prompt-file mutations.
 }

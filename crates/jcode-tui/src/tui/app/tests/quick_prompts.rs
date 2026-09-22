@@ -109,6 +109,45 @@ fn quick_prompt_candidates_appear_in_the_palette() {
 }
 
 #[test]
+fn quick_prompts_surface_at_the_front_of_the_bare_slash_palette() {
+    let _lock = quick_prompts_lock();
+    let (temp, prev_home) =
+        quick_prompts_env("[prompts]\ndiff-review = \"Review it.\"\nsum = \"Summarize.\"\n");
+    let app = create_test_app();
+
+    // A bare `/` prefix-matches ~60 commands that sort by length; without
+    // promotion the 8-row window hid everything but the shortest prompts.
+    let candidates = app.get_suggestions_for("/");
+    let limit = crate::tui::app::COMMAND_SUGGESTION_VISIBLE_LIMIT;
+    let visible = &candidates[..candidates.len().min(limit)];
+    assert!(
+        visible.iter().any(|(cmd, _)| cmd == "/diff-review"),
+        "diff-review prompt must be in the visible window; got {visible:?}"
+    );
+    assert!(
+        visible.iter().any(|(cmd, _)| cmd == "/sum"),
+        "sum prompt must be in the visible window; got {visible:?}"
+    );
+    // All matching prompts come before any non-prompt command.
+    let first_prompt = candidates.iter().position(|(cmd, _)| cmd == "/diff-review");
+    let first_command = candidates
+        .iter()
+        .position(|(cmd, _)| cmd == "/clear" || cmd == "/model");
+    if let (Some(p), Some(c)) = (first_prompt, first_command) {
+        assert!(p < c, "prompts must rank before generic commands");
+    }
+
+    // A specific command keeps winning its own query: an unmatched prompt
+    // must not be dragged into its suggestions.
+    let specific = app.get_suggestions_for("/clear");
+    assert!(
+        !specific.iter().any(|(cmd, _)| cmd == "/diff-review"),
+        "typing /clear must not surface unrelated prompts; got {specific:?}"
+    );
+    restore_quick_prompts_env(temp, prev_home);
+}
+
+#[test]
 fn quick_prompt_name_over_64_chars_is_rejected() {
     let _lock = quick_prompts_lock();
     let long_name = "a".repeat(65);
