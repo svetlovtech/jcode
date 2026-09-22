@@ -291,6 +291,9 @@ pub(super) fn reset_current_session(app: &mut App) {
     // remote/key_handling.rs does the same).
     app.clear_streaming_render_state();
     app.clear_live_usage_state();
+    // The whole transcript (and its accumulated usage) is discarded: the
+    // Σ-tokens footer, session cost, and /cache totals must restart at zero.
+    app.reset_session_usage_totals();
     // The WHOLE transcript is discarded, so every entry in the process-global
     // ACTIVE_DIAGRAMS registry is now orphaned; drop them so the pinned pane
     // and the Margin info widget (which draws get_active_diagrams()[0])

@@ -1744,6 +1744,10 @@ async fn handle_remote_key_internal(
                     app.clear_inline_image_state();
                     app.clear_streaming_render_state();
                     app.clear_live_usage_state();
+                    // The whole transcript (and its accumulated usage) is
+                    // discarded: the Σ-tokens footer, session cost, and /cache
+                    // totals must restart at zero (same as the local /clear).
+                    app.reset_session_usage_totals();
                     // Full transcript discard: diagrams and side panel pages
                     // are both orphaned (same rationale as
                     // reset_current_session; side panel is #605).

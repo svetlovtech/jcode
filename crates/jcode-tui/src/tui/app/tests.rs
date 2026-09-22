@@ -1741,6 +1741,24 @@ fn seed_stale_clear_usage(app: &mut App) {
     app.streaming.streaming_context_stale = true;
     app.streaming.streaming_usage_call_reset_pending = true;
     app.kv_cache.current_api_usage_recorded = true;
+    // Accumulated totals from earlier turns (Σ-tokens footer, cost widget).
+    app.token_accounting.total_input_tokens = 180_000;
+    app.token_accounting.total_output_tokens = 9_000;
+    app.cost.total_cost = 1.25;
+    app.last_turn_input_tokens = Some(95_000);
+    app.last_api_completed = Some(Instant::now());
+    app.last_api_completed_provider = Some("anthropic".to_string());
+    app.last_api_completed_model = Some("claude-test".to_string());
+    app.remote_total_tokens = Some((150_000, 8_000));
+    app.remote_token_usage_totals = Some(crate::protocol::TokenUsageTotals {
+        cache_prompt_tokens: Some(120_000),
+        messages_with_token_usage: 12,
+        input_tokens: 150_000,
+        output_tokens: 8_000,
+        cache_reported_input_tokens: 150_000,
+        cache_read_input_tokens: 100_000,
+        cache_creation_input_tokens: 20_000,
+    });
 }
 
 fn assert_clear_usage_reset(app: &App) {
@@ -1752,6 +1770,16 @@ fn assert_clear_usage_reset(app: &App) {
     assert!(!app.streaming.streaming_context_stale);
     assert!(!app.streaming.streaming_usage_call_reset_pending);
     assert!(!app.kv_cache.current_api_usage_recorded);
+    // Accumulated totals must restart with the fresh session.
+    assert_eq!(app.token_accounting.total_input_tokens, 0);
+    assert_eq!(app.token_accounting.total_output_tokens, 0);
+    assert_eq!(app.cost.total_cost, 0.0);
+    assert_eq!(app.last_turn_input_tokens, None);
+    assert_eq!(app.last_api_completed, None);
+    assert_eq!(app.last_api_completed_provider, None);
+    assert_eq!(app.last_api_completed_model, None);
+    assert_eq!(app.remote_total_tokens, None);
+    assert_eq!(app.remote_token_usage_totals, None);
 }
 
 fn seed_stale_clear_image(app: &mut App) -> u64 {
