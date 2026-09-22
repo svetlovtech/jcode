@@ -338,29 +338,53 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         return;
     }
 
-    // Fork: the box height must be IDENTICAL in every modal state (option
-    // list, custom-answer input). The modal renders as a late overlay on top
-    // of the chat; if the box shrank when custom_mode opened, cells of the
-    // previous, larger box were left on screen (stale "1. …" rows) until some
-    // other keypress forced a full repaint. Always size the box for the full
-    // option list and pad the short custom-mode body with blank background
-    // lines instead.
-    let list_rows = modal.spec.options.len() + 1;
-    let description_rows = modal
-        .spec
-        .options
-        .iter()
-        .filter(|option| !option.description.is_empty())
-        .count();
-    // +2 for the custom-mode input line and its Esc hint (list rows already
-    // cover the custom input's single line).
-    let height = (2 + 2 + list_rows + description_rows + 2).min(area.height as usize) as u16;
-
     let width = (area.width * 3 / 5)
         .min(80)
         .max(1)
         .min(area.width.saturating_sub(4))
         .max(1);
+    let inner_width = width.saturating_sub(2) as usize;
+
+    // Fork: the box height must be IDENTICAL in every modal state (option
+    // list, custom-answer input). The modal renders as a late overlay on top
+    // of the chat; if the box changed size between states, cells of the
+    // previous, larger box were left on screen (stale "1. …" rows) until some
+    // other keypress forced a full repaint. The height is therefore computed
+    // once from the full list-mode layout, and the short custom-mode body is
+    // padded with blank background lines instead.
+    //
+    // Fork: long questions/labels/descriptions are WORD-WRAPPED (display-width
+    // aware) instead of truncated into "…", so the full text stays readable.
+    // The wrapped line counts drive the height computation above.
+    let spec = &modal.spec;
+    let question_lines = wrap_display(&spec.question, inner_width);
+    // Row budget mirrors the render below: the marker+state prefix before an
+    // option label is 6 columns wide ("› " + "[x] " / "N. "), descriptions sit
+    // behind a 4-column indent.
+    let label_width = inner_width.saturating_sub(6);
+    let desc_width = inner_width.saturating_sub(4);
+    let option_row_counts: Vec<usize> = spec
+        .options
+        .iter()
+        .map(|option| {
+            let label_rows = wrap_display(&option.label, label_width).len().max(1);
+            let desc_rows = if option.description.is_empty() {
+                0
+            } else {
+                wrap_display(&option.description, desc_width).len()
+            };
+            label_rows + desc_rows
+        })
+        .collect();
+    let list_body_rows = question_lines.len()
+        + option_row_counts.iter().sum::<usize>()
+        + 1 // "own answer" row
+        + 1; // bottom hint line
+    // +1 spare row: keeps a small bottom margin like the previous layout and
+    // guarantees the custom-mode body (question + input + Esc hint + hint)
+    // still fits even for a degenerate spec with zero options.
+    let height = (2 + list_body_rows + 1).min(area.height as usize) as u16;
+
     let vertical = (area.height.saturating_sub(height)) / 2;
     let horizontal = (area.width.saturating_sub(width)) / 2;
     let box_area = Rect::new(horizontal, vertical, width, height.max(3));
@@ -370,7 +394,6 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
     let accent = accent_color();
     let dim = dim_color();
 
-    let spec = &modal.spec;
     let mut title_spans = vec![Span::styled(
         format!("❓ {}", spec.header),
         Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -388,13 +411,14 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
         ));
     }
 
-    let inner_width = box_area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(vec![Span::styled(
-        truncate_display(&spec.question, inner_width),
-        Style::default().add_modifier(Modifier::BOLD),
-    )]));
+    for question_line in &question_lines {
+        lines.push(Line::from(vec![Span::styled(
+            question_line.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )]));
+    }
 
     if modal.custom_mode {
         // One-line free-form input with cursor block.
@@ -429,29 +453,42 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
             } else {
                 Style::default()
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{marker} "),
-                    if cursor_here {
-                        Style::default().fg(accent)
-                    } else {
-                        Style::default()
-                    },
-                ),
-                Span::styled(state, state_style),
-                Span::styled(
-                    truncate_display(&option.label, inner_width.saturating_sub(6)),
-                    label_style,
-                ),
-            ]));
+            let marker_style = if cursor_here {
+                Style::default().fg(accent)
+            } else {
+                Style::default()
+            };
+            // Wrapped label rows: the first row carries the marker/state
+            // prefix, continuation rows are indented under the label start.
+            let state_len = state.chars().count();
+            let label_lines = wrap_display(&option.label, label_width);
+            let label_lines = if label_lines.is_empty() {
+                vec![String::new()]
+            } else {
+                label_lines
+            };
+            for (label_index, label_line) in label_lines.iter().enumerate() {
+                if label_index == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{marker} "), marker_style),
+                        Span::styled(state.clone(), state_style),
+                        Span::styled(label_line.clone(), label_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw(" ".repeat(2 + state_len)),
+                        Span::styled(label_line.clone(), label_style),
+                    ]));
+                }
+            }
             if !option.description.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "    {}",
-                        truncate_display(&option.description, inner_width.saturating_sub(4))
-                    ),
-                    Style::default().fg(dim).add_modifier(Modifier::ITALIC),
-                )));
+                let description_style = Style::default().fg(dim).add_modifier(Modifier::ITALIC);
+                for description_line in wrap_display(&option.description, desc_width) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {description_line}"),
+                        description_style,
+                    )));
+                }
             }
         }
 
@@ -527,6 +564,69 @@ fn truncate_display(text: &str, max_width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// Word-wrap `text` into lines of at most `max_width` display columns.
+///
+/// Breaks preferentially between words; a single word wider than the line is
+/// hard-broken at a character boundary. Explicit `\n` in the text start a new
+/// line. Continuation lines are returned WITHOUT any indent; callers add the
+/// prefix that matches the row they continue.
+fn wrap_display(text: &str, max_width: usize) -> Vec<String> {
+    let char_width =
+        |ch: char| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    let mut lines: Vec<String> = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        let mut used = 0usize;
+        for word in paragraph.split_whitespace() {
+            let mut rest = word;
+            while !rest.is_empty() {
+                let rest_width = unicode_width::UnicodeWidthStr::width(rest);
+                let separator = usize::from(!line.is_empty());
+                if used + separator + rest_width <= max_width {
+                    if separator == 1 {
+                        line.push(' ');
+                    }
+                    line.push_str(rest);
+                    used += separator + rest_width;
+                    break;
+                }
+                if !line.is_empty() {
+                    // Flush the current line and retry the whole word on a
+                    // fresh one.
+                    lines.push(std::mem::take(&mut line));
+                    used = 0;
+                    continue;
+                }
+                // The word alone exceeds the line width: hard-break it.
+                let mut take_bytes = 0usize;
+                let mut acc = 0usize;
+                for ch in rest.chars() {
+                    let ch_width = char_width(ch);
+                    if acc + ch_width > max_width {
+                        break;
+                    }
+                    acc += ch_width;
+                    take_bytes += ch.len_utf8();
+                }
+                if take_bytes == 0 {
+                    // Degenerate width (narrower than one character): emit the
+                    // remainder as-is instead of stalling.
+                    line.push_str(rest);
+                    break;
+                }
+                let (head, tail) = rest.split_at(take_bytes);
+                lines.push(head.to_string());
+                rest = tail;
+            }
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 // Fork: adapt the wire `AskSpec` into the local UI shape. Kept as a `From`
@@ -902,6 +1002,190 @@ mod tests {
             "own-answer row should be rendered:\n{}",
             lines.join("\n")
         );
+    }
+
+    // ---- wrap_display ----
+
+    #[test]
+    fn wrap_display_short_text_is_single_line() {
+        assert_eq!(wrap_display("Продолжить?", 40), vec!["Продолжить?"]);
+    }
+
+    #[test]
+    fn wrap_display_breaks_between_words() {
+        let lines = wrap_display("один два три четыре", 10);
+        assert_eq!(lines, vec!["один два", "три четыре"]);
+        for line in &lines {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 10,
+                "line '{line}' exceeds width 10"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_display_hard_breaks_oversized_word() {
+        let lines = wrap_display("xxxxxxxxxx", 4);
+        assert_eq!(lines, vec!["xxxx", "xxxx", "xx"]);
+    }
+
+    #[test]
+    fn wrap_display_respects_display_width_not_chars() {
+        // CJK characters are double-width: two of them fill a 4-column line.
+        let lines = wrap_display("安娜", 4);
+        assert_eq!(lines, vec!["安娜"]);
+        assert_eq!(wrap_display("安娜", 3), vec!["安", "娜"]);
+    }
+
+    #[test]
+    fn wrap_display_honors_explicit_newlines() {
+        assert_eq!(wrap_display("a\nb", 40), vec!["a", "b"]);
+        // Explicit \n does not merge adjacent paragraphs back together.
+        assert_eq!(wrap_display("aa\nbb", 2), vec!["aa", "bb"]);
+    }
+
+    #[test]
+    fn wrap_display_empty_text_produces_one_empty_line() {
+        assert_eq!(wrap_display("", 10), vec![String::new()]);
+    }
+
+    // ---- render: wrapping instead of truncation ----
+
+    fn long_description_spec() -> AskSpecUi {
+        AskSpecUi {
+            header: "Выбор подхода".into(),
+            question: "Какой вариант миграции базы данных использовать в этом релизе?".into(),
+            options: vec![
+                AskOptionUi {
+                    label: "Пошаговая миграция".into(),
+                    description: "медленнее, но безопасно: каждая таблица переносится \
+                                  отдельно, на каждом шаге можно остановиться и проверить \
+                                  результат, откат выполняется простым способом"
+                        .into(),
+                },
+                AskOptionUi {
+                    label: "Большой переход".into(),
+                    description: "быстро, но требует остановки сервиса на время \
+                                  переноса всех данных"
+                        .into(),
+                },
+            ],
+            multiple: false,
+            timeout_secs: 0,
+            question_index: 0,
+            question_total: 1,
+        }
+    }
+
+    #[test]
+    fn render_long_description_is_fully_visible_not_truncated() {
+        let modal = AskModal::new("r1".into(), long_description_spec());
+        let lines = render_lines(&modal, 60, 30);
+        let text = lines.join("\n");
+        // The far end of the long description must survive: truncation used to
+        // collapse everything past the first line into "…".
+        assert!(
+            text.contains("результат"),
+            "long description tail should be visible:\n{text}"
+        );
+        assert!(
+            text.contains("способ"),
+            "long description tail should be visible:\n{text}"
+        );
+        // Descriptions themselves must not be collapsed into a "…" tail: any
+        // ellipsis may only appear on rows the spec does not own (the hint
+        // line and the built-in "Свой вариант…" row).
+        for line in &lines {
+            if line.contains('…')
+                && !(line.contains("Свой вариант") || line.contains("цифра"))
+            {
+                panic!("unexpected truncation in a description row:\n{text}");
+            }
+        }
+        // The box must have grown tall enough to hold the wrapped content.
+        assert!(
+            lines.iter().filter(|l| l.contains('│')).count() >= 6,
+            "expected a tall box:\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_long_question_wraps_instead_of_truncating() {
+        let mut spec = long_description_spec();
+        spec.question =
+            "Пожалуйста выберите один из вариантов миграции базы данных описанных ниже"
+                .to_string();
+        let modal = AskModal::new("r1".into(), spec);
+        let lines = render_lines(&modal, 44, 30);
+        let text = lines.join("\n");
+        assert!(
+            text.contains("описанных") && text.contains("ниже"),
+            "question tail should survive wrapping:\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_wrapped_label_continuation_is_indented() {
+        let mut spec = long_description_spec();
+        spec.options.truncate(1);
+        spec.options[0].label = "очень длинное название варианта выбора".to_string();
+        spec.options[0].description.clear();
+        let modal = AskModal::new("r1".into(), spec);
+        let lines = render_lines(&modal, 40, 30);
+        let text = lines.join("\n");
+        // The label tail must appear on its own continuation row, aligned
+        // under the label start (after "› N. ").
+        assert!(
+            text.contains("выбора"),
+            "label tail should be visible:\n{text}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_start().starts_with("очень") == false
+                    && l.contains("очень")),
+            "first label row should carry the marker prefix:\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_box_height_is_identical_in_list_and_custom_modes() {
+        let mut modal = AskModal::new("r1".into(), long_description_spec());
+        let list_lines = render_lines(&modal, 60, 40);
+        let list_top = list_lines.iter().position(|l| l.contains('╭'));
+        let list_bottom = list_lines.iter().rposition(|l| l.contains('╰'));
+
+        modal.cursor = modal.custom_row();
+        modal.custom_mode = true;
+        let custom_lines = render_lines(&modal, 60, 40);
+        let custom_top = custom_lines.iter().position(|l| l.contains('╭'));
+        let custom_bottom = custom_lines.iter().rposition(|l| l.contains('╰'));
+
+        assert_eq!(list_top, custom_top, "box top must not move");
+        assert_eq!(
+            list_bottom, custom_bottom,
+            "box bottom must not move:\nlist:\n{}\ncustom:\n{}",
+            list_lines.join("\n"),
+            custom_lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_narrow_terminal_still_wraps_and_stays_inside_box() {
+        let modal = AskModal::new("r1".into(), long_description_spec());
+        let lines = render_lines(&modal, 24, 40);
+        let text = lines.join("\n");
+        assert!(
+            text.contains("результат") || text.contains("способ"),
+            "wrapped content should stay readable even in a narrow terminal:\n{text}"
+        );
+        // No line may exceed the terminal width (nothing rendered off-screen).
+        for line in &lines {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 24,
+                "line exceeds terminal width:\n{line}"
+            );
+        }
     }
 
     // Fork: end-to-end seam tests — a `ServerEvent::StdinRequest` carrying the
