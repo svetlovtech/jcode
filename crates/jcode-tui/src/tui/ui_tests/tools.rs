@@ -1552,3 +1552,89 @@ fn test_activity_detail_without_intent_matches_summary() {
     assert_eq!(detail, summary);
     assert!(!detail.is_empty());
 }
+
+/// Fork acceptance proof: a completed tool row with a stored timestamp and
+/// duration renders the time badge through the real render_tool_message
+/// pipeline: time-of-day HH:MM:SS plus the compact duration, after the
+/// token count. This is the exact path the transcript draws every frame.
+#[test]
+fn test_tool_row_renders_time_and_duration_badge() {
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Local);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo ok" }),
+            intent: Some("Acceptance: time badge".to_string()),
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp.with_timezone(&chrono::Utc)),
+        tool_duration_ms: Some(48_300),
+    };
+
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let row: String = lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+
+    let expected_stamp = stamp.format("%H:%M:%S").to_string();
+    assert!(
+        row.contains(&expected_stamp),
+        "time-of-day stamp missing from rendered row: {row}"
+    );
+    assert!(
+        row.contains("48.3s"),
+        "duration badge missing from rendered row: {row}"
+    );
+    assert!(
+        row.contains("tok"),
+        "token badge must stay: {row}"
+    );
+}
+
+/// A live row without stored time data (older server, pending reload) keeps
+/// the classic token-only badge: no empty separator pair.
+#[test]
+fn test_tool_row_without_time_data_has_no_badge() {
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-2".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo ok" }),
+            intent: None,
+            thought_signature: None,
+        }),
+        timestamp: None,
+        tool_duration_ms: None,
+    };
+
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let row: String = lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    assert!(!row.contains("::"), "no time stamp expected: {row}");
+}
