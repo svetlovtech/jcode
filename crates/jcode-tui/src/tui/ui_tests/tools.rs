@@ -1789,3 +1789,49 @@ fn test_tool_row_stamp_renders_in_configured_utc3() {
     assert!(!row.contains("0.0s"), "0.0s banned: {row}");
 }
 
+
+/// Fork: pin the exact in-binary UTC+3 arithmetic on the live-session data:
+/// stored 2026-09-23T21:51:28Z with timestamp_tz=UTC+3 must render
+/// 00:51:28 (next day). Complements the acceptance test with a deterministic
+/// no-local-timezone case (the machine's TZ cannot influence it).
+#[test]
+fn test_tool_row_utc3_exact_offset_arithmetic() {
+    let _lock = viewport_snapshot_test_lock();
+    let _guard = isolate_config_home_with("[display]\ntimestamp_tz = \"UTC+3\"\n");
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T21:51:28Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-utc3".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo tz-probe-ok" }),
+            intent: None,
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(2_325),
+    };
+
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let row: String = lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    println!("observed: {row}");
+    assert!(
+        row.contains("00:51:28"),
+        "21:51:28Z + 3h must be 00:51:28 UTC+3: {row}"
+    );
+    assert!(row.contains("2.3s"), "2_325ms must render 2.3s: {row}");
+}
