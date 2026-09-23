@@ -3451,7 +3451,7 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
         ..msg.clone()
     };
     let suffix = super::tool_row_time_suffix(&msg_ms).expect("suffix present");
-    assert!(suffix.contains("0.4s"), "sub-second duration missing: {suffix}");
+    assert!(suffix.contains("400ms"), "sub-second duration missing: {suffix}");
     assert!(!suffix.contains(':'), "no stamp expected: {suffix}");
 
     let msg_none = DisplayMessage {
@@ -3464,8 +3464,10 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
 
 #[test]
 fn tool_row_duration_format_buckets() {
-    assert_eq!(super::format_tool_row_duration(400), "0.4s");
-    assert_eq!(super::format_tool_row_duration(42_000), "42.0s");
+    assert_eq!(super::format_tool_row_duration(45), "45ms");
+    assert_eq!(super::format_tool_row_duration(940), "940ms");
+    assert_eq!(super::format_tool_row_duration(1_000), "1.0s");
+    assert_eq!(super::format_tool_row_duration(42_300), "42.3s");
     assert_eq!(super::format_tool_row_duration(123_400), "2m 3s");
     assert_eq!(super::format_tool_row_duration(3_900_000), "1h 05m");
 }

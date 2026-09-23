@@ -4512,10 +4512,14 @@ fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<String> {
     }
 }
 
-/// Fork: compact tool duration: tenths of a second under a minute ("0.4s",
-/// "42.0s"), minutes + seconds from a minute ("2m 3s"), hours + minutes from
-/// an hour ("1h 05m").
+/// Fork: compact tool duration: milliseconds under a second ("45ms",
+/// "940ms" — a bare "0.0s" is noise), tenths of a second up to a minute
+/// ("42.3s"), minutes + seconds from a minute ("2m 3s"), hours + minutes
+/// from an hour ("1h 05m").
 fn format_tool_row_duration(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
+    }
     if ms < 60_000 {
         return format!("{}.{d}s", ms / 1000, d = (ms % 1000) / 100);
     }

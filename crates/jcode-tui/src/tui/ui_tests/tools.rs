@@ -1638,3 +1638,55 @@ fn test_tool_row_without_time_data_has_no_badge() {
         .unwrap_or_default();
     assert!(!row.contains("::"), "no time stamp expected: {row}");
 }
+
+/// Fork: at a narrow width the time badge must survive as part of the
+/// preserved suffix (token badge + time badge stay, summary truncates) —
+/// the same guarantee the token badge already has.
+#[test]
+fn test_tool_row_time_badge_survives_narrow_width() {
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-n".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo a-very-long-command-output" }),
+            intent: Some("a very long intent summary that must truncate first".to_string()),
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(48_300),
+    };
+
+    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    for width in [40, 56, 72, 120] {
+        let lines = messages::render_tool_message(&msg, width, crate::config::DiffDisplayMode::Off);
+        let row: String = lines
+            .first()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert!(
+            row.contains(&expected_stamp),
+            "stamp lost at width {width}: {row}"
+        );
+        assert!(row.contains("48.3s"), "duration lost at width {width}: {row}");
+        assert!(row.contains("tok"), "tokens lost at width {width}: {row}");
+        let stamp_pos = row.find(&expected_stamp).expect("stamp present");
+        let tok_pos = row.find("tok").expect("tokens present");
+        assert!(
+            tok_pos < stamp_pos,
+            "time badge must trail the token badge at width {width}: {row}"
+        );
+    }
+}
