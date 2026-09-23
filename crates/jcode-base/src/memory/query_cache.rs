@@ -300,3 +300,44 @@ mod tests {
         assert_eq!(lookup("m", "query", false), None);
     }
 }
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_cache_file_degrades_to_empty_not_panic() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(prev) = &self.0 {
+                    crate::env::set_var("JCODE_HOME", prev);
+                } else {
+                    crate::env::remove_var("JCODE_HOME");
+                }
+                query_cache().lock().expect("cache lock").clear();
+            }
+        }
+        let _restore = Restore(prev_home);
+
+        let cache_file = temp.path().join("memory").join("query_embeddings.json");
+        std::fs::create_dir_all(cache_file.parent().unwrap()).expect("mkdir");
+        std::fs::write(&cache_file, b"{ not valid json !!!").expect("write garbage");
+
+        // Miss on garbage: treated as an empty cache, no panic.
+        assert_eq!(lookup("m", "q", false), None);
+
+        // And a store must recover the file (overwrite with a valid one).
+        store("m", "q", &[1.0], false);
+        assert_eq!(lookup("m", "q", false), Some(vec![1.0]));
+        let raw = std::fs::read_to_string(&cache_file).expect("read back");
+        assert!(
+            serde_json::from_str::<QueryCacheFile>(&raw).is_ok(),
+            "file must be valid JSON after recovery"
+        );
+    }
+}
