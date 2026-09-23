@@ -113,6 +113,12 @@ fn evict_lru(file: &mut QueryCacheFile) {
 }
 
 /// Look up a cached query vector. `None` = miss.
+///
+/// A hit bumps the entry's LRU position and rewrites the cache file so the
+/// recency survives a restart (a process that only ever reads would
+/// otherwise let its hot entries age out at the next eviction from an older
+/// order). The rewrite is best-effort: an I/O failure flips the path's
+/// circuit breaker exactly like a failed store.
 pub fn lookup(model_id: &str, formatted_query: &str, test_mode: bool) -> Option<Vec<f32>> {
     let key = cache_key(model_id, formatted_query);
     let path = cache_path(test_mode).ok()?;
@@ -128,6 +134,14 @@ pub fn lookup(model_id: &str, formatted_query: &str, test_mode: bool) -> Option<
     let hit = state.file.vectors.get(&key).map(|c| c.vector.clone());
     if hit.is_some() {
         touch_lru(&mut state.file.order, &key);
+        // Persist the recency bump; a lookup should never fail because of
+        // this, so an I/O error only disables further caching.
+        if let Err(err) = jcode_storage::write_json(&path, &state.file) {
+            state.write_failed = true;
+            crate::logging::warn(&format!(
+                "query embedding cache disabled after write failure: {err}"
+            ));
+        }
     }
     hit
 }
@@ -339,5 +353,110 @@ mod robustness_tests {
             serde_json::from_str::<QueryCacheFile>(&raw).is_ok(),
             "file must be valid JSON after recovery"
         );
+    }
+}
+
+#[cfg(test)]
+mod semantics_tests {
+    use super::*;
+
+    struct HomeRestore(Option<std::ffi::OsString>);
+    impl HomeRestore {
+        fn set(temp: &tempfile::TempDir) -> Self {
+            let prev = std::env::var_os("JCODE_HOME");
+            crate::env::set_var("JCODE_HOME", temp.path());
+            Self(prev)
+        }
+    }
+    impl Drop for HomeRestore {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.0 {
+                crate::env::set_var("JCODE_HOME", prev);
+            } else {
+                crate::env::remove_var("JCODE_HOME");
+            }
+            query_cache().lock().expect("cache lock").clear();
+        }
+    }
+
+    /// f32 vectors must survive the JSON disk roundtrip exactly: serde_json
+    /// serializes f32 with enough digits for a lossless round-trip, and any
+    /// drift here would silently change similarity scores between the run
+    /// that embedded and the run that hit the cache.
+    #[test]
+    fn f32_vector_survives_disk_roundtrip_losslessly() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeRestore::set(&temp);
+
+        // Values chosen to stress short-decimal f32 representation.
+        let vector: Vec<f32> = vec![0.1f32, -1.0 / 3.0f32, 1e-8, 3.402_823_5e38, 0.0, -0.0];
+        store("m", "precision", &vector, false);
+        query_cache().lock().expect("cache lock").clear();
+        assert_eq!(lookup("m", "precision", false), Some(vector));
+    }
+
+    /// A lookup must bump the entry's LRU position ON DISK, not just in the
+    /// in-process state: restart the process (clear + reload) and confirm
+    /// the touched entry was written as most-recent.
+    #[test]
+    fn lookup_touch_persists_across_restart() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeRestore::set(&temp);
+
+        store("m", "first", &[1.0], false);
+        store("m", "second", &[2.0], false);
+        // Touch "first": it must become most-recent.
+        assert_eq!(lookup("m", "first", false), Some(vec![1.0]));
+
+        query_cache().lock().expect("cache lock").clear();
+
+        // Fill beyond... (small-scale check): reload and read the raw file's
+        // order tail.
+        let cache_file = temp.path().join("memory").join("query_embeddings.json");
+        let raw = std::fs::read(&cache_file).expect("read cache");
+        let file: QueryCacheFile = serde_json::from_slice(&raw).expect("parse cache");
+        let first_key = cache_key("m", "first");
+        let second_key = cache_key("m", "second");
+        let first_pos = file.order.iter().position(|k| *k == first_key).expect("first");
+        let second_pos = file
+            .order
+            .iter()
+            .position(|k| *k == second_key)
+            .expect("second");
+        assert!(
+            first_pos > second_pos,
+            "touched 'first' must be more recent than 'second' on disk"
+        );
+    }
+
+    /// Threads hammering lookup/store on the same path must not deadlock or
+    /// wedge the mutex; final state must be readable.
+    #[test]
+    fn concurrent_lookup_store_does_not_deadlock() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeRestore::set(&temp);
+
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        let q = format!("query-{t}-{i}");
+                        assert!(lookup("m", &q, false).is_none());
+                        store("m", &q, &[t as f32, i as f32], false);
+                        let _ = lookup("m", &q, false);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread must not panic");
+        }
+        // Saturate close to the cap: all 200 keys are distinct, all survive.
+        let states = query_cache().lock().expect("cache lock");
+        let file = states.values().next().expect("state exists");
+        assert_eq!(file.file.vectors.len(), 200);
     }
 }
