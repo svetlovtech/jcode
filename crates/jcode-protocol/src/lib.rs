@@ -13,6 +13,7 @@ mod comm_format;
 mod notifications;
 
 pub use comm_format::*;
+pub use jcode_session_types::TurnStopReason;
 pub use notifications::{FeatureToggle, NotificationType};
 
 use jcode_batch_types::BatchProgress;
@@ -178,10 +179,10 @@ impl AuthChanged {
 pub type ReloadRecoverySnapshot = jcode_selfdev_types::ReloadRecoveryDirective;
 
 mod wire;
-pub use wire::TaskGraphNodeSpec;
+pub use wire::{Request, ServerEvent};
+pub use wire::{SessionToolConfig, SessionToolDefinition, TaskGraphNodeSpec};
 // Fork: ask_user wire specs.
 pub use wire::{AskOptionSpec, AskSpec};
-pub use wire::{Request, ServerEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallSummary {
@@ -572,6 +573,9 @@ pub struct AwaitedMemberStatus {
 impl Request {
     pub fn id(&self) -> u64 {
         match self {
+            Request::ConfigureTools { id, .. }
+            | Request::ListTools { id }
+            | Request::ToolResult { id, .. } => *id,
             Request::Message { id, .. } => *id,
             Request::Cancel { id } => *id,
             Request::BackgroundTool { id } => *id,
@@ -608,6 +612,7 @@ impl Request {
             Request::SetFeature { id, .. } => *id,
             Request::SetCompactionMode { id, .. } => *id,
             Request::RenameSession { id, .. } => *id,
+            Request::SetSessionSaved { id, .. } => *id,
             Request::Split { id } => *id,
             Request::Transfer { id } => *id,
             Request::Compact { id } => *id,
@@ -615,6 +620,7 @@ impl Request {
             Request::NotifyAuthChanged { id, .. } => *id,
             Request::SwitchAnthropicAccount { id, .. } => *id,
             Request::SwitchOpenAiAccount { id, .. } => *id,
+            Request::InvalidateOpenAiUsage { id, .. } => *id,
             Request::StdinResponse { id, .. } => *id,
             Request::AgentRegister { id, .. } => *id,
             Request::AgentTask { id, .. } => *id,
