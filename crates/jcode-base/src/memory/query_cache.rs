@@ -511,4 +511,67 @@ mod semantics_tests {
         let file = states.values().next().expect("state exists");
         assert_eq!(file.file.vectors.len(), 200);
     }
+    /// Live dense-path proof through the REAL MemoryManager::find_similar.
+    /// Requires the `embeddings` cargo feature:
+    ///   cargo test -p jcode-base --features embeddings
+    /// Without it the ONNX embedder is stubbed, embed_query errors, and
+    /// find_similar falls back to keyword search (documented fallback; the
+    /// cache file is then never written - not a cache bug).
+    #[test]
+    fn find_similar_populates_the_query_cache_file() {
+        // Without the `embeddings` feature the embedder is a stub that
+        // errors, find_similar falls back to keyword search, and the cache
+        // is never written - skip instead of failing there.
+        if crate::embedding_backend::embed_query_active("skip probe").is_err() {
+            eprintln!("skipping: embeddings feature not compiled");
+            return;
+        }
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(prev) = &self.0 {
+                    crate::env::set_var("JCODE_HOME", prev);
+                } else {
+                    crate::env::remove_var("JCODE_HOME");
+                }
+                query_cache().lock().expect("cache lock").clear();
+            }
+        }
+        let _restore = Restore(prev_home);
+
+        let manager = crate::memory::MemoryManager::new_test();
+        let _id = manager
+            .remember_global(crate::memory::MemoryEntry::new(
+                crate::memory::MemoryCategory::Fact,
+                "The Telegram integration service is called aabee chat",
+            ))
+            .expect("remember");
+
+        let hits = manager
+            .find_similar("Как называется сервис отвечающий за Telegram?", 0.1, 5)
+            .expect("find_similar");
+        let _ = hits;
+
+        let cache_file = temp
+            .path()
+            .join("memory")
+            .join("test")
+            .join("query_embeddings.json");
+        assert!(
+            cache_file.exists(),
+            "find_similar must create the query cache file"
+        );
+        let raw = std::fs::read_to_string(&cache_file).expect("read cache file");
+        assert!(
+            !raw.contains("Telegram"),
+            "cache stores hashes only, never query text: {raw}"
+        );
+        let file: QueryCacheFile = serde_json::from_str(&raw).expect("valid cache shape");
+        assert_eq!(file.vectors.len(), 1, "exactly one query vector cached");
+    }
 }
+
