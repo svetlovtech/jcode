@@ -4495,10 +4495,16 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
 
 /// Fork: time badge for a tool row, rendered after the token count:
 /// " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took).
-/// Both halves appear only when the stored tool result carries the data.
+/// The stamp honors `display.timestamp_tz` (e.g. "UTC+3"); without it the
+/// machine's local timezone is used.
 fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<String> {
+    let tz = crate::config::config().display.timestamp_fixed_offset_secs();
     let stamp = msg.timestamp.map(|ts| {
-        ts.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+        let formatted = match tz.and_then(chrono::FixedOffset::east_opt) {
+            Some(offset) => ts.with_timezone(&offset).format("%H:%M:%S").to_string(),
+            None => ts.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
+        };
+        formatted
     });
     let duration = msg
         .tool_duration_ms

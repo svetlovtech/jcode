@@ -129,6 +129,11 @@ pub struct DisplayConfig {
     /// totals.
     #[serde(default)]
     pub footer_style: String,
+    /// Fork: timezone for timestamps shown in the UI (tool row time badges).
+    /// "local" (default) uses the machine's timezone; otherwise an offset
+    /// like "UTC+3" / "UTC-5" / "UTC+0". Unknown values fall back to local.
+    #[serde(default)]
+    pub timestamp_tz: String,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -169,6 +174,7 @@ impl Default for DisplayConfig {
             usage_display: "left".to_string(),
             overscroll_status: OverscrollStatusMode::default(),
             footer_style: "classic".to_string(),
+            timestamp_tz: String::new(),
         }
     }
 }
@@ -227,6 +233,36 @@ impl DisplayConfig {
             "advanced" | "pi" | "aabee"
         )
     }
+
+    /// Fork: fixed UTC offset (in seconds) for UI timestamps, when the user
+    /// pinned one via `display.timestamp_tz = "UTC+3"`. `None` = use local
+    /// time. Accepts "UTC+3", "utc-5", "UTC+0", bare "3"; anything else
+    /// falls back to local so a typo never breaks rendering.
+    pub fn timestamp_fixed_offset_secs(&self) -> Option<i32> {
+        let raw = self.timestamp_tz.trim().to_ascii_lowercase();
+        if raw.is_empty() || raw == "local" || raw == "system" {
+            return None;
+        }
+        let body = raw
+            .strip_prefix("utc")
+            .map(str::trim)
+            .unwrap_or(&raw);
+        let body = body.strip_prefix(':').unwrap_or(body);
+        let (sign, digits) = match body.strip_prefix('-') {
+            Some(rest) => (-1i32, rest),
+            None => (1i32, body.strip_prefix('+').unwrap_or(body)),
+        };
+        let (hours, minutes) = match digits.split_once(':') {
+            Some((h, m)) => (h.trim(), m.trim()),
+            None => (digits, "0"),
+        };
+        let hours: i32 = hours.parse().ok()?;
+        let minutes: i32 = minutes.parse().ok()?;
+        if !(0..=14).contains(&hours) || !(0..=59).contains(&minutes) {
+            return None;
+        }
+        Some(sign * (hours * 3600 + minutes * 60))
+    }
 }
 
 #[cfg(test)]
@@ -280,5 +316,32 @@ mod tests {
         let classic: DisplayConfig =
             serde_json::from_str(r#"{"footer_style":"classic"}"#).expect("display config");
         assert!(!classic.footer_style_advanced());
+    }
+
+    #[test]
+    fn timestamp_tz_resolves_offsets_and_falls_back_to_local() {
+        let parse = |value: &str| -> DisplayConfig {
+            serde_json::from_str(&format!(r#"{{"timestamp_tz":"{value}"}}"#))
+                .expect("display config")
+        };
+
+        // Empty/default and explicit local: no fixed offset.
+        assert_eq!(DisplayConfig::default().timestamp_fixed_offset_secs(), None);
+        assert_eq!(parse("local").timestamp_fixed_offset_secs(), None);
+        assert_eq!(parse("system").timestamp_fixed_offset_secs(), None);
+
+        // Offsets in seconds.
+        assert_eq!(parse("UTC+3").timestamp_fixed_offset_secs(), Some(3 * 3600));
+        assert_eq!(parse("utc-5").timestamp_fixed_offset_secs(), Some(-5 * 3600));
+        assert_eq!(parse("UTC+0").timestamp_fixed_offset_secs(), Some(0));
+        assert_eq!(parse(" 3 ").timestamp_fixed_offset_secs(), Some(3 * 3600));
+        assert_eq!(
+            parse("UTC+05:30").timestamp_fixed_offset_secs(),
+            Some(5 * 3600 + 30 * 60)
+        );
+
+        // Garbage falls back to local instead of breaking rendering.
+        assert_eq!(parse("Moscow").timestamp_fixed_offset_secs(), None);
+        assert_eq!(parse("UTC+99").timestamp_fixed_offset_secs(), None);
     }
 }
