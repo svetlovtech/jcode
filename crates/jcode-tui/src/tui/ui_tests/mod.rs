@@ -8,6 +8,85 @@ fn viewport_snapshot_test_lock() -> crate::tui::ui::RenderStateTestGuard {
     crate::tui::ui::render_state_test_lock()
 }
 
+/// Fork: isolate the process config from the developer machine's
+/// `~/.jcode/config.toml` for the duration of a test. Tests that assert on a
+/// specific footer style (classic layout facts, advanced-footer spans) must
+/// not flip depending on whether the host runs with `footer_style = "pi"` or
+/// a configured `[chat]` section. Points `JCODE_HOME` at a fresh temp dir so
+/// config() resolves to defaults. The returned guard restores the previous
+/// `JCODE_HOME` and invalidates the config cache on drop (guard must be held
+/// for the test's duration; callers run under the shared render-state lock).
+pub(crate) struct ConfigHomeGuard {
+    previous: Option<std::path::PathBuf>,
+}
+
+impl Drop for ConfigHomeGuard {
+    fn drop(&mut self) {
+        // SAFETY: test-only; see isolate_config_home.
+        unsafe {
+            match &self.previous {
+                Some(path) => std::env::set_var("JCODE_HOME", path),
+                None => std::env::remove_var("JCODE_HOME"),
+            }
+        }
+        crate::config::invalidate_config_cache();
+    }
+}
+
+pub(crate) fn isolate_config_home() -> ConfigHomeGuard {
+    let dir = std::env::temp_dir().join(format!(
+        "jcode-test-home-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0),
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    isolate_config_home_with_in(&dir, None);
+    ConfigHomeGuard {
+        previous: std::env::var("JCODE_HOME_PREVIOUS")
+            .ok()
+            .map(std::path::PathBuf::from),
+    }
+}
+
+/// Fork: like `isolate_config_home`, but writes the given config.toml into
+/// the isolated home first, so tests can pin a specific display style
+/// (e.g. the advanced footer) regardless of the host's real config.
+pub(crate) fn isolate_config_home_with(config_toml: &str) -> ConfigHomeGuard {
+    let dir = std::env::temp_dir().join(format!(
+        "jcode-test-home-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0),
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("config.toml"), config_toml);
+    isolate_config_home_with_in(&dir, None);
+    ConfigHomeGuard {
+        previous: std::env::var("JCODE_HOME_PREVIOUS")
+            .ok()
+            .map(std::path::PathBuf::from),
+    }
+}
+
+fn isolate_config_home_with_in(dir: &std::path::Path, _config: Option<&str>) {
+    // Remember the previous JCODE_HOME once per process so nested guards
+    // restore the true original.
+    if std::env::var("JCODE_HOME_PREVIOUS").is_err() {
+        let prev = std::env::var("JCODE_HOME").unwrap_or_default();
+        // SAFETY: test-only setup, runs under the shared render-state lock.
+        unsafe { std::env::set_var("JCODE_HOME_PREVIOUS", prev) };
+    }
+    // SAFETY: test-only; all callers run under the shared render-state lock,
+    // so no other test thread reads env concurrently.
+    unsafe { std::env::set_var("JCODE_HOME", dir) };
+    crate::config::invalidate_config_cache();
+}
+
 #[test]
 fn parse_changelog_from_supports_timestamped_entries() {
     let changelog = concat!(

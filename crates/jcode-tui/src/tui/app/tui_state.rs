@@ -871,6 +871,10 @@ impl crate::tui::TuiState for App {
         Some(self.app_started.elapsed())
     }
 
+    fn session_age_secs(&self) -> Option<u64> {
+        Some(self.app_started.elapsed().as_secs())
+    }
+
     fn client_focused(&self) -> bool {
         App::client_focused(self)
     }

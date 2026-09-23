@@ -1887,13 +1887,14 @@ fn test_preview_structured_messages_stay_left_aligned() {
         ("background_task", "**Background task** `alignment-task` · `selfdev test` (`selfdev-test`) · ✓ completed · 18.5s · exit 0\n\n```text\nAll alignment checks passed\n```".to_string(), None),
     ] {
         session.messages_preview.push(PreviewMessage {
-            role: role.to_string(), content, tool_calls: Vec::new(), timestamp: None,
+            role: role.to_string(), content, tool_calls: Vec::new(),
             tool_data: tool.map(|name| crate::message::ToolCall {
                 id: format!("alignment-{name}"), name: name.to_string(),
                 input: serde_json::json!({"command": "echo alignment"}),
                 intent: Some("Check structured preview alignment".to_string()),
                 thought_signature: None,
             }),
+            timestamp: None,
         });
     }
     for width in [100, 200, 320] {

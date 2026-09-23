@@ -83,6 +83,14 @@ pub struct RenderedMessage {
     /// transcript (issue #432).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_index: Option<usize>,
+    /// Fork: wall-clock time when this stored message was recorded, used by
+    /// tool rows to show when the call ran (HH:MM:SS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Fork: tool execution duration in milliseconds, recorded by the agent
+    /// loop when the tool result was stored. Shown on the tool row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

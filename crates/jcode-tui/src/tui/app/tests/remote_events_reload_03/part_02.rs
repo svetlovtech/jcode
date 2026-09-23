@@ -241,6 +241,8 @@ fn test_local_compacted_history_marker_scroll_expands_from_session() {
             duration_secs: None,
             title: None,
             tool_data: msg.tool_data,
+            timestamp: None,
+            tool_duration_ms: None,
         })
         .collect();
     app.replace_display_messages(rendered);

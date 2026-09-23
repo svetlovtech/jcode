@@ -719,6 +719,10 @@ fn overscroll_line_state() -> TestState {
 
 fn overscroll_line_row(state: &TestState, width: u16) -> String {
     let _lock = viewport_snapshot_test_lock();
+    // These tests assert on the classic overscroll layout facts; keep the
+    // host's `footer_style = "pi"` / `[chat]` config from switching the
+    // rendered branch underneath them. The guard restores JCODE_HOME on drop.
+    let _config_guard = isolate_config_home();
     clear_flicker_frame_history_for_tests();
     let backend = TestBackend::new(width, 18);
     let mut terminal = Terminal::new(backend).expect("test terminal");

@@ -109,12 +109,82 @@ pub(super) fn overscroll_advanced_spans(
         }
     }
 
+    // Fork: session time. While the agent works, show the wall-clock session
+    // age plus the summed runtime of this session's subagents; when idle,
+    // show how long ago the last activity was instead of a ticking clock so
+    // the span stays stable and does not nag.
+    if let Some(time_span) = session_time_spans(app) {
+        push(&mut spans, time_span);
+    }
+
     // Fork: chat-integration availability (pi's tg-bridge indicator).
     if let Some(chat_span) = crate::tui::chat_status::footer_span() {
         push(&mut spans, chat_span);
     }
 
     spans
+}
+
+/// Fork: compact duration, tuned for a footer span: "42s", "12m 5s",
+/// "1h 23m", "3d 4h". Skips zero leading units so the label never grows.
+fn format_footer_duration(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        let s = secs % 60;
+        if s > 0 {
+            return format!("{mins}m {s}s");
+        }
+        return format!("{mins}m");
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        let m = mins % 60;
+        if m > 0 {
+            return format!("{hours}h {m}m");
+        }
+        return format!("{hours}h");
+    }
+    let days = hours / 24;
+    let h = hours % 24;
+    if h > 0 {
+        format!("{days}d {h}h")
+    } else {
+        format!("{days}d")
+    }
+}
+
+/// Fork: footer span with session time and subagent runtime.
+///
+/// Active turn: `⏱ <session age> · Σ agents <summed subagent runtime>`.
+/// Idle:        `⏱ <session age> · idle <since last activity>`.
+/// Subagent runtime sums the live `elapsed_secs` of running members plus the
+/// last-known runtime of finished ones; hidden entirely when there are none.
+fn session_time_spans(app: &dyn TuiState) -> Option<ratatui::text::Span<'static>> {
+    let up_secs = app.session_age_secs()?;
+    let mut text = format!("⏱ {}", format_footer_duration(up_secs));
+
+    let members = app.swarm_members_for_transcript();
+    let agent_secs: u64 = members
+        .iter()
+        .filter_map(|m| m.runtime.elapsed_secs)
+        .sum();
+    if !members.is_empty() {
+        text.push_str(&format!(" · Σ agents {}", format_footer_duration(agent_secs)));
+    }
+
+    if !app.is_processing() {
+        if let Some(idle) = app.time_since_activity() {
+            text.push_str(&format!(" · idle {}", format_footer_duration(idle.as_secs())));
+        }
+    }
+
+    Some(ratatui::text::Span::styled(
+        text,
+        Style::default().fg(rgb(140, 140, 150)),
+    ))
 }
 
 /// The upstream (classic) overscroll status span list. Verbatim upstream body,
@@ -207,4 +277,20 @@ pub(super) fn overscroll_classic_spans(
     }
 
     spans
+}
+
+#[cfg(test)]
+mod duration_format_tests {
+    use super::format_footer_duration;
+
+    #[test]
+    fn footer_duration_buckets() {
+        assert_eq!(format_footer_duration(0), "0s");
+        assert_eq!(format_footer_duration(42), "42s");
+        assert_eq!(format_footer_duration(60), "1m");
+        assert_eq!(format_footer_duration(125), "2m 5s");
+        assert_eq!(format_footer_duration(3600), "1h");
+        assert_eq!(format_footer_duration(4980), "1h 23m");
+        assert_eq!(format_footer_duration(90000), "1d 1h");
+    }
 }

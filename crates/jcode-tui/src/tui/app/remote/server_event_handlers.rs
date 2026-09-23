@@ -42,6 +42,8 @@ pub(super) fn handle_tool_done(
         duration_secs: None,
         title: None,
         tool_data: Some(tool_call.clone()),
+        timestamp: None,
+        tool_duration_ms: None,
     });
     app.note_todo_gate_result(&tool_call, &output, error.is_some());
     if is_batch {
@@ -99,6 +101,8 @@ pub(super) fn handle_generated_image(
         duration_secs: None,
         title: Some("Generated image".to_string()),
         tool_data: Some(tool_call),
+        timestamp: None,
+        tool_duration_ms: None,
     });
     app.status = ProcessingStatus::Streaming;
     true

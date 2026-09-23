@@ -943,6 +943,8 @@ fn render_todo_tool_result_uses_borderless_card_with_goal_scores() {
             intent: Some("Track todo card work".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -1030,6 +1032,8 @@ fn render_todo_quality_gate_retry_shows_only_changed_goal_fields() {
             intent: Some("Refine the todo feedback loop".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -1147,6 +1151,8 @@ fn render_todo_plan_update_card_shows_only_changed_intent_fields() {
             intent: Some("Reassess the user's intent".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -1246,6 +1252,8 @@ fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
             duration_secs: None,
             title: Some("1 todos".to_string()),
             tool_data,
+            timestamp: None,
+            tool_duration_ms: None,
         };
         render_tool_message(&msg, 72, crate::config::DiffDisplayMode::Off)
             .iter()
@@ -1370,6 +1378,8 @@ fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
             ),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let rendered = render_tool_message(&msg, 84, crate::config::DiffDisplayMode::Off)
@@ -1451,6 +1461,8 @@ fn render_ownership_gated_todo_result_keeps_the_full_card() {
             intent: Some("Complete the full user outcome".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -1534,6 +1546,8 @@ fn render_tool_message_uses_scheduled_card() {
                 "target": "resume"
             }),
             intent: None, thought_signature: None, }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off);
@@ -1651,6 +1665,8 @@ fn render_assistant_message_truncates_tool_calls_to_single_line() {
         duration_secs: None,
         title: None,
         tool_data: None,
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_assistant_message(&msg, 20, crate::config::DiffDisplayMode::Off);
@@ -1697,6 +1713,8 @@ fn render_assistant_message_centers_single_line_tool_summary() {
         duration_secs: None,
         title: None,
         tool_data: None,
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_assistant_message(&msg, 28, crate::config::DiffDisplayMode::Off);
@@ -1743,6 +1761,8 @@ fn render_assistant_message_without_body_does_not_add_extra_blank_line_before_to
         duration_secs: None,
         title: None,
         tool_data: None,
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_assistant_message(&msg, 28, crate::config::DiffDisplayMode::Off);
@@ -1991,6 +2011,8 @@ fn render_tool_message_prefers_subagent_title_with_model() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 80, crate::config::DiffDisplayMode::Off);
@@ -2022,6 +2044,8 @@ fn render_tool_message_shows_intent_and_technical_preview_on_one_line() {
             intent: Some("Verify compact progress card".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2053,6 +2077,8 @@ fn render_tool_message_hides_technical_preview_by_default() {
             intent: Some("Verify compact progress card".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2089,6 +2115,8 @@ fn render_tool_message_keeps_error_summary_when_details_hidden() {
             intent: Some("Run the test suite".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2115,6 +2143,8 @@ fn render_tool_message_shows_token_badge() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2144,6 +2174,8 @@ fn render_tool_message_hides_bash_output() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2169,6 +2201,8 @@ fn render_tool_message_shows_bash_output_when_enabled() {
             intent: Some("Print output".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let rendered = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
@@ -2197,6 +2231,8 @@ fn gmail_draft_message(content: &str, input: serde_json::Value) -> DisplayMessag
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     }
 }
 
@@ -2356,6 +2392,8 @@ fn render_batch_tool_message_shows_nested_gmail_draft_card() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off);
@@ -2403,6 +2441,8 @@ fn render_batch_tool_message_shows_flat_and_nested_subcall_intents() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
@@ -2438,6 +2478,8 @@ fn discovery_message(content: &str, input: serde_json::Value) -> DisplayMessage 
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     }
 }
 
@@ -2526,6 +2568,8 @@ fn batched_discovery_renders_without_disclosure_notice() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off);
@@ -2709,6 +2753,8 @@ fn render_tool_message_colors_high_token_badge() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -2740,6 +2786,8 @@ fn render_tool_message_shows_inline_diff_for_pascal_case_multiedit() {
                 ]
             }),
             intent: None, thought_signature: None, }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2772,6 +2820,8 @@ fn render_tool_message_labels_single_file_apply_patch_diff() {
             intent: Some("Update example behavior".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2804,6 +2854,8 @@ fn render_tool_message_preserves_multi_file_apply_patch_boundaries() {
             intent: Some("Update both examples".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2844,6 +2896,8 @@ fn render_tool_message_shows_numbered_write_result_diff_after_input_compaction()
             intent: Some("Create an honest data-driven benchmark comparison page".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2887,6 +2941,8 @@ fn render_tool_message_never_draws_an_empty_edit_diff_frame() {
                 intent: None,
                 thought_signature: None,
             }),
+            timestamp: None,
+            tool_duration_ms: None,
         };
 
         let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2918,6 +2974,8 @@ fn render_tool_message_marks_failed_apply_patch_without_empty_diff() {
             intent: Some("Replace the benchmark placeholder".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Inline);
@@ -2960,6 +3018,8 @@ fn render_tool_message_inline_mode_truncates_large_diffs() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 40, crate::config::DiffDisplayMode::Inline);
@@ -3004,6 +3064,8 @@ fn render_tool_message_full_inline_mode_shows_full_diff() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 40, crate::config::DiffDisplayMode::FullInline);
@@ -3046,6 +3108,8 @@ fn render_tool_message_memory_recall_centered_mode_left_aligns_with_padding() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -3100,6 +3164,8 @@ fn render_tool_message_memory_store_centered_mode_left_aligns_with_padding() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -3145,6 +3211,8 @@ fn render_tool_message_shows_swarm_spawn_prompt_summary() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -3185,6 +3253,8 @@ fn render_tool_message_batch_subcall_shows_swarm_dm_details() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
@@ -3341,6 +3411,8 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
             intent: Some("Read the todo list".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
 
     let plain = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -3351,4 +3423,49 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
 
     assert!(!plain.contains("No tasks yet"), "{plain}");
     assert!(plain.contains("no tasks"), "{plain}");
+}
+
+#[test]
+fn tool_row_time_badge_shows_stamp_and_duration() {
+    // Access the private helpers through the sibling module path.
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T14:32:05Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(123_400),
+    };
+    let suffix = super::tool_row_time_suffix(&msg).expect("suffix present");
+    assert!(suffix.contains(":"), "time-of-day stamp missing: {suffix}");
+    assert!(suffix.contains("2m 3s"), "duration missing: {suffix}");
+
+    let msg_ms = DisplayMessage {
+        tool_duration_ms: Some(400),
+        timestamp: None,
+        ..msg.clone()
+    };
+    let suffix = super::tool_row_time_suffix(&msg_ms).expect("suffix present");
+    assert!(suffix.contains("0.4s"), "sub-second duration missing: {suffix}");
+    assert!(!suffix.contains(':'), "no stamp expected: {suffix}");
+
+    let msg_none = DisplayMessage {
+        timestamp: None,
+        tool_duration_ms: None,
+        ..msg.clone()
+    };
+    assert!(super::tool_row_time_suffix(&msg_none).is_none());
+}
+
+#[test]
+fn tool_row_duration_format_buckets() {
+    assert_eq!(super::format_tool_row_duration(400), "0.4s");
+    assert_eq!(super::format_tool_row_duration(42_000), "42.0s");
+    assert_eq!(super::format_tool_row_duration(123_400), "2m 3s");
+    assert_eq!(super::format_tool_row_duration(3_900_000), "1h 05m");
 }

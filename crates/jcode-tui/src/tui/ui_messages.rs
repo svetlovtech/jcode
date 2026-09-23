@@ -4022,6 +4022,13 @@ pub(crate) fn render_tool_message(
     let base_prefix = format!("  {} {} ", icon, display_name);
     let token_suffix_width =
         UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
+    // Fork: " · 17:32:05 · 2m 3s" (time-of-day + duration) rides with the
+    // token suffix when the stored tool result carries those fields.
+    let time_suffix = tool_row_time_suffix(msg);
+    let time_suffix_width = time_suffix
+        .as_ref()
+        .map(|label| UnicodeWidthStr::width(label.as_str()))
+        .unwrap_or(0);
     let edit_suffix_width = if is_edit_tool && has_diff_changes {
         UnicodeWidthStr::width(format!(" (+{} -{})", additions, deletions).as_str())
     } else {
@@ -4030,6 +4037,7 @@ pub(crate) fn render_tool_message(
     let reserved_summary_width = row_width
         .saturating_sub(UnicodeWidthStr::width(base_prefix.as_str()))
         .saturating_sub(token_suffix_width)
+        .saturating_sub(time_suffix_width)
         .saturating_sub(edit_suffix_width);
 
     let intent = tc
@@ -4114,6 +4122,16 @@ pub(crate) fn render_tool_message(
         Span::styled(" · ", Style::default().fg(dim_color())),
         Span::styled(token_badge.label, Style::default().fg(token_badge.color)),
     ]);
+
+    // Fork: append the time-of-day + duration badge after the token count so
+    // each tool row answers "when did this run and how long did it take".
+    let token_suffix = if let Some(label) = time_suffix.as_ref() {
+        let mut spans = token_suffix.spans;
+        spans.push(Span::styled(label.clone(), Style::default().fg(rgb(120, 130, 145))));
+        Line::from(spans)
+    } else {
+        token_suffix
+    };
 
     let rendered_tool_line = super::truncate_line_preserving_suffix_to_width(
         &Line::from(tool_line),
@@ -4473,6 +4491,40 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
         color,
     }
+}
+
+/// Fork: time badge for a tool row, rendered after the token count:
+/// " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took).
+/// Both halves appear only when the stored tool result carries the data.
+fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<String> {
+    let stamp = msg.timestamp.map(|ts| {
+        ts.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+    });
+    let duration = msg
+        .tool_duration_ms
+        .filter(|ms| *ms > 0)
+        .map(|ms| format_tool_row_duration(ms));
+    match (stamp, duration) {
+        (Some(t), Some(d)) => Some(format!(" · {t} · {d}")),
+        (Some(t), None) => Some(format!(" · {t}")),
+        (None, Some(d)) => Some(format!(" · {d}")),
+        (None, None) => None,
+    }
+}
+
+/// Fork: compact tool duration: tenths of a second under a minute ("0.4s",
+/// "42.0s"), minutes + seconds from a minute ("2m 3s"), hours + minutes from
+/// an hour ("1h 05m").
+fn format_tool_row_duration(ms: u64) -> String {
+    if ms < 60_000 {
+        return format!("{}.{d}s", ms / 1000, d = (ms % 1000) / 100);
+    }
+    let secs = ms / 1000;
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m {}s", secs % 60);
+    }
+    format!("{}h {:02}m", mins / 60, mins % 60)
 }
 
 #[cfg(test)]

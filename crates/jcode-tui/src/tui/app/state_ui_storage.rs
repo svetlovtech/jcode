@@ -509,6 +509,8 @@ mod tests {
                 intent: crate::message::ToolCall::intent_from_input(&input),
                 thought_signature: None,
             }),
+            timestamp: None,
+            tool_duration_ms: None,
         }
     }
 

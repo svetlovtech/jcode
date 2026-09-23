@@ -2145,15 +2145,12 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
     };
 
     let total_width = area.width as usize;
-    let alignment = if app.centered_mode() {
-        Alignment::Center
-    } else {
-        Alignment::Right
-    };
 
     // Fork: the advanced footer replaces the fact-derived span list. Build
     // its spans first and fall back to truncation fit; the countdown logic
-    // below is style-agnostic and still applies.
+    // below is style-agnostic and still applies. The info block sits on the
+    // left edge (the classic style pins it right); the countdown stays
+    // pinned right in elastic mode.
     if crate::config::config().display.footer_style_advanced() {
         let spans = advanced_footer::overscroll_advanced_spans(app, &data);
         let spans = if spans
@@ -2166,6 +2163,11 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         } else {
             overscroll_truncate_spans(spans, total_width)
         };
+        let info_alignment = if app.centered_mode() {
+            Alignment::Center
+        } else {
+            Alignment::Left
+        };
         // Advanced footer opts out of the elastic ladder but keeps the
         // pinned countdown: render it with the same two-area split below.
         let secs = countdown_secs;
@@ -2174,7 +2176,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         // single line (with truncation) and, when a countdown is present,
         // reserves the right side the same way the classic path does.
         let Some(secs) = countdown_secs else {
-            let line = Line::from(spans).alignment(Alignment::Right);
+            let line = Line::from(spans).alignment(info_alignment);
             frame.render_widget(Paragraph::new(line), area);
             return;
         };
@@ -2193,7 +2195,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
                 spans,
                 total_width.saturating_sub(chosen.len() + 1),
             );
-            let info_line = Line::from(truncated).alignment(alignment);
+            let info_line = Line::from(truncated).alignment(info_alignment);
             frame.render_widget(Paragraph::new(info_line), area);
             return;
         }
@@ -2201,7 +2203,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         let left_w = area.width.saturating_sub(right_w).saturating_sub(1);
         let left_area = Rect { width: left_w, ..area };
         let right_area = Rect { x: area.x + area.width - right_w, width: right_w, ..area };
-        let info_line = Line::from(spans).alignment(alignment);
+        let info_line = Line::from(spans).alignment(info_alignment);
         frame.render_widget(Paragraph::new(info_line), left_area);
         let countdown_line = Line::from(vec![Span::styled(chosen, countdown_style)])
             .alignment(Alignment::Right);

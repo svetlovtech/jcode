@@ -36,6 +36,9 @@ fn advanced_footer_state(total_cost: f32, input: u64, output: u64) -> TestState 
 }
 
 fn draw_footer(state: &TestState, width: u16, height: u16) -> Vec<String> {
+    // Pin the advanced footer and no [chat] section regardless of the host's
+    // real ~/.jcode/config.toml, so the assertions below are deterministic.
+    let _config_guard = isolate_config_home_with("[display]\nfooter_style = \"advanced\"\n");
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("failed to create test terminal");
     terminal
@@ -85,4 +88,16 @@ fn advanced_footer_omits_cost_when_zero() {
     let line = &rows[0];
     assert!(line.contains('Σ'), "Σ marker missing: {line}");
     assert!(!line.contains('$'), "zero cost must be omitted: {line}");
+}
+
+// Fork: the advanced footer info block hugs the left edge (the classic
+// style pins it right); nothing may render before the first span.
+#[test]
+fn advanced_footer_aligns_left() {
+    let state = advanced_footer_state(0.0, 2_000, 500);
+    let rows = draw_footer(&state, 160, 1);
+    let line = &rows[0];
+    assert!(line.contains('Σ'), "Σ marker missing: {line}");
+    let leading = line.len() - line.trim_start().len();
+    assert_eq!(leading, 0, "advanced footer must start at column 0: {line}");
 }

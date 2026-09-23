@@ -556,6 +556,11 @@ pub trait TuiState {
     /// Progress of a currently-running batch tool call.
     fn batch_progress(&self) -> Option<crate::bus::BatchProgress>;
     fn time_since_activity(&self) -> Option<Duration>;
+    /// Fork: seconds since this TUI session (process) started. Drives the
+    /// advanced footer's session-time span.
+    fn session_age_secs(&self) -> Option<u64> {
+        None
+    }
     /// Whether the client terminal currently has focus. Decorative animations and
     /// periodic idle redraws pause while unfocused so backgrounded windows/tabs do
     /// not burn CPU. Defaults to true for state impls that do not track focus.
