@@ -774,8 +774,8 @@ fn test_generated_default_config_has_expected_user_defaults() {
     );
     assert!(
         content.contains("memory_model = \"gpt-5.6-luna\"")
-            && content.contains("reasoning effort \"none\""),
-        "generated default config should document the Luna memory sidecar default"
+            && content.contains("memory_jev_provider = \"auto\""),
+        "generated default config should document the memory sidecar and Jev provider default"
     );
 
     // Effort keys come from the per-platform keybinding registry; the template
@@ -1620,7 +1620,9 @@ fn config_save_round_trip_with_empty_prompts_stays_parseable() {
     restore_env_var("JCODE_HOME", previous);
     assert!(empty);
     assert!(reloaded.prompts.dir.is_empty());
+}
 
+#[test]
 fn swarm_root_effort_config_defaults_and_independent_modes() {
     let defaults = Config::default();
     assert_eq!(defaults.agents.root_effort_for_swarm(false), "max");
