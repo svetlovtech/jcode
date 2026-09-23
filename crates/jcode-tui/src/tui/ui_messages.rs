@@ -4128,11 +4128,7 @@ pub(crate) fn render_tool_message(
     // Duration color mirrors the token badge severity: >= 10s warns, >= 60s
     // alarms.
     let token_suffix = if let Some((label, severity)) = time_suffix.as_ref() {
-        let color = match severity {
-            crate::util::ApproxTokenSeverity::Normal => rgb(120, 130, 145),
-            crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
-            crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
-        };
+        let color = severity_badge_color(*severity, rgb(120, 130, 145));
         let mut spans = token_suffix.spans;
         spans.push(Span::styled(label.clone(), Style::default().fg(color)));
         Line::from(spans)
@@ -4489,14 +4485,27 @@ struct ToolOutputTokenBadge {
 
 fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
     let tokens = crate::util::estimate_tokens(content);
-    let color = match crate::util::approx_tool_output_token_severity(tokens) {
-        crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
-        crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
-        crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
-    };
+    let color = severity_badge_color(
+        crate::util::approx_tool_output_token_severity(tokens),
+        rgb(118, 118, 118),
+    );
     ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
         color,
+    }
+}
+
+/// Shared severity-to-color mapping for transcript badges so the token and
+/// duration badges cannot drift apart. `normal_color` differs per badge
+/// (tokens: mid-grey, duration: blue-grey), Warning/Danger are shared.
+fn severity_badge_color(
+    severity: crate::util::ApproxTokenSeverity,
+    normal_color: ratatui::style::Color,
+) -> ratatui::style::Color {
+    match severity {
+        crate::util::ApproxTokenSeverity::Normal => normal_color,
+        crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
+        crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
     }
 }
 

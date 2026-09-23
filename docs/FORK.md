@@ -20,7 +20,7 @@ Rough current sizes (lines, fork modules vs fork-touched upstream files):
 
 | Fork module | LOC | | Upstream file | fork lines |
 |---|---|---|---|---|
-| `jcode-tui/src/tui/app/fork_ask_modal.rs` | ~1360 | | `tui/app/input.rs` | ~35 |
+| `jcode-tui/src/tui/app/fork_ask_modal.rs` (state 896 + keys 159 + render 314) | ~1370 | | `tui/app/input.rs` | ~35 |
 | `jcode-app-core/src/tool/chat.rs` | ~740 | | `tui/app/remote/server_events.rs` | ~35 |
 | `jcode-base/src/mcp/remote.rs` | ~470 | | `tui/app.rs` | ~23 |
 | `jcode-base/src/chat.rs` | ~435 | | `tui/app/tui_state.rs` | ~18 |
@@ -40,8 +40,10 @@ Rough current sizes (lines, fork modules vs fork-touched upstream files):
 - `jcode-tui/src/tui/app/fork_ask.rs` - all pending ask_user state
   (`ForkAskState`: typed-answer interception, staged answers) and the
   `ForkAskOps` facade other modules call.
-- `jcode-tui/src/tui/app/fork_ask_modal.rs` - the interactive ask_user modal
-  (rendering, key handling, wrapping).
+- `jcode-tui/src/tui/app/fork_ask_modal.rs` - the interactive ask_user modal,
+  split into `fork_ask_state.rs` (types, stateful helpers, protocol
+  conversion, tests), `fork_ask_keys.rs` (key handling, answer staging),
+  `fork_ask_render.rs` (drawing); the hub re-exports the same API.
 - `jcode-tui/src/tui/app/mcp_command.rs` - `/mcp` slash command and picker
   plumbing (connect/disconnect, reports).
 - `jcode-tui/src/tui/advanced_footer.rs` - footer styles; `ui_input.rs`

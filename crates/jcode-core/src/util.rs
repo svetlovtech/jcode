@@ -414,6 +414,26 @@ mod tests {
             ApproxTokenSeverity::Danger
         );
     }
+
+    #[test]
+    fn tool_duration_severity_boundaries() {
+        assert_eq!(
+            tool_duration_severity(9_999),
+            ApproxTokenSeverity::Normal
+        );
+        assert_eq!(
+            tool_duration_severity(10_000),
+            ApproxTokenSeverity::Warning
+        );
+        assert_eq!(
+            tool_duration_severity(59_999),
+            ApproxTokenSeverity::Warning
+        );
+        assert_eq!(
+            tool_duration_severity(60_000),
+            ApproxTokenSeverity::Danger
+        );
+    }
 }
 
 #[cfg(test)]
