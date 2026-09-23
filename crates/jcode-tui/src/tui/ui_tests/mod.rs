@@ -596,6 +596,8 @@ fn reset_prompt_viewport_state_for_test() {
 
 #[path = "advanced_footer.rs"]
 mod advanced_footer;
+#[path = "tool_time_badge.rs"]
+mod tool_time_badge;
 #[path = "basic.rs"]
 mod basic;
 #[path = "diagrams.rs"]
