@@ -432,6 +432,7 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
             name: "webfetch".to_string(),
             output: "page A body".to_string(),
             error: None,
+            duration_ms: None,
         },
         &mut remote,
     );
@@ -452,6 +453,7 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
             name: "webfetch".to_string(),
             output: "page B body".to_string(),
             error: None,
+            duration_ms: None,
         },
         &mut remote,
     );

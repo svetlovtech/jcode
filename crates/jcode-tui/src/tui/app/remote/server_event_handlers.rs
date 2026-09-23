@@ -7,6 +7,7 @@ pub(super) fn handle_tool_done(
     name: String,
     output: String,
     error: Option<String>,
+    duration_ms: Option<u64>,
 ) -> bool {
     let display_output = remote.handle_tool_done(&id, &name, &output);
     let display_output = if error.is_some()
@@ -42,8 +43,10 @@ pub(super) fn handle_tool_done(
         duration_secs: None,
         title: None,
         tool_data: Some(tool_call.clone()),
-        timestamp: None,
-        tool_duration_ms: None,
+        // Fork: live tool rows carry the same time badge as reloaded ones:
+        // when the call finished plus how long it ran.
+        timestamp: Some(chrono::Utc::now()),
+        tool_duration_ms: duration_ms,
     });
     app.note_todo_gate_result(&tool_call, &output, error.is_some());
     if is_batch {

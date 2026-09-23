@@ -462,6 +462,52 @@ cpu_count() {
 # backs off further. An explicit CARGO_BUILD_JOBS / JCODE_BUILD_JOBS always
 # wins. Linux reads MemAvailable; macOS conservatively sums reclaimable vm_stat
 # pages. Unsupported hosts and failed probes fall back to Cargo's configuration.
+
+# Fork: a full selfdev target for this repo grows to ~27 GB. When the build
+# filesystem runs low on space, cargo fails mid-compile with ENOSPC and every
+# queued agent's build request dies with it. Before a local build, check free
+# space; when it drops under JCODE_DISK_FREE_MIN_GB (default 8 GB), reclaim:
+# `cargo clean` increments older than the newest profile dir, then full clean
+# if still starved. Never touches anything when space is healthy.
+reclaim_target_disk_space() {
+  local min_free_gb="${JCODE_DISK_FREE_MIN_GB:-8}"
+  local target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+  [[ -d "$target_dir" ]] || return 0
+
+  local free_kb
+  free_kb=$(df -Pk "$target_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+  [[ "$free_kb" =~ ^[0-9]+$ ]] || return 0
+
+  local min_free_kb=$((min_free_gb * 1024 * 1024))
+  if (( free_kb >= min_free_kb )); then
+    return 0
+  fi
+
+  log "disk low: $((free_kb / 1024 / 1024)) GB free on $(df -Pk "$target_dir" | awk 'NR==2 {print $6}'), reclaiming build artifacts (min ${min_free_gb} GB)"
+
+  # First pass: drop artifact subdirectories of stale profiles, keep the
+  # newest-mtime one (usually the profile the next build reuses anyway).
+  local newest=""
+  newest=$(find "$target_dir" -mindepth 1 -maxdepth 1 -type d \
+    -exec stat -c '%Y %n' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  local dir
+  while IFS= read -r dir; do
+    [[ -n "$dir" && "$dir" != "$newest" ]] || continue
+    rm -rf -- "$dir"
+  done < <(find "$target_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+
+  free_kb=$(df -Pk "$target_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+  if [[ "$free_kb" =~ ^[0-9]+$ ]] && (( free_kb >= min_free_kb )); then
+    log "reclaimed enough space: $((free_kb / 1024 / 1024)) GB free"
+    return 0
+  fi
+
+  # Still starved: full clean. The next build rebuilds from scratch, but a
+  # slow build beats a failed one.
+  log "still low after profile prune; running cargo clean"
+  cargo clean --manifest-path "$repo_root/Cargo.toml" >/dev/null 2>&1 || rm -rf -- "$target_dir"
+}
+
 select_build_jobs() {
   # Respect an explicit override from either env var.
   local override="${JCODE_BUILD_JOBS:-${CARGO_BUILD_JOBS:-}}"
@@ -1139,4 +1185,5 @@ acquire_cargo_gate
 # have drained. Measuring before the wait would preserve an unnecessarily low
 # one-job decision even after memory becomes available.
 select_build_jobs
+reclaim_target_disk_space
 run_local_cargo

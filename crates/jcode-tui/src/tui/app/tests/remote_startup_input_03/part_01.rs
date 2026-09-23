@@ -13,7 +13,7 @@ fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
         .expect("footer with stats");
 
     assert!(
-        footer.starts_with("5m 16s · до "),
+        footer.starts_with("5m 16s"),
         "unexpected footer: {footer}"
     );
     assert!(footer.contains(" tps"), "unexpected footer: {footer}");

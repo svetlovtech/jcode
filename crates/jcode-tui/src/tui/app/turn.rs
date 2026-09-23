@@ -955,6 +955,9 @@ impl App {
                                             dm.tool_data.as_ref().map(|td| &td.id) == Some(&tool_use_id)
                                         }) {
                                             dm.content = content.clone();
+                                            // Fork: stamp when the call finished so the row's
+                                            // time badge matches the reloaded transcript.
+                                            dm.timestamp = Some(chrono::Utc::now());
                                             self.bump_display_messages_version();
                                         }
 
