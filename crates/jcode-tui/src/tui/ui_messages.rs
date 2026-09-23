@@ -4027,7 +4027,7 @@ pub(crate) fn render_tool_message(
     let time_suffix = tool_row_time_suffix(msg);
     let time_suffix_width = time_suffix
         .as_ref()
-        .map(|label| UnicodeWidthStr::width(label.as_str()))
+        .map(|(label, _)| UnicodeWidthStr::width(label.as_str()))
         .unwrap_or(0);
     let edit_suffix_width = if is_edit_tool && has_diff_changes {
         UnicodeWidthStr::width(format!(" (+{} -{})", additions, deletions).as_str())
@@ -4125,9 +4125,16 @@ pub(crate) fn render_tool_message(
 
     // Fork: append the time-of-day + duration badge after the token count so
     // each tool row answers "when did this run and how long did it take".
-    let token_suffix = if let Some(label) = time_suffix.as_ref() {
+    // Duration color mirrors the token badge severity: >= 10s warns, >= 60s
+    // alarms.
+    let token_suffix = if let Some((label, severity)) = time_suffix.as_ref() {
+        let color = match severity {
+            crate::util::ApproxTokenSeverity::Normal => rgb(120, 130, 145),
+            crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
+            crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
+        };
         let mut spans = token_suffix.spans;
-        spans.push(Span::styled(label.clone(), Style::default().fg(rgb(120, 130, 145))));
+        spans.push(Span::styled(label.clone(), Style::default().fg(color)));
         Line::from(spans)
     } else {
         token_suffix
@@ -4494,10 +4501,10 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
 }
 
 /// Fork: time badge for a tool row, rendered after the token count:
-/// " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took).
-/// The stamp honors `display.timestamp_tz` (e.g. "UTC+3"); without it the
-/// machine's local timezone is used.
-fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<String> {
+/// " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took), with the
+/// duration severity for coloring. The stamp honors `display.timestamp_tz`
+/// (e.g. "UTC+3"); without it the machine's local timezone is used.
+fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<(String, crate::util::ApproxTokenSeverity)> {
     let tz = crate::config::config().display.timestamp_fixed_offset_secs();
     let stamp = msg.timestamp.map(|ts| {
         let formatted = match tz.and_then(chrono::FixedOffset::east_opt) {
@@ -4506,16 +4513,18 @@ fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<String> {
         };
         formatted
     });
-    let duration = msg
-        .tool_duration_ms
-        .filter(|ms| *ms > 0)
-        .map(|ms| format_tool_row_duration(ms));
-    match (stamp, duration) {
+    let duration_ms = msg.tool_duration_ms.filter(|ms| *ms > 0);
+    let duration = duration_ms.map(format_tool_row_duration);
+    let severity = duration_ms
+        .map(crate::util::tool_duration_severity)
+        .unwrap_or(crate::util::ApproxTokenSeverity::Normal);
+    let label = match (stamp, duration) {
         (Some(t), Some(d)) => Some(format!(" · {t} · {d}")),
         (Some(t), None) => Some(format!(" · {t}")),
         (None, Some(d)) => Some(format!(" · {d}")),
         (None, None) => None,
-    }
+    };
+    label.map(|l| (l, severity))
 }
 
 /// Fork: compact tool duration: milliseconds under a second ("45ms",

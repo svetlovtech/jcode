@@ -69,6 +69,19 @@ pub fn approx_tool_output_token_severity(tokens: usize) -> ApproxTokenSeverity {
     }
 }
 
+/// Severity thresholds for a tool call's wall-clock duration. Mirrors the
+/// token-badge severity: slow tools are worth noticing while scanning a
+/// transcript. Normal < 10s <= Warning < 60s <= Danger.
+pub fn tool_duration_severity(duration_ms: u64) -> ApproxTokenSeverity {
+    if duration_ms >= 60_000 {
+        ApproxTokenSeverity::Danger
+    } else if duration_ms >= 10_000 {
+        ApproxTokenSeverity::Warning
+    } else {
+        ApproxTokenSeverity::Normal
+    }
+}
+
 /// Extract the payload from an SSE `data:` line.
 ///
 /// The SSE spec allows an optional single space after the colon, so both

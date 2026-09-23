@@ -3441,17 +3441,27 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
         timestamp: Some(stamp),
         tool_duration_ms: Some(123_400),
     };
-    let suffix = super::tool_row_time_suffix(&msg).expect("suffix present");
+    let (suffix, severity) = super::tool_row_time_suffix(&msg).expect("suffix present");
     assert!(suffix.contains(":"), "time-of-day stamp missing: {suffix}");
     assert!(suffix.contains("2m 3s"), "duration missing: {suffix}");
+    assert_eq!(
+        severity,
+        crate::util::ApproxTokenSeverity::Danger,
+        "2m3s is over the 60s danger threshold"
+    );
 
     let msg_ms = DisplayMessage {
         tool_duration_ms: Some(400),
         timestamp: None,
         ..msg.clone()
     };
-    let suffix = super::tool_row_time_suffix(&msg_ms).expect("suffix present");
+    let (suffix, severity) = super::tool_row_time_suffix(&msg_ms).expect("suffix present");
     assert!(suffix.contains("400ms"), "sub-second duration missing: {suffix}");
+    assert_eq!(
+        severity,
+        crate::util::ApproxTokenSeverity::Normal,
+        "400ms is below the 10s warning threshold"
+    );
     assert!(!suffix.contains(':'), "no stamp expected: {suffix}");
 
     let msg_none = DisplayMessage {
