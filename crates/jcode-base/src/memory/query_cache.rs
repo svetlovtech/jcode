@@ -57,6 +57,12 @@ struct QueryCacheState {
     /// Set once a write fails, so a broken location does not retry on every
     /// query (retrieval must never stall on cache I/O).
     write_failed: bool,
+    /// Whether the in-memory LRU order has drifted from the file since the
+    /// last successful write. Touches from `lookup` set this instead of
+    /// rewriting immediately (a full-file rewrite per hit would cost tens of
+    /// MB of fsync at the 2000-entry cap); the drift is flushed by the next
+    /// `store`, which already rewrites the file for its own insert.
+    order_dirty: bool,
 }
 
 /// Cache states keyed by resolved cache-file path. Per-path (rather than one
@@ -114,11 +120,13 @@ fn evict_lru(file: &mut QueryCacheFile) {
 
 /// Look up a cached query vector. `None` = miss.
 ///
-/// A hit bumps the entry's LRU position and rewrites the cache file so the
-/// recency survives a restart (a process that only ever reads would
-/// otherwise let its hot entries age out at the next eviction from an older
-/// order). The rewrite is best-effort: an I/O failure flips the path's
-/// circuit breaker exactly like a failed store.
+/// A hit bumps the entry's LRU position in memory and marks the on-disk
+/// order dirty instead of rewriting the file immediately: a write-through on
+/// every hit would fsync a file sized up to the full entry cap on each
+/// result, which can cost more than the remote embed call being avoided.
+/// The drift is flushed by the next `store` (or a later toucher); worst case
+/// a crash loses some recency ordering, which only mildly affects future
+/// eviction choices - never correctness.
 pub fn lookup(model_id: &str, formatted_query: &str, test_mode: bool) -> Option<Vec<f32>> {
     let key = cache_key(model_id, formatted_query);
     let path = cache_path(test_mode).ok()?;
@@ -130,18 +138,12 @@ pub fn lookup(model_id: &str, formatted_query: &str, test_mode: bool) -> Option<
         .or_insert_with(|| QueryCacheState {
             file: load_file_for(&path),
             write_failed: false,
+            order_dirty: false,
         });
     let hit = state.file.vectors.get(&key).map(|c| c.vector.clone());
     if hit.is_some() {
         touch_lru(&mut state.file.order, &key);
-        // Persist the recency bump; a lookup should never fail because of
-        // this, so an I/O error only disables further caching.
-        if let Err(err) = jcode_storage::write_json(&path, &state.file) {
-            state.write_failed = true;
-            crate::logging::warn(&format!(
-                "query embedding cache disabled after write failure: {err}"
-            ));
-        }
+        state.order_dirty = true;
     }
     hit
 }
@@ -161,6 +163,7 @@ pub fn store(model_id: &str, formatted_query: &str, vector: &[f32], test_mode: b
         .or_insert_with(|| QueryCacheState {
             file: load_file_for(&path),
             write_failed: false,
+            order_dirty: false,
         });
     if state.write_failed {
         return;
@@ -174,6 +177,10 @@ pub fn store(model_id: &str, formatted_query: &str, vector: &[f32], test_mode: b
         state.file.order.push(key);
     }
     evict_lru(&mut state.file);
+    // A store always writes (it changed the contents, not just the order);
+    // flush_if_dirty would skip if only touches had drifted, so clear the
+    // flag explicitly and write unconditionally.
+    state.order_dirty = false;
     if let Err(err) = jcode_storage::write_json(&path, &state.file) {
         state.write_failed = true;
         crate::logging::warn(&format!(
@@ -396,39 +403,84 @@ mod semantics_tests {
         assert_eq!(lookup("m", "precision", false), Some(vector));
     }
 
-    /// A lookup must bump the entry's LRU position ON DISK, not just in the
-    /// in-process state: restart the process (clear + reload) and confirm
-    /// the touched entry was written as most-recent.
+    /// A lookup bump is LAZY: it updates the in-memory order and marks the
+    /// file dirty, but the file is only rewritten by the next `store`. This
+    /// keeps a hit from fsync-ing the whole cache; the cost is that a crash
+    /// before the next store loses recency ordering (mild eviction noise).
     #[test]
-    fn lookup_touch_persists_across_restart() {
+    fn lookup_touch_is_lazy_until_next_store() {
         let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
         let _home = HomeRestore::set(&temp);
 
         store("m", "first", &[1.0], false);
         store("m", "second", &[2.0], false);
-        // Touch "first": it must become most-recent.
+        // Touch "first": in memory it becomes most-recent, on disk it stays.
         assert_eq!(lookup("m", "first", false), Some(vec![1.0]));
 
-        query_cache().lock().expect("cache lock").clear();
+        let read_order = |temp: &tempfile::TempDir| {
+            let cache_file = temp.path().join("memory").join("query_embeddings.json");
+            let raw = std::fs::read(&cache_file).expect("read cache");
+            let file: QueryCacheFile = serde_json::from_slice(&raw).expect("parse cache");
+            let first = file.order.iter().position(|k| *k == cache_key("m", "first")).expect("first");
+            let second = file
+                .order
+                .iter()
+                .position(|k| *k == cache_key("m", "second"))
+                .expect("second");
+            (first, second)
+        };
 
-        // Fill beyond... (small-scale check): reload and read the raw file's
-        // order tail.
+        // Before any store: the touch is NOT on disk yet.
+        let (first_pos, second_pos) = read_order(&temp);
+        assert!(
+            first_pos < second_pos,
+            "lazy semantics: touch must not hit disk before the next store"
+        );
+
+        // The next store flushes the drifted order along with its insert.
+        store("m", "third", &[3.0], false);
+        let (first_pos, second_pos) = read_order(&temp);
+        assert!(
+            first_pos > second_pos,
+            "after the next store the touched entry is most-recent on disk"
+        );
+        // And the new entry is most recent of all.
         let cache_file = temp.path().join("memory").join("query_embeddings.json");
         let raw = std::fs::read(&cache_file).expect("read cache");
         let file: QueryCacheFile = serde_json::from_slice(&raw).expect("parse cache");
-        let first_key = cache_key("m", "first");
-        let second_key = cache_key("m", "second");
-        let first_pos = file.order.iter().position(|k| *k == first_key).expect("first");
-        let second_pos = file
-            .order
-            .iter()
-            .position(|k| *k == second_key)
-            .expect("second");
-        assert!(
-            first_pos > second_pos,
-            "touched 'first' must be more recent than 'second' on disk"
+        assert_eq!(
+            file.order.last(),
+            Some(&cache_key("m", "third")),
+            "the newest store is the most recent entry"
         );
+    }
+
+    /// Eviction must honor the persisted order after a restart: overflow
+    /// entries inserted by an earlier process are evicted oldest-first.
+    #[test]
+    fn eviction_after_restart_uses_persisted_order() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeRestore::set(&temp);
+
+        for i in 0..5 {
+            store("m", &format!("k{i}"), &[i as f32], false);
+        }
+        // Simulate a restart.
+        query_cache().lock().expect("cache lock").clear();
+
+        // Insert past the cap: 5 + 1996 = 2001 total, so exactly the oldest
+        // persisted entry (k0) overflows and is evicted.
+        for i in 0..(QUERY_CACHE_MAX_ENTRIES - 4) {
+            store("m", &format!("bulk{i}"), &[1.0], false);
+        }
+        query_cache().lock().expect("cache lock").clear();
+
+        // k0 (oldest) is gone; k1..k4 survive the restart-based eviction.
+        assert_eq!(lookup("m", "k0", false), None);
+        assert_eq!(lookup("m", "k1", false), Some(vec![1.0]));
+        assert_eq!(lookup("m", "k4", false), Some(vec![4.0]));
     }
 
     /// Threads hammering lookup/store on the same path must not deadlock or
