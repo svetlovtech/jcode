@@ -1735,3 +1735,55 @@ fn test_tool_row_ms_duration_observed_output() {
     assert!(!row.contains("0ms"), "0ms must be gone: {row}");
     assert!(row.contains(&expected_stamp), "stamp missing: {row}");
 }
+
+/// Fork: end-to-end acceptance of the user's UTC+3 request — the exact
+/// scenario from their screenshot (near-instant agentgrep row) rendered
+/// with display.timestamp_tz = "UTC+3" set through the isolated config
+/// home. The observed row must show the UTC+3 stamp (20:23:35Z stored ->
+/// 23:23:35 displayed), ms duration, and no 0.0s.
+#[test]
+fn test_tool_row_stamp_renders_in_configured_utc3() {
+    let _lock = viewport_snapshot_test_lock();
+    let _guard = isolate_config_home_with(
+        "[display]\nfooter_style = \"advanced\"\ntimestamp_tz = \"UTC+3\"\n",
+    );
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:23:35Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-tz".to_string(),
+            name: "agentgrep".to_string(),
+            input: serde_json::json!({ "query": "x" }),
+            intent: Some("UTC+3 acceptance".to_string()),
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(45),
+    };
+
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let row: String = lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    println!("observed UTC+3 row: {row}");
+
+    assert!(
+        row.contains("23:23:35"),
+        "UTC+3 stamp (20:23Z + 3h = 23:23) missing: {row}"
+    );
+    assert!(row.contains("45ms"), "ms duration missing: {row}");
+    assert!(!row.contains("0.0s"), "0.0s banned: {row}");
+}
+
