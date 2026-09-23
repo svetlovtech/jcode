@@ -1690,3 +1690,48 @@ fn test_tool_row_time_badge_survives_narrow_width() {
         );
     }
 }
+
+/// Fork: observed-behavior proof for the user-reported "0.0s" complaint.
+/// Renders a near-instant tool row (45 ms) through the real pipeline and
+/// prints the resulting line so the observation lands in the test log; the
+/// assertions pin the contract: ms duration shown, no "0.0s", no bare "0s".
+#[test]
+fn test_tool_row_ms_duration_observed_output() {
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:23:35Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-ms".to_string(),
+            name: "agentgrep".to_string(),
+            input: serde_json::json!({ "query": "find it" }),
+            intent: Some("Find implementation".to_string()),
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(45),
+    };
+
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let row: String = lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    println!("observed tool row: {row}");
+
+    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    assert!(row.contains("45ms"), "ms duration missing: {row}");
+    assert!(!row.contains("0.0s"), "0.0s must be gone: {row}");
+    assert!(!row.contains("0ms"), "0ms must be gone: {row}");
+    assert!(row.contains(&expected_stamp), "stamp missing: {row}");
+}
