@@ -20,9 +20,14 @@ Status values:
 
 - [x] Inventory all `#![allow(dead_code)]` locations and justify or remove them
 - [x] Reduce baseline warning count significantly from the current level
+- [x] Fork wave 2026-09-23: zero our-code warnings in jcode-tui/jcode-app-core
+  (commit 2848038bc: removed dead overscroll_classic_spans, dead fork_ask
+  helpers, narrowed AskInput.header allow with rationale; removed 12 dead
+  Cargo.toml profile blocks for crates absent from Cargo.lock)
 - [ ] Remove stale unused functions in `setup_hints.rs`
 - [ ] Remove stale unused code in TUI support modules
 - [ ] Audit broad suppressions and replace with narrow local allowances
+  (fork: AskInput.header done as the pattern; upstream suppressions pending)
 
 ## Phase 2: Decompose the Biggest Files
 
@@ -96,7 +101,11 @@ Generated from `docs/CODE_QUALITY_AUDIT_2026-04-18.md`. This section enumerates 
 - [ ] Split `src/memory.rs` (2397 LOC)
 - [ ] Split `src/provider/mod.rs` (2365 LOC)
 - [ ] Split `src/telemetry.rs` (2217 LOC)
-- [ ] Split `src/tui/ui_messages.rs` (2131 LOC)
+- [x] Fork: split `tui/app/fork_ask_modal.rs` (1364 LOC) into state/keys/render
+  submodules (commit 4b4feaabb); accepted review findings fixed in dc6cccb79
+  (shared severity_badge_color, tool_duration_severity boundary tests,
+  FORK.md refresh)
+- [ ] Split `src/tui/ui_messages.rs` (now 4551 LOC in crates/jcode-tui)
 - [ ] Split `src/tui/session_picker.rs` (2115 LOC)
 - [ ] Split `src/tui/app/inline_interactive.rs` (2041 LOC)
 - [ ] Split `src/tui/app/input.rs` (2023 LOC)
