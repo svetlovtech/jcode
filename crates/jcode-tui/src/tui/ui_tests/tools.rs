@@ -1559,6 +1559,7 @@ fn test_activity_detail_without_intent_matches_summary() {
 /// token count. This is the exact path the transcript draws every frame.
 #[test]
 fn test_tool_row_renders_time_and_duration_badge() {
+    let _lock = viewport_snapshot_test_lock();
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Local);
@@ -1644,6 +1645,7 @@ fn test_tool_row_without_time_data_has_no_badge() {
 /// the same guarantee the token badge already has.
 #[test]
 fn test_tool_row_time_badge_survives_narrow_width() {
+    let _lock = viewport_snapshot_test_lock();
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
