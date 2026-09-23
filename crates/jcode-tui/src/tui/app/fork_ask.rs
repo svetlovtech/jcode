@@ -22,16 +22,12 @@
 //!    interception when the turn continues, the question times out, or the
 //!    answer arrived on another surface (Telegram).
 
-use super::fork_ask_modal;
 use super::fork_ask_modal::{AskModal, AskSpecUi};
 use super::{App, DisplayMessage};
 use crate::tui::backend::RemoteConnection;
 
 /// Upper bound for the status-notice preview of the prompt.
 const STATUS_PROMPT_PREVIEW_CHARS: usize = 110;
-
-/// Fallback answer recorded when the modal is cancelled or expires.
-pub(super) const NO_ANSWER: &str = "(без ответа)";
 
 /// All pending ask_user state for this client. Kept in one struct so `App`
 /// carries a single fork-owned field and upstream merges stay trivial.
@@ -116,18 +112,6 @@ impl ForkAskOps<'_> {
         super::fork_ask_modal::handle_modal_key(self.app, code, modifiers)
     }
 
-    /// Stage `answer` for the pending request and arm the followup
-    /// dispatcher so `flush_staged` sends it on this event-loop pass. Safe to
-    /// call when nothing is pending (no-op).
-    pub(super) fn stage_answer(&mut self, answer: &str) {
-        let app = &mut *self.app;
-        let Some((request_id, _)) = app.fork_ask.pending_stdin.clone() else {
-            return;
-        };
-        app.fork_ask.staged_answer = Some((request_id, answer.to_string()));
-        app.pending_queued_dispatch = true;
-    }
-
     /// Send the staged answer, if any. Returns `true` when an answer went out
     /// (or was consumed); `false` when nothing was staged.
     pub(super) async fn flush_staged(&mut self, remote: &mut RemoteConnection) -> bool {
@@ -196,12 +180,6 @@ impl ForkAskOps<'_> {
         Some(answer)
     }
 
-    /// Whether the user's next queued message should be delivered as the
-    /// answer (a question is pending and messages are queued).
-    pub(super) fn queued_message_is_answer(&self) -> bool {
-        self.app.fork_ask.pending_stdin.is_some() && !self.app.queued_messages.is_empty()
-    }
-
     /// Arm the followup dispatcher when a typed message is queued while a
     /// question is pending (the message becomes the answer).
     pub(super) fn arm_dispatch_if_pending(&mut self) {
@@ -258,10 +236,6 @@ fn flat_prompt(prompt: &str) -> String {
 // handler needs raw access, granted through these narrow pub(super) helpers.
 
 impl ForkAskState {
-    pub(super) fn modal_mut(&mut self) -> Option<&mut AskModal> {
-        self.modal.as_mut()
-    }
-
     pub(super) fn stage(&mut self, request_id: String, answer: String, arm_dispatch: &mut bool) {
         self.staged_answer = Some((request_id, answer));
         *arm_dispatch = true;

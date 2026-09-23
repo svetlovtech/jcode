@@ -115,7 +115,11 @@ struct AskInput {
     /// Legacy single-question shape.
     #[serde(default)]
     question: Option<String>,
+    /// Accepted from the model for backward compatibility but not rendered:
+    /// the chat service always supplies its own header. Kept so serde does
+    /// not reject legacy inputs that carry it.
     #[serde(default)]
+    #[allow(dead_code)]
     header: Option<String>,
     #[serde(default)]
     options: Option<Vec<AskOption>>,
