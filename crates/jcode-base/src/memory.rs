@@ -27,9 +27,6 @@ mod activity;
 mod cache;
 #[path = "memory/pending.rs"]
 mod pending;
-/// Fork: persistent LRU cache of query embedding vectors (skips the network
-/// embed call when the same query recurs).
-pub(crate) mod query_cache;
 #[path = "memory_prompt.rs"]
 mod prompt_support;
 
@@ -488,9 +485,9 @@ impl MemoryManager {
         threshold: f32,
         limit: usize,
     ) -> Result<Vec<(MemoryEntry, f32)>> {
-        let query_embedding = match self.query_embedding_cached(text) {
-            Ok(Some(emb)) => emb,
-            Ok(None) => return Ok(Vec::new()),
+        // Generate embedding for query text
+        let query_embedding = match crate::embedding_backend::embed_query_active(text) {
+            Ok((emb, _model)) => emb,
             Err(e) => {
                 crate::logging::info(&format!(
                     "Embedding failed, falling back to keyword search: {}",
@@ -510,9 +507,8 @@ impl MemoryManager {
         limit: usize,
         scope: MemoryScope,
     ) -> Result<Vec<(MemoryEntry, f32)>> {
-        let query_embedding = match self.query_embedding_cached(text) {
-            Ok(Some(emb)) => emb,
-            Ok(None) => return Ok(Vec::new()),
+        let query_embedding = match crate::embedding_backend::embed_query_active(text) {
+            Ok((emb, _model)) => emb,
             Err(e) => {
                 crate::logging::info(&format!(
                     "Embedding failed, falling back to keyword search: {}",
@@ -523,22 +519,6 @@ impl MemoryManager {
         };
 
         self.find_similar_with_embedding_scoped(&query_embedding, threshold, limit, scope)
-    }
-
-    /// Embed a retrieval query through the persistent query-embedding cache:
-    /// a hit skips the (possibly remote) embed call, a miss embeds and then
-    /// stores the vector for next time. Cache failures are invisible here -
-    /// they degrade to computing the embedding every time.
-    fn query_embedding_cached(&self, text: &str) -> Result<Option<Vec<f32>>> {
-        let backend = crate::embedding_backend::active_backend();
-        let model_id = backend.model_id().to_string();
-        let formatted = backend.format_query(text);
-        if let Some(cached) = query_cache::lookup(&model_id, &formatted, self.test_mode) {
-            return Ok(Some(cached));
-        }
-        let vector = backend.embed_query(text)?;
-        query_cache::store(&model_id, &formatted, &vector, self.test_mode);
-        Ok(Some(vector))
     }
 
     /// Find memories similar to the given embedding

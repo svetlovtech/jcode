@@ -96,16 +96,6 @@ pub(super) fn overscroll_advanced_spans(
     }
 
     if let Some(usage) = data.usage_info.as_ref() {
-        // Session cost, when the provider reports a nonzero total.
-        if usage.total_cost > 0.0 {
-            push(
-                &mut spans,
-                Span::styled(
-                    overscroll_format_cost(usage.total_cost),
-                    Style::default().fg(rgb(150, 200, 150)),
-                ),
-            );
-        }
         // Total session tokens (input + output).
         let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
         if total_tokens > 0 {
@@ -119,21 +109,12 @@ pub(super) fn overscroll_advanced_spans(
         }
     }
 
-    spans
-}
-
-/// Format a cost as a dollar amount with 2-4 decimals: 0.0123 -> "$0.0123",
-/// 1.2 -> "$1.20". Trailing zeros are trimmed but at least two decimals stay.
-fn overscroll_format_cost(cost: f32) -> String {
-    let formatted = format!("{:.4}", cost);
-    let (int_part, frac) = formatted
-        .split_once('.')
-        .unwrap_or((formatted.as_str(), ""));
-    let mut frac = frac.trim_end_matches('0').to_string();
-    while frac.len() < 2 {
-        frac.push('0');
+    // Fork: chat-integration availability (pi's tg-bridge indicator).
+    if let Some(chat_span) = crate::tui::chat_status::footer_span() {
+        push(&mut spans, chat_span);
     }
-    format!("${int_part}.{frac}")
+
+    spans
 }
 
 /// The upstream (classic) overscroll status span list. Verbatim upstream body,

@@ -66,13 +66,16 @@ fn advanced_footer_shows_total_session_tokens() {
     assert!(line.contains("155k"), "token total missing: {line}");
 }
 
+// Fork: cost was removed from the advanced footer; the chat-integration
+// availability indicator (⚪/🟢/🔴 chat) took its slot. Whether the chat
+// span appears depends on the machine's ~/.jcode/config.toml (it is hidden
+// when [chat] is not configured), so only the cost removal is asserted.
 #[test]
-fn advanced_footer_shows_cost_when_provider_reports_it() {
+fn advanced_footer_hides_cost() {
     let state = advanced_footer_state(0.1234, 10_000, 1_000);
     let rows = draw_footer(&state, 160, 1);
     let line = &rows[0];
-    assert!(line.contains('$'), "cost missing: {line}");
-    assert!(line.contains("0.1234"), "cost value missing: {line}");
+    assert!(!line.contains('$'), "cost must be gone: {line}");
 }
 
 #[test]

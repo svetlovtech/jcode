@@ -28,6 +28,7 @@ pub struct BackgroundTaskRow {
 }
 
 pub mod backend;
+pub(crate) mod chat_status;
 pub(crate) mod color_support;
 mod core;
 pub(crate) mod fuzzy;
