@@ -64,6 +64,7 @@ pub fn run_session_export_command(
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
             is_primary: true,
+            message_count: session.messages.len(),
         },
     )
     .chain(related_sessions.iter().map(|s| {
@@ -81,6 +82,7 @@ pub fn run_session_export_command(
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
             is_primary: false,
+            message_count: s.messages.len(),
         }
     }))
     .collect();

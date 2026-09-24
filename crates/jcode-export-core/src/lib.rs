@@ -278,6 +278,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             is_primary: true,
+            message_count: 0,
         };
         let sub = RelatedSessionInput {
             id: "session_sub_1".into(),
@@ -287,6 +288,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             is_primary: false,
+            message_count: 57,
         };
         let input = SessionExportInput {
             id: "session_main",
@@ -309,6 +311,8 @@ mod tests {
         assert_eq!(payload.sessions.len(), 2);
         assert!(payload.sessions[0].is_primary);
         assert_eq!(payload.sessions[1].short_name.as_deref(), Some("sloth"));
+        assert_eq!(payload.sessions[1].message_count, 57);
+        assert_eq!(payload.sessions[0].message_count, leaked_messages().len());
         // All entries carry the primary session id.
         for entry in &payload.entries {
             let sid = match entry {

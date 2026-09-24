@@ -242,6 +242,9 @@ pub struct RelatedSessionInput {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub is_primary: bool,
+    /// Message count for the viewer header. The primary session's count is
+    /// derived from `messages`; related sessions must supply their own.
+    pub message_count: usize,
 }
 
 /// Owning session id for entries: `Some` only in multi-session exports,
@@ -379,7 +382,7 @@ pub fn build_payload(
                     created_at: s.created_at.clone(),
                     updated_at: s.updated_at.clone(),
                     is_primary: s.is_primary,
-                    message_count: if s.is_primary { messages.len() } else { 0 },
+                    message_count: if s.is_primary { messages.len() } else { s.message_count },
                 })
                 .collect()
         })

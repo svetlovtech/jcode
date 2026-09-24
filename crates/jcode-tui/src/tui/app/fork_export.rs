@@ -90,6 +90,7 @@ fn export_session_to_file(
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
             is_primary: true,
+            message_count: session.messages.len(),
         },
     )
     .chain(related_sessions.iter().map(|s| {
@@ -107,6 +108,7 @@ fn export_session_to_file(
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             ),
             is_primary: false,
+            message_count: s.messages.len(),
         }
     }))
     .collect();
