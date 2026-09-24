@@ -141,6 +141,8 @@ pub struct ExportPayload {
 }
 
 impl ExportHeader {
+    // 11 arguments - deliberate flat factory API shared by CLI and tests.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_session_meta(
         id: &str,
         parent_id: Option<&str>,
@@ -187,10 +189,10 @@ fn user_text_of(message: &StoredMessage) -> Option<String> {
 fn assistant_text_of(message: &StoredMessage) -> String {
     let mut parts = Vec::new();
     for block in &message.content {
-        if let ContentBlock::Text { text, .. } = block {
-            if !text.trim().is_empty() {
-                parts.push(text.as_str());
-            }
+        if let ContentBlock::Text { text, .. } = block
+            && !text.trim().is_empty()
+        {
+            parts.push(text.as_str());
         }
     }
     parts.join("\n\n")

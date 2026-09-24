@@ -114,7 +114,7 @@ impl<'a> SessionExportInput<'a> {
             self.header(),
             self.messages,
             self.compaction.map(|c| c.summary_text.as_str()),
-            self.related.as_deref(),
+            self.related,
         )
     }
 }
@@ -150,12 +150,15 @@ pub fn export_html(input: &SessionExportInput) -> anyhow::Result<String> {
 /// Default output path for an export: `<input>.export.<ext>` next to the
 /// source file, or `jcode-session-<id>.<ext>` in the current directory when
 /// no source path is known.
-pub fn default_output_path(source_path: Option<&std::path::Path>, id: &str, format: ExportFormat) -> std::path::PathBuf {
-    let file_name = match source_path.and_then(|p| p.parent()) {
+pub fn default_output_path(
+    source_path: Option<&std::path::Path>,
+    id: &str,
+    format: ExportFormat,
+) -> std::path::PathBuf {
+    match source_path.and_then(|p| p.parent()) {
         Some(dir) if dir.exists() => dir.join(format!("{}.export.{}", id, format.extension())),
         _ => std::path::PathBuf::from(format!("jcode-session-{}.{}", id, format.extension())),
-    };
-    file_name
+    }
 }
 
 #[cfg(test)]
