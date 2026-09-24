@@ -24,6 +24,10 @@ pub enum ExportEntry {
         /// User-visible system display rows (background tasks, scheduler).
         #[serde(skip_serializing_if = "Option::is_none")]
         display_role: Option<String>,
+        /// Owning session when exported together with related sessions
+        /// (subagents). Absent in single-session exports.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     Assistant {
         id: String,
@@ -35,6 +39,8 @@ pub enum ExportEntry {
         thinking: Vec<String>,
         /// Tool calls issued by this message.
         tool_calls: Vec<ExportToolCall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     ToolResult {
         id: String,
@@ -47,11 +53,15 @@ pub enum ExportEntry {
         /// Wall-clock duration of the tool call, when the agent loop recorded it.
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     Compaction {
         id: String,
         timestamp: Option<String>,
         summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
 }
 
@@ -101,6 +111,22 @@ pub struct ExportStats {
     pub cache_creation_tokens: u64,
 }
 
+/// Metadata about a related (subagent) session in a multi-session export.
+#[derive(Debug, Clone, Serialize)]
+pub struct RelatedSession {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub is_primary: bool,
+    pub message_count: usize,
+}
+
 /// Top-level payload embedded in the HTML viewer (and the shape of
 /// `--format json`'s `viewer` sibling field).
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +134,10 @@ pub struct ExportPayload {
     pub header: ExportHeader,
     pub entries: Vec<ExportEntry>,
     pub stats: ExportStats,
+    /// Related sessions (subagents) included in a multi-session export.
+    /// Empty (and skipped) for single-session exports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<RelatedSession>,
 }
 
 impl ExportHeader {
@@ -202,10 +232,33 @@ fn display_tool_name(name: &str) -> &str {
 
 /// Build the viewer payload from session parts. Kept free of `Session` so the
 /// crate only depends on pure data types.
+/// Input for one related session in a multi-session export.
+#[derive(Debug, Clone)]
+pub struct RelatedSessionInput {
+    pub id: String,
+    pub short_name: Option<String>,
+    pub custom_title: Option<String>,
+    pub model: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub is_primary: bool,
+}
+
+/// Owning session id for entries: `Some` only in multi-session exports,
+/// taken from the primary (is_primary) related session.
+fn owner_id(related: Option<&[RelatedSessionInput]>) -> Option<String> {
+    related
+        .and_then(|list| list.iter().find(|s| s.is_primary))
+        .map(|s| s.id.clone())
+}
+
 pub fn build_payload(
     header: ExportHeader,
     messages: &[StoredMessage],
     compaction_summary: Option<&str>,
+    // `None` for a single-session export (no session_id on entries); `Some`
+    // tags every entry with its owning session and populates `sessions`.
+    related: Option<&[RelatedSessionInput]>,
 ) -> ExportPayload {
     let mut entries = Vec::new();
     let mut stats = ExportStats::default();
@@ -215,6 +268,7 @@ pub fn build_payload(
             id: "compaction".to_string(),
             timestamp: None,
             summary: summary.to_string(),
+            session_id: owner_id(related),
         });
         stats.compactions += 1;
     }
@@ -243,6 +297,7 @@ pub fn build_payload(
                     content: content.clone(),
                     is_error: is_error.unwrap_or(false),
                     duration_ms: message.tool_duration_ms,
+                    session_id: owner_id(related),
                 });
             }
         }
@@ -263,6 +318,7 @@ pub fn build_payload(
                     id,
                     timestamp: ts,
                     text,
+                    session_id: owner_id(related),
                     display_role: message
                         .display_role
                         .as_ref()
@@ -300,6 +356,7 @@ pub fn build_payload(
                     text: assistant_text_of(message),
                     thinking: thinking_of(message),
                     tool_calls,
+                    session_id: owner_id(related),
                 });
                 if let Some(usage) = &message.token_usage {
                     stats.input_tokens += usage.input_tokens;
@@ -311,10 +368,28 @@ pub fn build_payload(
         }
     }
 
+    let sessions: Vec<RelatedSession> = related
+        .map(|list| {
+            list.iter()
+                .map(|s| RelatedSession {
+                    id: s.id.clone(),
+                    short_name: s.short_name.clone(),
+                    custom_title: s.custom_title.clone(),
+                    model: s.model.clone(),
+                    created_at: s.created_at.clone(),
+                    updated_at: s.updated_at.clone(),
+                    is_primary: s.is_primary,
+                    message_count: if s.is_primary { messages.len() } else { 0 },
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     ExportPayload {
         header,
         entries,
         stats,
+        sessions,
     }
 }
 
@@ -360,6 +435,7 @@ mod tests {
                 &SessionStatus::Active,
             ),
             &messages,
+            None,
             None,
         );
         assert!(payload.entries.is_empty());
@@ -408,6 +484,7 @@ mod tests {
                 &SessionStatus::Active,
             ),
             &messages,
+            None,
             None,
         );
         assert_eq!(payload.stats.user_messages, 0);

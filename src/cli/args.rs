@@ -982,6 +982,12 @@ pub(crate) enum SessionCommand {
         /// Open the exported file with the system viewer
         #[arg(long)]
         open: bool,
+
+        /// Fork: include related subagent sessions (parent/child links, same
+        /// working dir within ±6h - the same matcher `jcode replay --swarm`
+        /// uses) and render a per-session Gantt timeline
+        #[arg(long)]
+        swarm: bool,
     },
 }
 

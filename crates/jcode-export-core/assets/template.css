@@ -884,6 +884,15 @@
       gap: 2px;
     }
 
+    .gantt-lane-label {
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: bold;
+      padding: 6px 0 2px 0;
+      border-bottom: 1px dashed var(--dim);
+      margin-bottom: 2px;
+    }
+
     .gantt-row {
       position: relative;
       height: 14px;

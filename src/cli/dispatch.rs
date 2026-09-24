@@ -452,11 +452,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 format,
                 output,
                 open,
+                swarm,
             } => commands::run_session_export_command(
                 &session,
                 format.as_deref(),
                 output.as_deref(),
                 open,
+                swarm,
             )?,
         },
         Some(Command::Ambient(subcmd)) => {

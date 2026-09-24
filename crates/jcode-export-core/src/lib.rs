@@ -22,6 +22,7 @@ pub mod payload;
 
 pub use payload::{
     build_payload, ExportEntry, ExportHeader, ExportPayload, ExportStats, ExportToolCall,
+    RelatedSession, RelatedSessionInput,
 };
 
 const TEMPLATE_HTML: &str = include_str!("../assets/template.html");
@@ -82,6 +83,10 @@ pub struct SessionExportInput<'a> {
     pub status: &'a SessionStatus,
     pub messages: &'a [StoredMessage],
     pub compaction: Option<&'a StoredCompactionState>,
+    /// Related sessions (subagents) for a multi-session export. `None` =
+    /// single-session export: entries carry no `session_id` and the payload's
+    /// `sessions` stays empty.
+    pub related: Option<&'a [payload::RelatedSessionInput]>,
     /// The session file content serialized as raw JSON (for `session` in the
     /// JSON export). `None` skips the wrapper and emits only the viewer data.
     pub raw_session_json: Option<&'a serde_json::Value>,
@@ -109,6 +114,7 @@ impl<'a> SessionExportInput<'a> {
             self.header(),
             self.messages,
             self.compaction.map(|c| c.summary_text.as_str()),
+            self.related.as_deref(),
         )
     }
 }
@@ -176,6 +182,7 @@ mod tests {
             status: leaked_status(),
             messages: leaked_messages(),
             compaction: None,
+        related: None,
             raw_session_json: raw,
         }
     }
@@ -260,6 +267,60 @@ mod tests {
         assert_eq!(payload["entries"].as_array().unwrap().len(), 2);
     }
 
+
+    #[test]
+    fn related_sessions_tag_entries_and_payload() {
+        let primary = RelatedSessionInput {
+            id: "session_main".into(),
+            short_name: Some("main".into()),
+            custom_title: None,
+            model: Some("m1".into()),
+            created_at: None,
+            updated_at: None,
+            is_primary: true,
+        };
+        let sub = RelatedSessionInput {
+            id: "session_sub_1".into(),
+            short_name: Some("sloth".into()),
+            custom_title: None,
+            model: Some("m2".into()),
+            created_at: None,
+            updated_at: None,
+            is_primary: false,
+        };
+        let input = SessionExportInput {
+            id: "session_main",
+            parent_id: None,
+            title: None,
+            custom_title: None,
+            short_name: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            provider_key: None,
+            working_dir: None,
+            status: Box::leak(Box::new(SessionStatus::Active)),
+            messages: leaked_messages(),
+            compaction: None,
+            related: Some(&[primary, sub]),
+            raw_session_json: None,
+        };
+        let payload = input.payload();
+        assert_eq!(payload.sessions.len(), 2);
+        assert!(payload.sessions[0].is_primary);
+        assert_eq!(payload.sessions[1].short_name.as_deref(), Some("sloth"));
+        // All entries carry the primary session id.
+        for entry in &payload.entries {
+            let sid = match entry {
+                ExportEntry::User { session_id, .. }
+                | ExportEntry::Assistant { session_id, .. }
+                | ExportEntry::ToolResult { session_id, .. }
+                | ExportEntry::Compaction { session_id, .. } => session_id,
+            };
+            assert_eq!(sid.as_deref(), Some("session_main"));
+        }
+    }
+
     #[test]
     fn html_escapes_session_content() {
         // A session containing HTML/script must not execute it: marked's HTML
@@ -290,6 +351,7 @@ mod tests {
             status: Box::leak(Box::new(SessionStatus::Active)),
             messages,
             compaction: None,
+            related: None,
             raw_session_json: None,
         };
         let html = export_html(&input).unwrap();

@@ -16,6 +16,7 @@ pub fn run_session_export_command(
     format: Option<&str>,
     output: Option<&str>,
     open_after: bool,
+    include_swarm: bool,
 ) -> Result<()> {
     let format = format
         .and_then(jcode_export_core::ExportFormat::parse)
@@ -33,6 +34,56 @@ pub fn run_session_export_command(
         let path = crate::session::session_path(&resolved_id)?;
         (crate::session::Session::load(&resolved_id)?, Some(path))
     };
+
+    // Fork: optionally pull in related subagent sessions (same matcher as
+    // `jcode replay --swarm`: parent/child links, same working dir, ±6h).
+    let related_sessions: Vec<crate::session::Session> = if include_swarm {
+        crate::replay::load_swarm_sessions(&session.id, false)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|swarm| swarm.session)
+            .filter(|s| s.id != session.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let related_inputs: Vec<jcode_export_core::RelatedSessionInput> = std::iter::once(
+        jcode_export_core::RelatedSessionInput {
+            id: session.id.clone(),
+            short_name: session.short_name.clone(),
+            custom_title: session.custom_title.clone(),
+            model: session.model.clone(),
+            created_at: Some(
+                session
+                    .created_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+            updated_at: Some(
+                session
+                    .updated_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+            is_primary: true,
+        },
+    )
+    .chain(related_sessions.iter().map(|s| {
+        jcode_export_core::RelatedSessionInput {
+            id: s.id.clone(),
+            short_name: s.short_name.clone(),
+            custom_title: s.custom_title.clone(),
+            model: s.model.clone(),
+            created_at: Some(
+                s.created_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+            updated_at: Some(
+                s.updated_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+            is_primary: false,
+        }
+    }))
+    .collect();
 
     // Raw stored session JSON: re-read the file so the export preserves the
     // exact storage shape (skip-cached fields like persist state never hit
@@ -65,6 +116,7 @@ pub fn run_session_export_command(
         status: &session.status,
         messages: &session.messages,
         compaction: compaction.as_ref(),
+        related: Some(&related_inputs),
         raw_session_json: raw_session_json.as_ref(),
     };
 

@@ -12,7 +12,7 @@
         bytes[i] = binary.charCodeAt(i);
       }
       const data = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-      const { header, entries, stats } = data;
+      const { header, entries, stats, sessions } = data;
 
       // ============================================================
       // HELPERS
@@ -407,7 +407,6 @@
 
       function computeTimeline() {
         const rows = [];
-        let prev = null;
         for (const entry of entries) {
           const t = parseTs(entry.timestamp);
           if (!t || isNaN(t.getTime())) continue;
@@ -421,9 +420,9 @@
             time,
             end,
             label: entryLabel(entry),
-            kind: entryKind(entry)
+            kind: entryKind(entry),
+            sessionId: entry.session_id || null
           });
-          prev = rows[rows.length - 1];
         }
         return rows;
       }
@@ -464,6 +463,11 @@
         return null;
       }
 
+      function sessionLabel(meta) {
+        if (!meta) return '';
+        return meta.custom_title || meta.title || meta.short_name || meta.id;
+      }
+
       function renderGantt() {
         const container = document.getElementById('gantt-container');
         if (!container) return;
@@ -481,14 +485,36 @@
           '</span><span>' + escapeHtml(formatSpan(span)) + '</span><span>' +
           escapeHtml(formatTimestamp(new Date(end).toISOString())) + '</span></div>';
         html += '<div class="gantt-body">';
-        // one lane per entry; bar width = duration when known else small tick
-        for (const row of rows) {
-          const left = ((row.time - start) / span) * width;
-          const widthPct = row.end != null ? Math.max(((row.end - row.time) / span) * width, 0.4) : 0.6;
-          html += '<div class="gantt-row" data-target="entry-' + escapeHtml(row.entry.id) + '" title="' + escapeHtml(row.label) + '">' +
-            '<div class="gantt-bar gantt-' + row.kind + '" style="left:' + left.toFixed(2) + '%;width:' + widthPct.toFixed(2) + '%"></div>' +
-            '<div class="gantt-label">' + escapeHtml(row.label) + '</div>' +
-            '</div>';
+
+        // Multi-session export: one labeled lane per session (subagents).
+        if (sessions && sessions.length > 1) {
+          const metaById = new Map(sessions.map(s => [s.id, s]));
+          for (const session of sessions) {
+            const laneRows = rows.filter(r => (r.sessionId || sessions[0].id) === session.id);
+            if (!laneRows.length) continue;
+            html += '<div class="gantt-lane-label">' +
+              (session.is_primary ? '&#9733; ' : '&#8901; ') +
+              escapeHtml(sessionLabel(session)) +
+              (session.model ? ' <span class="muted">(' + escapeHtml(session.model) + ')</span>' : '') +
+              '</div>';
+            for (const row of laneRows) {
+              const left = ((row.time - start) / span) * width;
+              const widthPct = row.end != null ? Math.max(((row.end - row.time) / span) * width, 0.4) : 0.6;
+              html += '<div class="gantt-row" data-target="entry-' + escapeHtml(row.entry.id) + '" title="' + escapeHtml(row.label) + '">' +
+                '<div class="gantt-bar gantt-' + row.kind + '" style="left:' + left.toFixed(2) + '%;width:' + widthPct.toFixed(2) + '%"></div>' +
+                '<div class="gantt-label">' + escapeHtml(row.label) + '</div>' +
+                '</div>';
+            }
+          }
+        } else {
+          for (const row of rows) {
+            const left = ((row.time - start) / span) * width;
+            const widthPct = row.end != null ? Math.max(((row.end - row.time) / span) * width, 0.4) : 0.6;
+            html += '<div class="gantt-row" data-target="entry-' + escapeHtml(row.entry.id) + '" title="' + escapeHtml(row.label) + '">' +
+              '<div class="gantt-bar gantt-' + row.kind + '" style="left:' + left.toFixed(2) + '%;width:' + widthPct.toFixed(2) + '%"></div>' +
+              '<div class="gantt-label">' + escapeHtml(row.label) + '</div>' +
+              '</div>';
+          }
         }
         html += '</div>';
         container.innerHTML = html;
@@ -641,6 +667,7 @@
         parts.push(stats.assistant_messages + ' assistant');
         parts.push(stats.tool_calls + ' tool calls');
         if (stats.compactions) parts.push(stats.compactions + ' compactions');
+        if (sessions && sessions.length > 1) parts.push((sessions.length - 1) + ' subagent sessions');
 
         const tokenParts = [];
         if (stats.input_tokens) tokenParts.push('\u2191' + formatTokens(stats.input_tokens));
