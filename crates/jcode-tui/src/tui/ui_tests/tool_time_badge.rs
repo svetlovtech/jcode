@@ -193,6 +193,63 @@ fn test_tool_row_ms_duration_observed_output() {
     assert!(row.contains(&expected_stamp), "stamp missing: {row}");
 }
 
+/// Fork acceptance proof (user request: "желтым и красным выделяется еще
+/// и время, а я бы хотел чтобы duration только"): the time-of-day stamp
+/// span stays neutral blue-grey even for a slow tool, while the duration
+/// span carries the severity color (48.3s -> Warning amber). Pins both
+/// spans' styles through the real render pipeline.
+#[test]
+fn test_tool_row_stamp_stays_neutral_only_duration_is_severity_colored() {
+    let _lock = viewport_snapshot_test_lock();
+    let _config_guard = isolate_config_home();
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-sev".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "sleep 48" }),
+            intent: None,
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(48_300),
+    };
+
+    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
+    let spans = &lines
+        .first()
+        .expect("tool row rendered")
+        .spans;
+
+    let stamp_span = spans
+        .iter()
+        .find(|s| s.content.contains(&expected_stamp))
+        .expect("stamp span present");
+    assert_eq!(
+        stamp_span.style.fg,
+        Some(rgb(120, 130, 145)),
+        "stamp must stay neutral blue-grey, not severity-colored: {stamp_span:?}"
+    );
+
+    let duration_span = spans
+        .iter()
+        .find(|s| s.content.contains("48.3s"))
+        .expect("duration span present");
+    assert_eq!(
+        duration_span.style.fg,
+        Some(rgb(214, 184, 92)),
+        "48.3s is Warning-range: duration span must be amber: {duration_span:?}"
+    );
+}
+
 /// Fork: end-to-end acceptance of the user's UTC+3 request — the exact
 /// scenario from their screenshot (near-instant agentgrep row) rendered
 /// with display.timestamp_tz = "UTC+3" set through the isolated config

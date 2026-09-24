@@ -4024,10 +4024,20 @@ pub(crate) fn render_tool_message(
         UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
     // Fork: " · 17:32:05 · 2m 3s" (time-of-day + duration) rides with the
     // token suffix when the stored tool result carries those fields.
-    let time_suffix = tool_row_time_suffix(msg);
-    let time_suffix_width = time_suffix
+    let time_segments = tool_row_time_segments(msg);
+    let time_suffix_width = time_segments
         .as_ref()
-        .map(|(label, _)| UnicodeWidthStr::width(label.as_str()))
+        .map(|segs| {
+            segs.stamp
+                .as_deref()
+                .map(UnicodeWidthStr::width)
+                .unwrap_or(0)
+                + segs
+                    .duration
+                    .as_ref()
+                    .map(|(label, _)| UnicodeWidthStr::width(label.as_str()))
+                    .unwrap_or(0)
+        })
         .unwrap_or(0);
     let edit_suffix_width = if is_edit_tool && has_diff_changes {
         UnicodeWidthStr::width(format!(" (+{} -{})", additions, deletions).as_str())
@@ -4125,12 +4135,21 @@ pub(crate) fn render_tool_message(
 
     // Fork: append the time-of-day + duration badge after the token count so
     // each tool row answers "when did this run and how long did it take".
-    // Duration color mirrors the token badge severity: >= 10s warns, >= 60s
-    // alarms.
-    let token_suffix = if let Some((label, severity)) = time_suffix.as_ref() {
-        let color = severity_badge_color(*severity, rgb(120, 130, 145));
+    // Only the duration carries the severity color (>= 10s warns, >= 60s
+    // alarms); the time-of-day stamp stays neutral so the clock is never
+    // painted red or amber (user request).
+    let token_suffix = if let Some(segments) = time_segments.as_ref() {
         let mut spans = token_suffix.spans;
-        spans.push(Span::styled(label.clone(), Style::default().fg(color)));
+        if let Some(stamp) = segments.stamp.as_deref() {
+            spans.push(Span::styled(
+                stamp.to_string(),
+                Style::default().fg(rgb(120, 130, 145)),
+            ));
+        }
+        if let Some((label, severity)) = segments.duration.as_ref() {
+            let color = severity_badge_color(*severity, rgb(120, 130, 145));
+            spans.push(Span::styled(label.clone(), Style::default().fg(color)));
+        }
         Line::from(spans)
     } else {
         token_suffix
@@ -4509,31 +4528,40 @@ fn severity_badge_color(
     }
 }
 
-/// Fork: time badge for a tool row, rendered after the token count:
-/// " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took), with the
-/// duration severity for coloring. The stamp honors `display.timestamp_tz`
-/// (e.g. "UTC+3"); without it the machine's local timezone is used.
-fn tool_row_time_suffix(msg: &DisplayMessage) -> Option<(String, crate::util::ApproxTokenSeverity)> {
+/// Fork: segments of the tool row time badge, rendered after the token
+/// count: " · 17:32:05" (when it ran) plus " · 2m 3s" (how long it took).
+/// They are separate spans so only the duration carries the severity color
+/// (user request: highlight slow tools, keep the clock neutral). The stamp
+/// honors `display.timestamp_tz` (e.g. "UTC+3"); without it the machine's
+/// local timezone is used.
+struct ToolRowTimeSegments {
+    stamp: Option<String>,
+    /// (label, severity): the severity colors the duration span only.
+    duration: Option<(String, crate::util::ApproxTokenSeverity)>,
+}
+
+fn tool_row_time_segments(msg: &DisplayMessage) -> Option<ToolRowTimeSegments> {
     let tz = crate::config::config().display.timestamp_fixed_offset_secs();
     let stamp = msg.timestamp.map(|ts| {
         let formatted = match tz.and_then(chrono::FixedOffset::east_opt) {
             Some(offset) => ts.with_timezone(&offset).format("%H:%M:%S").to_string(),
             None => ts.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
         };
-        formatted
+        format!(" · {formatted}")
     });
-    let duration_ms = msg.tool_duration_ms.filter(|ms| *ms > 0);
-    let duration = duration_ms.map(format_tool_row_duration);
-    let severity = duration_ms
-        .map(crate::util::tool_duration_severity)
-        .unwrap_or(crate::util::ApproxTokenSeverity::Normal);
-    let label = match (stamp, duration) {
-        (Some(t), Some(d)) => Some(format!(" · {t} · {d}")),
-        (Some(t), None) => Some(format!(" · {t}")),
-        (None, Some(d)) => Some(format!(" · {d}")),
-        (None, None) => None,
-    };
-    label.map(|l| (l, severity))
+    let duration = msg
+        .tool_duration_ms
+        .filter(|ms| *ms > 0)
+        .map(|ms| {
+            (
+                format!(" · {}", format_tool_row_duration(ms)),
+                crate::util::tool_duration_severity(ms),
+            )
+        });
+    if stamp.is_none() && duration.is_none() {
+        return None;
+    }
+    Some(ToolRowTimeSegments { stamp, duration })
 }
 
 /// Fork: compact tool duration: milliseconds under a second ("45ms",

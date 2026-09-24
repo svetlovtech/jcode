@@ -3441,7 +3441,13 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
         timestamp: Some(stamp),
         tool_duration_ms: Some(123_400),
     };
-    let (suffix, severity) = super::tool_row_time_suffix(&msg).expect("suffix present");
+    let (suffix, severity) = {
+        let segs = super::tool_row_time_segments(&msg).expect("segments present");
+        (
+            segs.stamp.clone().unwrap_or_default() + &segs.duration.clone().map(|(l, _)| l).unwrap_or_default(),
+            segs.duration.as_ref().map(|(_, s)| *s).unwrap_or(crate::util::ApproxTokenSeverity::Normal),
+        )
+    };
     assert!(suffix.contains(":"), "time-of-day stamp missing: {suffix}");
     assert!(suffix.contains("2m 3s"), "duration missing: {suffix}");
     assert_eq!(
@@ -3455,7 +3461,13 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
         timestamp: None,
         ..msg.clone()
     };
-    let (suffix, severity) = super::tool_row_time_suffix(&msg_ms).expect("suffix present");
+    let (suffix, severity) = {
+        let segs = super::tool_row_time_segments(&msg_ms).expect("segments present");
+        (
+            segs.stamp.clone().unwrap_or_default() + &segs.duration.clone().map(|(l, _)| l).unwrap_or_default(),
+            segs.duration.as_ref().map(|(_, s)| *s).unwrap_or(crate::util::ApproxTokenSeverity::Normal),
+        )
+    };
     assert!(suffix.contains("400ms"), "sub-second duration missing: {suffix}");
     assert_eq!(
         severity,
@@ -3469,7 +3481,7 @@ fn tool_row_time_badge_shows_stamp_and_duration() {
         tool_duration_ms: None,
         ..msg.clone()
     };
-    assert!(super::tool_row_time_suffix(&msg_none).is_none());
+    assert!(super::tool_row_time_segments(&msg_none).is_none());
 }
 
 #[test]
