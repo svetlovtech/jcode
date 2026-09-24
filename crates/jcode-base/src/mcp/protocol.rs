@@ -537,6 +537,11 @@ impl McpConfig {
                         .get("shared")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(true);
+                    // Codex uses `enabled = false` to keep a server registered
+                    // but not started; carrying it over keeps disabled servers
+                    // disabled after the one-time import instead of silently
+                    // activating them.
+                    let enabled = server.get("enabled").and_then(|v| v.as_bool());
                     config.servers.insert(
                         name.clone(),
                         McpServerConfig {
@@ -547,7 +552,7 @@ impl McpConfig {
                             transport: None,
                             url: None,
                             headers: std::collections::HashMap::new(),
-                            enabled: None,
+                            enabled,
                             disabled: None,
                             timeout_secs: None,
                         },
