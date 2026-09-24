@@ -11,7 +11,7 @@ Everything below is enough to resume in a fresh session.
 CI requires every PR to reference an existing issue (`require-issue.yml`),
 so PR bodies must contain `Closes #1453` / `Closes #1454`.
 
-## PR #1: duration badge — branch `pr/tool-duration-wip` (pushed to this fork)
+## PR #1: duration badge — branch `feat/issue-1453-tool-duration` (pushed to this fork)
 
 Base: upstream/master `b65931032`. Two commits:
 
@@ -36,13 +36,13 @@ tests: wire serde back-compat (1), core severity boundaries (1), TUI acceptance
 2. Full `cargo test -p jcode-tui --lib` run; delete `target/debug` in the
    worktree afterwards (disk hygiene).
 3. Push branch to this fork, then
-   `gh pr create --repo 1jehuang/jcode --head svetlovtech:pr/tool-duration-wip`
+   `gh pr create --repo 1jehuang/jcode --head svetlovtech:feat/issue-1453-tool-duration`
    with `Closes #1453`.
 
 ## PR #2: timestamp badge — not started
 
 Stacks ON TOP of the finished PR #1 branch (same test literals churn).
-Create `pr/tool-timestamp` from `pr/tool-duration-wip` when #1 is final.
+Create `feat/issue-1454-tool-timestamp` from `feat/issue-1453-tool-duration` when #1 is final.
 
 Fork commits to port (find with `git log upstream/master..svetlovtech/main`):
 
@@ -60,7 +60,7 @@ Fork commits to port (find with `git log upstream/master..svetlovtech/main`):
 ## Mechanics
 
 - Worktree: `cd /home/ubuntu/work/github/svetlovtech/jcode && git worktree add
-  ../jcode-pr-duration pr/tool-duration-wip`
+  ../jcode-pr-duration feat/issue-1453-tool-duration`
 - Commit style: no hooks bypass needed in worktree (`-c core.hooksPath=/dev/null`
   was used for the fork's pre-commit; upstream worktree has no hooks configured).
 - Disk: `rm -rf target/debug` in the worktree after test runs.
