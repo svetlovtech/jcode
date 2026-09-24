@@ -3158,6 +3158,7 @@ dependencies = [
  "global-hotkey",
  "hex",
  "jcode-build-meta",
+ "jcode-export-core",
  "jcode-harness-api",
  "jcode-harness-api-server",
  "jcode-provider-anthropic-runtime",
@@ -3454,6 +3455,20 @@ dependencies = [
  "tokenizers",
  "tract-hir",
  "tract-onnx",
+]
+
+[[package]]
+name = "jcode-export-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "jcode-message-types",
+ "jcode-session-types",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4153,6 +4168,7 @@ dependencies = [
  "jcode-build-meta",
  "jcode-config-types",
  "jcode-core",
+ "jcode-export-core",
  "jcode-fuzzy",
  "jcode-logging",
  "jcode-productivity-core",

@@ -73,6 +73,10 @@ pub(crate) mod fork_ask;
 /// Fork: interactive ask_user modal (all logic in the dedicated module;
 /// upstream files carry small call sites).
 pub(crate) mod fork_ask_modal;
+/// Fork: `/export` writes the session to JSON or a self-contained HTML viewer.
+pub(crate) mod fork_export;
+/// Fork: `/info` tool-call statistics (fork-only logic behind a small hook).
+pub(crate) mod fork_info_tools;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;

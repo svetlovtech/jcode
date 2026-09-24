@@ -197,6 +197,11 @@ pub(super) fn handle_bus_event(
             app.handle_productivity_report_ready(event);
             true
         }
+        // Fork: /export finished writing; surface the path in the transcript.
+        Ok(BusEvent::SessionExportReady(event)) => {
+            app.handle_session_export_ready(event);
+            true
+        }
         Ok(BusEvent::MermaidRenderCompleted) => true,
         // Fork: ask_user resolved on another surface (Telegram won); close the
         // local modal (mirror of the remote handler).

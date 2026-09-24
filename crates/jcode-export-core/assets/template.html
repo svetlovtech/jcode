@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jcode session export</title>
+  <style>
+{{CSS}}
+  </style>
+</head>
+<body>
+  <div id="read-progress"></div>
+  <button id="back-to-top" title="Back to top">&uarr;</button>
+  <button id="hamburger" title="Open sidebar">&#9776;</button>
+  <div id="sidebar-overlay"></div>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-controls">
+          <input type="text" class="sidebar-search" id="tree-search" placeholder="Search...">
+        </div>
+        <div class="sidebar-filters">
+          <button class="filter-btn active" data-filter="default" title="Hide tool-only assistant rows">Default</button>
+          <button class="filter-btn" data-filter="user-only" title="Only user messages">User</button>
+          <button class="filter-btn" data-filter="all" title="Show everything">All</button>
+          <button class="sidebar-close" id="sidebar-close" title="Close">&times;</button>
+        </div>
+      </div>
+      <div class="tree-container" id="tree-container"></div>
+      <div class="tree-status" id="tree-status"></div>
+    </aside>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
+    <main id="content">
+      <div id="header-container"></div>
+      <div class="gantt" id="gantt">
+        <div class="gantt-title">Timeline (G) &middot; click a row to jump</div>
+        <div id="gantt-container"></div>
+      </div>
+      <div id="messages"></div>
+    </main>
+  </div>
+
+  <script id="session-data" type="application/json">{{SESSION_DATA}}</script>
+
+  <!-- Vendored: marked (MIT) -->
+  <script>{{MARKED_JS}}</script>
+
+  <!-- Vendored: highlight.js (BSD-3-Clause) -->
+  <script>{{HIGHLIGHT_JS}}</script>
+
+  <script>
+{{JS}}
+  </script>
+</body>
+</html>

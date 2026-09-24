@@ -239,6 +239,8 @@ fn dispatch_single_local_command(app: &mut App, trimmed: &str) -> bool {
         || super::debug::handle_debug_command(app, trimmed)
         // Fork: /mcp manages MCP servers from the TUI (local process only).
         || super::mcp_command::handle_mcp_command(app, trimmed)
+        // Fork: /export writes the session to JSON or a self-contained HTML viewer.
+        || super::fork_export::handle_export_command(app, trimmed)
         || super::model_context::handle_model_command(app, trimmed)
         || app.handle_usage_reset_command(trimmed)
         || super::commands::handle_usage_command(app, trimmed)

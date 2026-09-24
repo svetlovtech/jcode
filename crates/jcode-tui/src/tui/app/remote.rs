@@ -641,6 +641,11 @@ pub(super) async fn handle_bus_event(
             app.handle_productivity_report_ready(event);
             true
         }
+        // Fork: /export finished writing; surface the path in the transcript.
+        Ok(BusEvent::SessionExportReady(event)) => {
+            app.handle_session_export_ready(event);
+            true
+        }
         Ok(BusEvent::MermaidRenderCompleted) => true,
         // Fork: the ask_user tool resolved this question on another surface
         // (Telegram won the race); close the local modal immediately.

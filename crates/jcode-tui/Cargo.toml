@@ -31,6 +31,9 @@ jcode-protocol = { path = "../jcode-protocol" }
 # the hot trig loops stay optimized even in debug/selfdev builds.
 jcode-tui-anim = { path = "../jcode-tui-anim" }
 
+# Fork: `/export` (session export to JSON / self-contained HTML viewer).
+jcode-export-core = { path = "../jcode-export-core" }
+
 # Async runtime
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 futures = "0.3"

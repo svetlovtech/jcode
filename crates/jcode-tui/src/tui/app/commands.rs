@@ -2705,7 +2705,7 @@ pub(super) fn handle_test_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
-fn slash_command_rest<'a>(trimmed: &'a str, command: &str) -> Option<&'a str> {
+pub(super) fn slash_command_rest<'a>(trimmed: &'a str, command: &str) -> Option<&'a str> {
     if trimmed == command {
         Some("")
     } else {

@@ -446,6 +446,18 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 clear,
                 json,
             } => commands::run_session_rename_command(&session, name.as_deref(), clear, json)?,
+            // Fork: session export (JSON / self-contained HTML viewer)
+            SessionCommand::Export {
+                session,
+                format,
+                output,
+                open,
+            } => commands::run_session_export_command(
+                &session,
+                format.as_deref(),
+                output.as_deref(),
+                open,
+            )?,
         },
         Some(Command::Ambient(subcmd)) => {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;

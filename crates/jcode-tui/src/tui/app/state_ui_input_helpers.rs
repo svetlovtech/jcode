@@ -205,6 +205,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/save", "Bookmark session for easy access"),
     RegisteredCommand::public("/unsave", "Remove bookmark from session"),
     RegisteredCommand::public("/rename", "Rename current session"),
+    RegisteredCommand::public(
+        "/export",
+        "Export session to self-contained HTML (or --format json via /export json)",
+    ),
     RegisteredCommand::public("/fork", "Fork session into a new window (optional prompt)"),
     RegisteredCommand::hidden("/split", "Alias for /fork"),
     RegisteredCommand::public("/transfer", "Compact context into a fresh handoff session"),

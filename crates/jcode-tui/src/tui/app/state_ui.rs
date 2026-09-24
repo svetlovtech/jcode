@@ -2025,6 +2025,13 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
             }
         }
 
+        // Fork: tool-call statistics for this session's visible history.
+        let tool_summary = super::fork_info_tools::summarize_tool_calls(app);
+        if !tool_summary.is_empty() {
+            info.push_str("\nTool calls:\n");
+            info.push_str(&tool_summary);
+        }
+
         if app.is_remote {
             info.push_str("\nRemote Mode: connected\n");
             if let Some(count) = app.remote_client_count {

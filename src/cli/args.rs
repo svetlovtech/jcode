@@ -965,6 +965,24 @@ pub(crate) enum SessionCommand {
         #[arg(long)]
         json: bool,
     },
+
+    /// Fork: export a session to JSON or a self-contained HTML viewer
+    Export {
+        /// Session ID, memorable short name, or path to a session JSON file
+        session: String,
+
+        /// Output format: html (default) or json
+        #[arg(long, value_parser = ["html", "json"])]
+        format: Option<String>,
+
+        /// Write to this path instead of the default (<id>.export.<ext> next to the session file)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Open the exported file with the system viewer
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

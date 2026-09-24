@@ -1035,6 +1035,8 @@ fn test_edge_autoscroll_is_one_line_per_tick_and_stops_on_release() {
         duration_secs: None,
         title: None,
         tool_data: None,
+        timestamp: None,
+        tool_duration_ms: None,
     }];
     app.bump_display_messages_version();
     app.scroll_offset = 0;

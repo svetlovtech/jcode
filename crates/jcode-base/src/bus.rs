@@ -315,6 +315,14 @@ pub struct ProductivityReportPayload {
     pub png_path: std::path::PathBuf,
 }
 
+/// Fork: result of a `/export` run. The worker thread only carries the output
+/// path (the file is already written) so the bus payload stays small.
+#[derive(Clone, Debug)]
+pub struct SessionExportReady {
+    pub session_id: String,
+    pub result: std::result::Result<std::path::PathBuf, String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SidePanelUpdated {
     pub session_id: String,
@@ -473,6 +481,8 @@ pub enum BusEvent {
     MermaidRenderCompleted,
     /// Productivity report finished generating off the UI thread
     ProductivityReportReady(ProductivityReportReady),
+    /// Fork: session export finished writing off the UI thread (`/export`)
+    SessionExportReady(SessionExportReady),
     /// Fork: an ask_user question was answered on a losing surface (e.g.
     /// Telegram) while a client still shows the interactive modal. Carries the
     /// wire request id and the winning answer so the client can close its
