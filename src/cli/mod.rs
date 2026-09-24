@@ -5,6 +5,8 @@ pub mod auth_import;
 pub mod auth_test;
 pub mod commands;
 pub mod debug;
+/// Fork: `jcode session export` CLI handler (fork-only module).
+pub mod fork_session_export;
 pub mod dispatch;
 pub mod hot_exec;
 pub mod login;
