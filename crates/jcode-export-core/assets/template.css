@@ -461,6 +461,112 @@
       font-size: 10px;
     }
 
+    .tool-lines {
+      flex-shrink: 0;
+      color: var(--muted);
+      font-size: 10px;
+      opacity: 0.9;
+    }
+
+    .tool-diffstat {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: bold;
+    }
+
+    .tool-diffstat::before {
+      content: '\25CF ';
+      color: var(--muted);
+    }
+
+    .tool-execution.success .tool-diffstat {
+      color: var(--toolDiffAdded);
+    }
+
+    .turn-group {
+      position: relative;
+    }
+
+    .turn-toggle {
+      position: absolute;
+      left: -14px;
+      top: 6px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+      user-select: none;
+      opacity: 0.6;
+    }
+
+    .turn-toggle:hover {
+      opacity: 1;
+      color: var(--accent);
+    }
+
+    .turn-group.collapsed-turn .assistant-message {
+      display: none;
+    }
+
+    .turn-group.collapsed-turn .user-message::after {
+      content: ' ... (response collapsed, click the arrow to expand)';
+      color: var(--muted);
+      font-size: 10px;
+      font-style: italic;
+    }
+
+    .turn-group.collapsed-turn .turn-toggle::before {
+      content: '\25B8 ';
+    }
+
+    /* Help overlay (?) */
+    #help-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #help-overlay .help-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+    }
+
+    #help-overlay .help-card {
+      position: relative;
+      background: var(--container-bg);
+      border: 1px solid var(--dim);
+      border-radius: 6px;
+      padding: 18px 22px;
+      max-width: 440px;
+      z-index: 101;
+    }
+
+    #help-overlay h2 {
+      font-size: 12px;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+
+    #help-overlay td {
+      padding: 3px 10px 3px 0;
+      font-size: 11px;
+    }
+
+    #help-overlay td:first-child {
+      color: var(--accent);
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    #help-overlay p {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
     .tool-time {
       flex-shrink: 0;
       color: var(--muted);

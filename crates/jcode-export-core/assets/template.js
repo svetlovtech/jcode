@@ -251,6 +251,35 @@
         }
       }
 
+      function countResultLines(result) {
+        if (!result || !result.content) return null;
+        const lines = result.content.split('\n').length;
+        return lines > 0 ? lines : null;
+      }
+
+      function editDiffStat(args, result) {
+        // Prefer result content diff lines; fall back to old/new_string args.
+        let source = null;
+        if (result && result.content && /(^|\n)[+-]/.test(result.content)) {
+          source = result.content;
+        } else {
+          const oldString = str(args.old_string);
+          const newString = str(args.new_string);
+          if (oldString !== null || newString !== null) {
+            const parts = [];
+            if (oldString) for (const line of oldString.split('\n')) parts.push('-' + line);
+            if (newString) for (const line of newString.split('\n')) parts.push('+' + line);
+            source = parts.join('\n');
+          }
+        }
+        if (!source) return null;
+        const lines = source.split('\n');
+        const added = lines.filter(l => l.startsWith('+')).length;
+        const removed = lines.filter(l => l.startsWith('-')).length;
+        if (!added && !removed) return null;
+        return '+' + added + ' -' + removed;
+      }
+
       function renderToolCall(call) {
         const result = resultByCallId.get(call.id);
         const isError = result ? result.is_error : false;
@@ -268,6 +297,14 @@
           ? '<span class="tool-duration">' + escapeHtml(formatDuration(duration)) + '</span>' : '';
         const timeHtml = result && result.timestamp
           ? '<span class="tool-time">' + escapeHtml(formatTimeShort(result.timestamp)) + '</span>' : '';
+
+        // Extra row badges: result line count + edit diff stat.
+        const resultLines = countResultLines(result);
+        const linesBadge = (resultLines != null && resultLines > 3)
+          ? '<span class="tool-lines">' + resultLines + ' lines</span>' : '';
+        const diffStat = (name === 'edit' || name === 'write') ? editDiffStat(args, result) : null;
+        const diffBadge = diffStat
+          ? '<span class="tool-diffstat">' + escapeHtml(diffStat) + '</span>' : '';
 
         // Expanded body: full arguments + full output.
         let body = '<div class="tool-detail">';
@@ -294,13 +331,25 @@
           '<span class="tool-status tool-status-' + statusText + '">' + icon + '</span>' +
           '<span class="tool-name">' + escapeHtml(name) + '</span>' +
           '<span class="tool-detail-summary">' + detail + '</span>' +
-          durationHtml + timeHtml +
+          diffBadge + linesBadge + durationHtml + timeHtml +
           '</div>' + body + '</div>';
       }
 
       // ============================================================
       // ENTRY RENDERING
       // ============================================================
+
+      // Turn-group tracking: an assistant entry closes the group opened by
+      // the nearest preceding user prompt. Global flag set while rendering.
+      let turnGroupOpen = false;
+
+      function entryBelongsToTurnGroup(entry) {
+        if (turnGroupOpen) {
+          turnGroupOpen = false;
+          return true;
+        }
+        return false;
+      }
 
       function renderEntry(entry) {
         const ts = formatTimestamp(entry.timestamp);
@@ -310,7 +359,12 @@
         if (entry.type === 'user') {
           const roleTag = entry.display_role
             ? '<div class="display-role-tag">[' + escapeHtml(entry.display_role) + ']</div>' : '';
-          return '<div class="user-message" id="' + entryDomId + '" data-user-prompt>' + roleTag + tsHtml +
+          // Turn group: this user prompt plus the assistant response that
+          // follows it collapse together (Collapse turns, Shift+C).
+          turnGroupOpen = true;
+          return '<div class="turn-group" id="turn-' + escapeHtml(entry.id) + '">' +
+            '<div class="turn-toggle" onclick="if(window.getSelection().toString())return;this.parentElement.classList.toggle(\'collapsed-turn\')" title="Collapse/expand this turn (Shift+C toggles all)">&#9662;</div>' +
+            '<div class="user-message" id="' + entryDomId + '" data-user-prompt>' + roleTag + tsHtml +
             '<div class="markdown-content">' + safeMarkedParse(entry.text) + '</div></div>';
         }
 
@@ -330,6 +384,8 @@
             html += renderToolCall(call);
           }
           html += '</div>';
+          // Close the turn group opened by the preceding user prompt (if any).
+          if (entryBelongsToTurnGroup(entry)) { html += '</div>'; }
           return html;
         }
 
@@ -598,7 +654,7 @@
 
         let html = '<div class="header">' +
           '<h1>jcode session: ' + escapeHtml(sessionTitle()) + '</h1>' +
-          '<div class="muted" style="font-size: 10px; margin-bottom: 8px">Keys: T thinking &middot; O tool details &middot; G timeline &middot; J/K next/prev prompt</div>' +
+          '<div class="muted" style="font-size: 10px; margin-bottom: 8px">Keys: ? help &middot; T thinking &middot; O tool details &middot; G timeline &middot; J/K prompts &middot; Shift+C turns</div>' +
           '<div class="header-actions">' +
           '<button type="button" class="header-toggle-btn" data-action="toggle-thinking" title="Toggle thinking (T)">Thinking</button>' +
           '<button type="button" class="header-toggle-btn" data-action="toggle-tools" title="Expand every tool call (O)">Tool details</button>' +
@@ -803,12 +859,51 @@
         }
         if (isEditableTarget(document.activeElement)) return;
         const key = e.key.toLowerCase();
-        if (key === 't') { e.preventDefault(); toggleThinking(); }
+        if (key === '?' || (e.shiftKey && key === '/')) {
+          e.preventDefault();
+          toggleHelpOverlay();
+        }
+        else if (e.shiftKey && key === 'c') {
+          e.preventDefault();
+          toggleAllTurns();
+        }
+        else if (key === 't') { e.preventDefault(); toggleThinking(); }
         else if (key === 'o') { e.preventDefault(); toggleToolOutputs(); }
         else if (key === 'g') { e.preventDefault(); toggleGantt(); }
         else if (key === 'j' || e.key === 'PageDown') { e.preventDefault(); jumpUserPrompt(1); }
         else if (key === 'k' || e.key === 'PageUp') { e.preventDefault(); jumpUserPrompt(-1); }
       });
+
+      function toggleHelpOverlay() {
+        let overlay = document.getElementById('help-overlay');
+        if (overlay) {
+          overlay.remove();
+          return;
+        }
+        overlay = document.createElement('div');
+        overlay.id = 'help-overlay';
+        overlay.innerHTML =
+          '<div class="help-card"><h2>Keyboard</h2><table>' +
+          '<tr><td>?</td><td>this help</td></tr>' +
+          '<tr><td>T</td><td>show/hide thinking</td></tr>' +
+          '<tr><td>O</td><td>expand/collapse all tool details</td></tr>' +
+          '<tr><td>G</td><td>show/hide timeline</td></tr>' +
+          '<tr><td>J / K</td><td>next / previous user prompt</td></tr>' +
+          '<tr><td>Shift+C</td><td>collapse/expand all turns</td></tr>' +
+          '<tr><td>Esc</td><td>clear search / close help</td></tr>' +
+          '</table><p>Click a tool row to expand its arguments and result. Click a sidebar or timeline row to jump with a highlight.</p></div>' +
+          '<div class="help-backdrop"></div>';
+        overlay.querySelector('.help-backdrop').addEventListener('click', () => overlay.remove());
+        document.body.appendChild(overlay);
+      }
+
+      function toggleAllTurns() {
+        const groups = document.querySelectorAll('.turn-group');
+        if (!groups.length) return;
+        // If any group is expanded, collapse all; otherwise expand all.
+        const anyExpanded = Array.from(groups).some(g => !g.classList.contains('collapsed-turn'));
+        groups.forEach(g => g.classList.toggle('collapsed-turn', anyExpanded));
+      }
 
       setupSidebarResize();
       setupScrollUi();
