@@ -28,6 +28,68 @@
       --codeBg: rgb(22, 22, 28);
     }
 
+    [data-theme-pref="light"] {
+      --body-bg: rgb(250, 250, 252);
+      --container-bg: rgb(255, 255, 255);
+      --text: rgb(35, 40, 50);
+      --muted: rgb(110, 118, 132);
+      --dim: rgb(200, 205, 214);
+      --border: rgb(222, 226, 233);
+      --accent: rgb(40, 100, 220);
+      --success: rgb(25, 135, 84);
+      --error: rgb(200, 40, 40);
+      --warning: rgb(160, 120, 20);
+      --userMessageBg: rgb(238, 240, 245);
+      --userMessageText: rgb(30, 34, 42);
+      --thinkingText: rgb(120, 128, 142);
+      --toolPendingBg: rgb(244, 245, 248);
+      --toolSuccessBg: rgb(238, 248, 240);
+      --toolErrorBg: rgb(252, 236, 238);
+      --toolOutput: rgb(70, 78, 92);
+      --toolDiffAdded: rgb(25, 135, 84);
+      --toolDiffRemoved: rgb(200, 40, 40);
+      --toolDiffContext: rgb(120, 128, 142);
+      --customMessageBg: rgb(245, 243, 250);
+      --customMessageLabel: rgb(120, 70, 220);
+      --customMessageText: rgb(60, 66, 78);
+      --selectedBg: rgb(228, 233, 242);
+      --hover: rgb(242, 244, 248);
+      --codeBg: rgb(244, 245, 248);
+    }
+
+    /* Auto mode: follow the browser preference (default is dark palette). */
+    @media (prefers-color-scheme: light) {
+      html:not([data-theme-pref="dark"]):not([data-theme-pref="light"]) {
+        --body-bg: rgb(250, 250, 252);
+        --container-bg: rgb(255, 255, 255);
+        --text: rgb(35, 40, 50);
+        --muted: rgb(110, 118, 132);
+        --dim: rgb(200, 205, 214);
+        --border: rgb(222, 226, 233);
+        --accent: rgb(40, 100, 220);
+        --success: rgb(25, 135, 84);
+        --error: rgb(200, 40, 40);
+        --warning: rgb(160, 120, 20);
+        --userMessageBg: rgb(238, 240, 245);
+        --userMessageText: rgb(30, 34, 42);
+        --thinkingText: rgb(120, 128, 142);
+        --toolPendingBg: rgb(244, 245, 248);
+        --toolSuccessBg: rgb(238, 248, 240);
+        --toolErrorBg: rgb(252, 236, 238);
+        --toolOutput: rgb(70, 78, 92);
+        --toolDiffAdded: rgb(25, 135, 84);
+        --toolDiffRemoved: rgb(200, 40, 40);
+        --toolDiffContext: rgb(120, 128, 142);
+        --customMessageBg: rgb(245, 243, 250);
+        --customMessageLabel: rgb(120, 70, 220);
+        --customMessageText: rgb(60, 66, 78);
+        --selectedBg: rgb(228, 233, 242);
+        --hover: rgb(242, 244, 248);
+        --codeBg: rgb(244, 245, 248);
+      }
+    }
+
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
@@ -754,6 +816,10 @@
     }
 
     /* Markdown body */
+    .markdown-content.md-pending {
+      white-space: pre-wrap;
+    }
+
     .markdown-content p {
       margin: 0 0 var(--line-height) 0;
     }
@@ -906,33 +972,78 @@
       background: rgba(255, 255, 255, 0.05);
     }
 
-    .gantt-bar {
-      position: absolute;
-      top: 3px;
-      height: 8px;
-      border-radius: 2px;
-      min-width: 2px;
+    .gantt-ruler {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 9px;
+      margin-bottom: 4px;
+      padding-right: 210px;
     }
 
-    .gantt-user { background: var(--accent); }
-    .gantt-assistant { background: var(--success); }
-    .gantt-tool { background: var(--muted); }
-    .gantt-error { background: var(--error); }
-    .gantt-meta { background: var(--warning); }
+    .gantt-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) 2fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 2px 0;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+
+    .gantt-row:hover {
+      background: var(--hover);
+    }
 
     .gantt-label {
-      position: absolute;
-      left: 8px;
-      top: 0;
-      line-height: 14px;
-      font-size: 10px;
+      font-size: 11px;
       color: var(--text);
-      opacity: 0.75;
-      pointer-events: none;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 60%;
+    }
+
+    .gantt-bar-track {
+      position: relative;
+      height: 10px;
+      background: var(--codeBg);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .gantt-bar {
+      position: absolute;
+      top: 1px;
+      height: 8px;
+      border-radius: 2px;
+      min-width: 4px;
+      background: var(--accent);
+      opacity: 0.85;
+    }
+
+    .gantt-row:hover .gantt-bar {
+      opacity: 1;
+    }
+
+    .gantt-meta {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 10px;
+      min-width: 200px;
+    }
+
+    .gantt-dur {
+      color: var(--text);
+      font-weight: bold;
+      min-width: 44px;
+      text-align: right;
+    }
+
+    .gantt-time {
+      min-width: 64px;
+      text-align: right;
     }
 
     /* Flash highlight on jump */

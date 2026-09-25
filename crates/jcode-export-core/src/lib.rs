@@ -29,7 +29,6 @@ const TEMPLATE_HTML: &str = include_str!("../assets/template.html");
 const TEMPLATE_CSS: &str = include_str!("../assets/template.css");
 const TEMPLATE_JS: &str = include_str!("../assets/template.js");
 const MARKED_JS: &str = include_str!("../assets/marked.min.js");
-const HIGHLIGHT_JS: &str = include_str!("../assets/highlight.min.js");
 
 /// Output format for a session export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,14 +135,22 @@ pub fn export_json(input: &SessionExportInput) -> anyhow::Result<String> {
 /// Render the self-contained HTML export.
 pub fn export_html(input: &SessionExportInput) -> anyhow::Result<String> {
     let payload = input.payload();
+    // Raw JSON in a script tag: ~25% smaller than base64. Escape "</" so a
+    // literal "</script>" inside message text cannot terminate the tag early.
     let json = serde_json::to_string(&payload)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
+    let safe_json = json.replace("</", "<\\/");
+    // Collapse CSS runs of whitespace (source keeps indentation for
+    // readability; the file ships minified).
+    let css = TEMPLATE_CSS
+        .split('\n')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n");
     let html = TEMPLATE_HTML
-        .replace("{{CSS}}", TEMPLATE_CSS)
+        .replace("{{CSS}}", &css)
         .replace("{{JS}}", TEMPLATE_JS)
         .replace("{{MARKED_JS}}", MARKED_JS)
-        .replace("{{HIGHLIGHT_JS}}", HIGHLIGHT_JS)
-        .replace("{{SESSION_DATA}}", &encoded);
+        .replace("{{SESSION_DATA}}", &safe_json);
     Ok(html)
 }
 
@@ -253,19 +260,15 @@ mod tests {
         assert!(!html.contains("{{JS}}"));
         assert!(!html.contains("{{SESSION_DATA}}"));
         assert!(!html.contains("{{MARKED_JS}}"));
-        assert!(!html.contains("{{HIGHLIGHT_JS}}"));
         assert!(html.contains("marked v18"));
-        assert!(html.contains("Highlight.js v11"));
-        // base64 payload present and decodable
+        // No highlight.js bundle: the built-in mini highlighter replaces it.
+        assert!(!html.contains("Highlight.js v11"));
+        // Raw JSON payload present and decodable.
         let marker = "<script id=\"session-data\" type=\"application/json\">";
         let start = html.find(marker).unwrap() + marker.len();
         let end = html[start..].find("</script>").unwrap() + start;
-        let encoded = html[start..end].trim();
-        use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(encoded.as_bytes())
-            .unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        let raw = html[start..end].trim();
+        let payload: serde_json::Value = serde_json::from_str(raw).unwrap();
         assert_eq!(payload["header"]["id"], "session_test_1");
         assert_eq!(payload["entries"].as_array().unwrap().len(), 2);
     }
@@ -362,9 +365,16 @@ mod tests {
             raw_session_json: None,
         };
         let html = export_html(&input).unwrap();
-        // The literal payload is base64 so the raw text never appears, and the
-        // viewer escapes before inserting.
-        assert!(!html.contains("<script>alert(1)"));
-        assert!(!html.contains("onerror=alert(2)"));
+        // Raw JSON payload: hostile text stays inside the JSON script tag and
+        // the "</script>" break-out is escaped ("<\/"), so the literal hostile
+        // sequence must never appear in the document.
+        assert!(!html.contains("</script>alert"));
+        let marker = "<script id=\"session-data\" type=\"application/json\">";
+        let start = html.find(marker).unwrap() + marker.len();
+        let end = html[start..].find("</script>").unwrap() + start;
+        let raw = html[start..end].trim();
+        // The escaped break-out survives as text: "<\/script>".
+        assert!(raw.contains("<\\/script>"));
+        assert!(raw.contains("onerror=alert(2)"));
     }
 }
