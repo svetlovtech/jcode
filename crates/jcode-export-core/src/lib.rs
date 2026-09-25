@@ -12,9 +12,8 @@
 //!   BSD-3-Clause), and a "download JSON" button. No network access: every
 //!   asset is embedded.
 //!
-//! The HTML embeds the same JSON payload the CLI writes, base64-encoded, so
-//! the file is self-describing and the viewer's JSON button round-trips.
-use base64::Engine;
+//! The HTML embeds the same JSON payload the CLI writes, so the file is
+//! self-describing and the viewer's JSON button round-trips.
 use jcode_session_types::{SessionStatus, StoredCompactionState, StoredMessage};
 use serde::Serialize;
 

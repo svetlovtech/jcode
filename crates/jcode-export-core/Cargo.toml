@@ -8,14 +8,13 @@ publish = false
 #
 # Fork-only crate: upstream jcode has no session export. The HTML format is
 # modeled on the pi harness (`pi --export`, MIT, (c) earendil-works): a single
-# self-contained file with an embedded base64 session payload, a sidebar
+# self-contained file with an embedded raw-JSON session payload, a sidebar
 # branch tree, search/filter, collapsible thinking + tool outputs, and a
 # "download JSON" button. The vendored marked.min.js and highlight.min.js keep
 # their upstream license headers (MIT / BSD-3-Clause).
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 jcode-message-types = { path = "../jcode-message-types" }
 jcode-session-types = { path = "../jcode-session-types" }
