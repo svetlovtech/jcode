@@ -463,8 +463,9 @@
         const text = turn.user.text.replace(/\s+/g, ' ').trim();
         const count = turn.items.reduce((n, i) => n + (i.entry.type === 'tool_result' ? 1 : 0), 0);
         const dur = turn.end != null && turn.start != null ? formatSpan(Math.max(turn.end - turn.start, 0)) : '';
+        // No hard truncation: CSS clamps to two lines with word wrap.
         return {
-          text: truncate(text, 72) || 'session start',
+          text: text.length > 160 ? text.slice(0, 160) + '...' : (text || 'session start'),
           tools: count,
           duration: dur
         };

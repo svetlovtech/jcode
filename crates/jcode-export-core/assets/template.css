@@ -978,15 +978,15 @@
       color: var(--muted);
       font-size: 9px;
       margin-bottom: 4px;
-      padding-right: 210px;
+      margin-left: calc(1.1fr + 12px);
     }
 
     .gantt-row {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) 2fr auto;
-      gap: 10px;
+      grid-template-columns: minmax(140px, 1.1fr) minmax(160px, 2fr) auto;
+      gap: 12px;
       align-items: center;
-      padding: 2px 0;
+      padding: 3px 0;
       cursor: pointer;
       border-radius: 3px;
     }
@@ -998,9 +998,12 @@
     .gantt-label {
       font-size: 11px;
       color: var(--text);
-      white-space: nowrap;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
       overflow: hidden;
-      text-overflow: ellipsis;
+      word-break: break-word;
+      line-height: 14px;
     }
 
     .gantt-bar-track {
@@ -1031,7 +1034,7 @@
       justify-content: flex-end;
       color: var(--muted);
       font-size: 10px;
-      min-width: 200px;
+      white-space: nowrap;
     }
 
     .gantt-dur {
