@@ -335,7 +335,6 @@
         const summary = truncate(oneLineSummary(name, args), 96);
         const intentText = str(args.intent) || call.intent || '';
         const detail = escapeHtml(intentText && intentText !== summary ? intentText : summary);
-        // Time + duration are the two numbers the user asked to see.
         const timeHtml = result && result.timestamp
           ? '<span class="tool-time">' + escapeHtml(formatTimeShort(result.timestamp)) + '</span>' : '';
         const durationHtml = duration != null
@@ -362,10 +361,11 @@
 
         return '<div class="tool-execution ' + (result ? (isError ? 'error' : 'success') : 'pending') + '" id="tool-call-' + escapeHtml(call.id) + '">' +
           '<div class="tool-row" onclick="if(window.getSelection().toString())return;this.parentElement.classList.toggle(\'open\')">' +
+          '<span class="tool-time">' + timeHtml + '</span>' +
           '<span class="tool-status tool-status-' + statusText + '">' + icon + '</span>' +
           '<span class="tool-name">' + escapeHtml(name) + '</span>' +
           '<span class="tool-detail-summary">' + detail + '</span>' +
-          diffBadge + linesBadge + durationHtml + timeHtml +
+          diffBadge + linesBadge + durationHtml +
           '</div>' + body + '</div>';
       }
 

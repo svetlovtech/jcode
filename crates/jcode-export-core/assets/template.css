@@ -634,6 +634,10 @@
       color: var(--muted);
       font-size: 10px;
       opacity: 0.85;
+      /* Fixed-width column: every tool timestamp starts at the same x. */
+      min-width: 62px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
     /* Expanded detail (hidden until .open) */
