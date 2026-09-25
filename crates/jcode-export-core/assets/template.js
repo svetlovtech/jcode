@@ -463,9 +463,9 @@
         const text = turn.user.text.replace(/\s+/g, ' ').trim();
         const count = turn.items.reduce((n, i) => n + (i.entry.type === 'tool_result' ? 1 : 0), 0);
         const dur = turn.end != null && turn.start != null ? formatSpan(Math.max(turn.end - turn.start, 0)) : '';
-        // No hard truncation: CSS clamps to two lines with word wrap.
+        // Single line in the label column; CSS adds an ellipsis.
         return {
-          text: text.length > 160 ? text.slice(0, 160) + '...' : (text || 'session start'),
+          text: text.length > 90 ? text.slice(0, 90) + '...' : (text || 'session start'),
           tools: count,
           duration: dur
         };
@@ -529,7 +529,7 @@
         let html = '';
         for (const turn of turns) {
           const left = ((turn.start - start) / span) * 100;
-          const width = Math.max(((turn.end || turn.start) - turn.start) / span * 100, 1.2);
+          const width = Math.min(Math.max(((turn.end || turn.start) - turn.start) / span * 100, 1.2), 100 - left);
           const label = turnLabel(turn);
           const target = turn.user ? 'entry-' + escapeHtml(turn.user.id) : '';
           html += '<div class="gantt-row" data-target="' + target + '" title="' + escapeHtml(label.text) + ' - ' + escapeHtml(label.duration) + '">' +
