@@ -2,7 +2,7 @@
 
 use crate::{
     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
-    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
+    NativeScrollbarConfig, ReasoningDisplayMode, default_true,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,14 +119,9 @@ pub struct DisplayConfig {
     pub external_sessions: bool,
     /// Usage percentage wording: "left" (default) or "used".
     pub usage_display: String,
-    /// When to show the overscroll status line below the input
-    /// (off/on/overscroll, default: on). "overscroll" is the elastic
-    /// reveal when scrolling past the bottom, "on" keeps it always visible.
-    #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
-    pub overscroll_status: OverscrollStatusMode,
     /// Style of the overscroll status footer: "classic" (default) or "pi"
     /// (also "aabee") for the compact pi-style layout with cost and token
-    /// totals.
+    /// totals. "advanced" enables the advanced footer layout.
     #[serde(default)]
     pub footer_style: String,
     /// Fork: timezone for timestamps shown in the UI (tool row time badges).
@@ -172,7 +167,6 @@ impl Default for DisplayConfig {
             active_sessions_manager: false,
             external_sessions: true,
             usage_display: "left".to_string(),
-            overscroll_status: OverscrollStatusMode::default(),
             footer_style: "classic".to_string(),
             timestamp_tz: String::new(),
         }

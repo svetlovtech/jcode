@@ -137,6 +137,7 @@ pub(super) async fn connect_remote(
         name: name.clone(),
         request_id: Arc::new(AtomicU64::new(1)),
         pending,
+        closed: Arc::new(AtomicBool::new(false)),
         writer_tx,
         server_info: Arc::new(std::sync::RwLock::new(None)),
         capabilities: Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),

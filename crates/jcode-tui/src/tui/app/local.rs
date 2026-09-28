@@ -80,7 +80,6 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();
     needs_redraw |= app.progress_copy_selection_edge_autoscroll();
     app.progress_mouse_scroll_animation();
-    needs_redraw |= app.update_chat_overscroll();
     // Fork: chat-integration footer status probe (non-blocking).
     crate::tui::chat_status::probe_if_stale();
     needs_redraw |= app.update_pinned_images_auto_hide();
@@ -89,6 +88,8 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     // Adopt the resolved scroll position once a frame containing newly loaded
     // older history has rendered, so manual scrolling resumes seamlessly.
     needs_redraw |= app.reconcile_history_anchor();
+    // Same for a resize: adopt the resolved row once the rewrap has rendered.
+    needs_redraw |= app.reconcile_resize_anchor();
     if app.submit_input_on_startup && !app.is_processing {
         app.submit_input_on_startup = false;
         app.submit_input();
@@ -301,6 +302,7 @@ pub(super) fn handle_bus_event(
             app.handle_dictation_failure(message);
             true
         }
+        Ok(BusEvent::VoiceInputWake) => app.handle_voice_input_wake_local(),
         Ok(BusEvent::CompactionFinished) => app.poll_compaction_completion(),
         Ok(BusEvent::SidePanelUpdated(update)) => {
             if update.session_id == app.session.id {
@@ -429,7 +431,10 @@ fn apply_terminal_event(
             crate::tui::ui::note_key_event_read();
             app.note_client_interaction();
             app.update_copy_badge_key_event(key);
-            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            app.observe_voice_key_release(&key);
+            if app.handle_voice_key_event(&key) {
+                // Voice keys work from every screen and never type.
+            } else if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 app.handle_key_press_event(key)?;
             }
             Ok(true)
