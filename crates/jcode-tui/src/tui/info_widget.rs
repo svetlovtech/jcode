@@ -6,10 +6,6 @@
 //! In left-aligned mode, widgets only appear on the right margin.
 
 use super::color_support::rgb;
-#[path = "info_widget_commits.rs"]
-mod commits;
-#[path = "info_widget_frame.rs"]
-pub(crate) mod frame;
 #[path = "info_widget_git.rs"]
 mod git;
 #[path = "info_widget_graph.rs"]
@@ -54,11 +50,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-use commits::{commits_has_data, render_commits_widget};
-use frame::Framed;
-use git::{
-    changes_has_data, changes_height, changes_legend, render_changes_framed, render_git_widget,
-};
+use git::{changes_has_data, changes_height, changes_legend, render_git_widget};
 pub(crate) use git::{edited_paths_from_tool_call, resolve_edited_path};
 pub use graph::{GraphEdge, GraphNode, build_graph_topology, graph_node_score};
 pub(crate) use memory_utils::is_traceworthy_memory_event;
@@ -67,7 +59,7 @@ use model::{render_model_info, render_model_widget, runtime_has_data, runtime_he
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
-use tips::render_tips_widget;
+use tips::{render_tips_widget, tips_widget_height};
 pub(crate) use todos_render::swarm_plan_todos;
 use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
 use usage_render::{render_usage_compact, render_usage_widget};
@@ -114,8 +106,6 @@ pub enum WidgetKind {
     Tips,
     /// Changes: the dirty file list (the status line owns branch and counts)
     GitStatus,
-    /// Commits: recent history on the current branch
-    Commits,
 }
 
 impl WidgetKind {
@@ -133,7 +123,6 @@ impl WidgetKind {
             WidgetKind::Compaction => 9,
             WidgetKind::BackgroundTasks => 10,
             WidgetKind::GitStatus => 11,
-            WidgetKind::Commits => 12,
             WidgetKind::SwarmStatus => 12, // Session list - lower priority
             WidgetKind::AmbientMode => 13, // Scheduled agent - lower priority
             WidgetKind::Tips => 14,        // Did you know - lowest
@@ -157,7 +146,6 @@ impl WidgetKind {
             WidgetKind::ModelInfo => Side::Left,
             WidgetKind::Tips => Side::Left,
             WidgetKind::GitStatus => Side::Left,
-            WidgetKind::Commits => Side::Left,
         }
     }
 
@@ -178,7 +166,6 @@ impl WidgetKind {
             WidgetKind::ModelInfo => 1,
             WidgetKind::Tips => 3,
             WidgetKind::GitStatus => 1,
-            WidgetKind::Commits => 1,
         }
     }
 
@@ -196,7 +183,6 @@ impl WidgetKind {
             WidgetKind::Compaction,
             WidgetKind::BackgroundTasks,
             WidgetKind::GitStatus,
-            WidgetKind::Commits,
             WidgetKind::SwarmStatus,
             WidgetKind::AmbientMode,
             WidgetKind::Tips,
@@ -219,7 +205,6 @@ impl WidgetKind {
             WidgetKind::ModelInfo => "model",
             WidgetKind::Tips => "tips",
             WidgetKind::GitStatus => "git",
-            WidgetKind::Commits => "commits",
         }
     }
 }
@@ -569,22 +554,6 @@ pub struct GitInfo {
     pub removed_total: usize,
     /// Absolute repository root, used to match agent-edited paths.
     pub repo_root: Option<std::path::PathBuf>,
-    /// Most recent commits on HEAD, newest first.
-    pub recent_commits: Vec<RecentCommit>,
-}
-
-/// One commit for the Commits widget.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RecentCommit {
-    /// Abbreviated hash.
-    pub hash: String,
-    pub subject: String,
-    /// Committer time, seconds since the Unix epoch.
-    pub timestamp: i64,
-    /// Not yet on the upstream branch.
-    pub unpushed: bool,
-    pub added: Option<usize>,
-    pub removed: Option<usize>,
 }
 
 /// One dirty path from `git status --porcelain`.
@@ -826,16 +795,7 @@ impl InfoWidgetData {
             WidgetKind::KvCache => self.cache_hit_info.is_some(),
             WidgetKind::ModelInfo => runtime_has_data(self),
             WidgetKind::Tips => false,
-            WidgetKind::GitStatus => self
-                .git_info
-                .as_ref()
-                .map(changes_has_data)
-                .unwrap_or(false),
-            WidgetKind::Commits => self
-                .git_info
-                .as_ref()
-                .map(commits_has_data)
-                .unwrap_or(false),
+            WidgetKind::GitStatus => self.git_info.as_ref().map(changes_has_data).unwrap_or(false),
         }
     }
 
@@ -1163,25 +1123,122 @@ pub(crate) fn calculate_widget_height(
             // Use the full available height so the image fills the panel
             max_height.saturating_sub(border_height)
         }
-        // Text widgets: the height is whatever the body actually renders at
-        // the full available height, so estimate and render can never drift.
-        _ => {
-            // Rendering is permissive (e.g. the swarm widget still draws a
-            // session list), but layout only admits widgets with data.
-            if !data.has_data_for(kind) {
+        WidgetKind::Todos => {
+            if data.todos.is_empty() {
                 return 0;
             }
-            let inner = Rect::new(
-                0,
-                0,
-                width.saturating_sub(2),
-                max_height.saturating_sub(border_height),
-            );
-            let framed = render_widget_content(kind, data, inner);
-            if framed.is_empty() {
+            // Header (with inline pip meter) + up to 5 items
+            let items = data.todos.len().min(5) as u16;
+            1 + items + if data.todos.len() > 5 { 1 } else { 0 }
+        }
+        WidgetKind::MemoryActivity => {
+            if data.memory_info.is_none() {
+                return 0;
+            };
+            let lines =
+                render_memory_widget(data, Rect::new(0, 0, width.saturating_sub(2), max_height));
+            if lines.is_empty() {
                 return 0;
             }
-            framed.lines.len() as u16
+            lines.len() as u16
+        }
+        WidgetKind::SwarmStatus => {
+            let Some(info) = &data.swarm_info else {
+                return 0;
+            };
+            if info.managed_members.is_empty() {
+                return 0;
+            }
+            // Compact: agents/nodes summary line + optional plan bar.
+            let bar = u16::from(info.plan_progress.is_some());
+            (1 + bar).min(max_height.saturating_sub(border_height))
+        }
+        WidgetKind::BackgroundTasks => {
+            if data
+                .background_info
+                .as_ref()
+                .map(|b| b.running_count == 0)
+                .unwrap_or(true)
+            {
+                return 0;
+            }
+            data.background_info
+                .as_ref()
+                .map(|b| {
+                    let task_lines = b.running_tasks.len().min(3) as u16;
+                    let overflow_line = u16::from(b.running_tasks.len() > 3);
+                    1 + task_lines + overflow_line
+                })
+                .unwrap_or(1)
+        }
+        WidgetKind::Compaction => {
+            if data.compaction_info.is_none() {
+                return 0;
+            }
+            2
+        }
+        WidgetKind::AmbientMode => {
+            let Some(info) = &data.ambient_info else {
+                return 0;
+            };
+            if !info.show_widget {
+                return 0;
+            }
+            let mut h = 1u16; // Status line
+            if info.queue_count > 0 || info.reminder_count > 0 {
+                h += 1; // Queue line
+            }
+            if info.last_run_ago.is_some() {
+                h += 1; // Last run line
+            }
+            if info.next_wake.is_some() || info.next_reminder_wake.is_some() {
+                h += 1; // Next wake line
+            }
+            if info.budget_percent.is_some() {
+                h += 1; // Budget bar
+            }
+            h
+        }
+        WidgetKind::UsageLimits => {
+            if let Some(info) = data.usage_info.as_ref() {
+                if info.available {
+                    2 + if info.spark.is_some() { 1 } else { 0 }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+        WidgetKind::KvCache => {
+            let Some(cache) = data.cache_hit_info.as_ref() else {
+                return 0;
+            };
+            let attribution_lines = if cache.miss_attributions.is_empty() {
+                2
+            } else {
+                let visible = cache.miss_attributions.len().min(5) as u16;
+                2 + visible + u16::from(cache.miss_attributions.len() > 5)
+            };
+            1 + attribution_lines
+        }
+        WidgetKind::ModelInfo => {
+            let h = runtime_height(data);
+            if h == 0 {
+                return 0;
+            }
+            h
+        }
+        WidgetKind::Tips => tips_widget_height(inner_width),
+        WidgetKind::GitStatus => {
+            let Some(info) = &data.git_info else {
+                return 0;
+            };
+            let h = changes_height(info);
+            if h == 0 {
+                return 0;
+            }
+            h
         }
     };
 
@@ -1220,36 +1277,47 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     let rect = placement.rect;
 
     // Semi-transparent looking border (using dim colors)
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(rgb(70, 70, 80)).dim());
+
+    if placement.kind == WidgetKind::WorkspaceMap {
+        block = block.title(Span::styled(
+            " Workspace ",
+            Style::default().fg(rgb(120, 120, 130)).dim(),
+        ));
+    }
+
     let inner = block.inner(rect);
 
     // Diagrams need special handling - render image instead of text
     if placement.kind == WidgetKind::Diagrams {
-        let mut chrome = Framed::default().title(frame::label("◇ Diagram"));
-        if data.diagrams.len() > 1 {
-            chrome = chrome.title_right(frame::dim(format!("1/{}", data.diagrams.len())));
-        }
-        frame.render_widget(chrome.apply(block, rect.width), rect);
+        frame.render_widget(block, rect);
         render_diagrams_widget(frame, inner, data);
         return;
     }
     if placement.kind == WidgetKind::Overview {
-        let Some(framed) = render_overview_framed(data, inner) else {
+        // Check if overview would actually render content before drawing the border
+        let mut overview = data.clone();
+        overview.memory_info = None;
+        overview.diagrams.clear();
+        let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
+        if layout.pages.is_empty() || layout.max_page_height == 0 {
             return;
-        };
-        frame.render_widget(framed.apply(block, rect.width), rect);
-        frame.render_widget(Paragraph::new(framed.lines), inner);
+        }
+        if let Some(legend) = changes_legend(data, inner.height) {
+            block = block.title_bottom(legend);
+        }
+        frame.render_widget(block, rect);
+        render_overview_widget(frame, inner, data);
         return;
     }
     if placement.kind == WidgetKind::WorkspaceMap {
         if data.workspace_rows.is_empty() || inner.width == 0 || inner.height == 0 {
             return;
         }
-        let chrome = Framed::default().title(frame::label("Workspace"));
-        frame.render_widget(chrome.apply(block, rect.width), rect);
+        frame.render_widget(block, rect);
         super::workspace_map_widget::render_workspace_map(
             frame.buffer_mut(),
             inner,
@@ -1258,12 +1326,18 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
         );
         return;
     }
-    let framed = render_widget_content(placement.kind, data, inner);
-    if framed.is_empty() {
+    let lines = render_widget_content(placement.kind, data, inner);
+    if lines.is_empty() {
         return;
     }
-    frame.render_widget(framed.apply(block, rect.width), rect);
-    frame.render_widget(Paragraph::new(framed.lines), inner);
+    if placement.kind == WidgetKind::GitStatus
+        && let Some(legend) = changes_legend(data, inner.height)
+    {
+        block = block.title_bottom(legend);
+    }
+    frame.render_widget(block, rect);
+    let para = Paragraph::new(lines);
+    frame.render_widget(para, inner);
 }
 
 /// Render mermaid diagrams widget (renders images, not text)
@@ -1281,11 +1355,9 @@ fn render_diagrams_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
     super::mermaid::render_image_widget_scale(diagram.hash, inner, frame.buffer_mut(), false);
 }
 
-/// Overview: the rotating multi-section page. Border layout: `Overview` or
-/// the focused page's name top-left, page dots bottom-right.
-fn render_overview_framed(data: &InfoWidgetData, inner: Rect) -> Option<Framed> {
+fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData) {
     if inner.width == 0 || inner.height == 0 {
-        return None;
+        return;
     }
 
     let mut overview = data.clone();
@@ -1294,12 +1366,15 @@ fn render_overview_framed(data: &InfoWidgetData, inner: Rect) -> Option<Framed> 
     overview.diagrams.clear();
 
     let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
-    if layout.pages.is_empty() || layout.max_page_height == 0 {
-        return None;
+    if layout.pages.is_empty() {
+        return;
     }
 
     let mut guard = get_or_init_state();
-    let state = guard.as_mut()?;
+    let state = match guard.as_mut() {
+        Some(state) => state,
+        None => return,
+    };
     let widget_state = state.widget_states.entry(WidgetKind::Overview).or_default();
 
     if layout.pages.len() > 1 {
@@ -1318,48 +1393,30 @@ fn render_overview_framed(data: &InfoWidgetData, inner: Rect) -> Option<Framed> 
     }
 
     let page_index = widget_state.page_index.min(layout.pages.len() - 1);
-    drop(guard);
     let page = layout.pages[page_index];
     let mut lines = render_page(page.kind, &overview, inner);
 
     // If the page rendered no content, bail out to avoid an empty box
     if lines.is_empty() {
-        return None;
+        return;
     }
-    lines.truncate(inner.height as usize);
 
-    let title = match page.kind {
-        InfoPageKind::CompactOnly => "Overview",
-        InfoPageKind::TodosExpanded => {
-            if data.todos_are_swarm_plan {
-                "Overview · plan"
-            } else {
-                "Overview · todos"
-            }
-        }
-        InfoPageKind::MemoryExpanded => "Overview · memory",
-    };
-    let mut framed = Framed::body(lines).title(frame::label(title));
-    // The Changes section marks agent-edited files; explain the dot here since
-    // compact sections have no border of their own. Page dots keep the right.
-    if let Some(legend) = changes_legend(data, inner.height) {
-        framed = framed.footer(legend);
-    }
-    if layout.show_dots {
+    if layout.show_dots && inner.height > 0 {
         let mut dots: Vec<Span<'static>> = Vec::new();
         for i in 0..layout.pages.len() {
-            if i > 0 {
-                dots.push(Span::raw(" "));
-            }
             if i == page_index {
-                dots.push(Span::styled("●", Style::default().fg(rgb(170, 170, 180))));
+                dots.push(Span::styled("● ", Style::default().fg(rgb(170, 170, 180))));
             } else {
-                dots.push(Span::styled("○", Style::default().fg(rgb(100, 100, 110))));
+                dots.push(Span::styled("○ ", Style::default().fg(rgb(100, 100, 110))));
             }
         }
-        framed = framed.footer_right(Line::from(dots));
+        if !dots.is_empty() {
+            lines.push(Line::from(dots));
+        }
     }
-    Some(framed)
+
+    lines.truncate(inner.height as usize);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 #[cfg(test)]
 #[derive(Debug, Clone)]
@@ -1520,13 +1577,16 @@ fn edge_kind_priority(kind: &str) -> u8 {
     }
 }
 
-/// Render content for a specific widget type: body rows plus border text.
-fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -> Framed {
-    let framed = match kind {
-        // Image/map/paged widgets are handled specially in render_single_widget.
-        WidgetKind::Diagrams | WidgetKind::WorkspaceMap | WidgetKind::Overview => {
-            return Framed::default();
-        }
+/// Render content for a specific widget type
+fn render_widget_content(
+    kind: WidgetKind,
+    data: &InfoWidgetData,
+    inner: Rect,
+) -> Vec<Line<'static>> {
+    match kind {
+        WidgetKind::Diagrams => Vec::new(), // Handled specially in render_single_widget
+        WidgetKind::WorkspaceMap => Vec::new(), // Handled specially in render_single_widget
+        WidgetKind::Overview => Vec::new(), // Handled specially in render_single_widget
         WidgetKind::Todos => render_todos_widget(data, inner),
         WidgetKind::MemoryActivity => render_memory_widget(data, inner),
         WidgetKind::SwarmStatus => render_swarm_widget(data, inner),
@@ -1537,21 +1597,20 @@ fn render_widget_content(kind: WidgetKind, data: &InfoWidgetData, inner: Rect) -
         WidgetKind::KvCache => render_kv_cache_widget(data, inner),
         WidgetKind::ModelInfo => render_model_widget(data, inner),
         WidgetKind::Tips => render_tips_widget(inner),
-        WidgetKind::GitStatus => render_changes_framed(data, inner),
-        WidgetKind::Commits => render_commits_widget(data, inner),
-    };
-    framed.settle()
+        WidgetKind::GitStatus => render_git_widget(data, inner),
+    }
 }
 
-fn render_compaction_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
+fn render_compaction_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = data.compaction_info.as_ref() else {
-        return Framed::default();
+        return Vec::new();
     };
     let title_color = if info.is_compacting {
         rgb(255, 220, 140)
     } else {
         rgb(110, 210, 140)
     };
+    let label_color = rgb(140, 140, 150);
     let status = if info.is_compacting {
         "compacting"
     } else {
@@ -1563,31 +1622,39 @@ fn render_compaction_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
         "{} old · {} active · ~{} summary tok",
         info.compacted_messages, info.active_messages, summary_tokens
     );
-    Framed::body(vec![Line::from(Span::styled(
-        truncate_smart(&detail, inner.width as usize),
-        Style::default().fg(rgb(180, 180, 190)),
-    ))])
-    .title(Line::from(vec![
-        frame::label("Compaction "),
-        Span::styled(status, Style::default().fg(title_color).bold()),
-    ]))
-    .title_right(frame::dim(info.mode.to_string()))
+    vec![
+        Line::from(vec![
+            Span::styled("Compaction ", Style::default().fg(label_color)),
+            Span::styled(status, Style::default().fg(title_color).bold()),
+            Span::styled(
+                format!(" · {}", info.mode),
+                Style::default().fg(label_color),
+            ),
+        ]),
+        Line::from(Span::styled(
+            truncate_smart(&detail, inner.width as usize),
+            Style::default().fg(rgb(180, 180, 190)),
+        )),
+    ]
 }
 
-fn render_kv_cache_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
+fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
     let Some(cache) = data.cache_hit_info.as_ref() else {
-        return Framed::default();
+        return Vec::new();
     };
-    // Top border: the headline yield. Body: the per-rate breakdown, then the
-    // misses themselves. Bottom border: the miss total and overflow.
-    let mut framed =
-        Framed::body(vec![render_kv_cache_rates_line(cache)]).title(render_kv_cache_title(cache));
+    let mut lines = vec![render_kv_cache_summary_line(cache)];
+
+    lines.push(Line::from(vec![Span::styled(
+        "miss attribution",
+        Style::default().fg(rgb(140, 140, 150)).bold(),
+    )]));
 
     if cache.miss_attributions.is_empty() {
-        return framed.footer_right(Span::styled(
-            "no misses",
+        lines.push(Line::from(vec![Span::styled(
+            "none",
             Style::default().fg(rgb(110, 210, 140)),
-        ));
+        )]));
+        return lines;
     }
 
     let total_missed: u64 = cache
@@ -1595,23 +1662,13 @@ fn render_kv_cache_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
         .iter()
         .map(|sample| sample.missed_tokens)
         .sum();
-    framed = framed.footer_right(Line::from(vec![
-        Span::styled(
-            compact_token_count(total_missed),
-            Style::default().fg(rgb(255, 200, 100)),
-        ),
-        frame::dim(" missed"),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("{} missed total", compact_token_count(total_missed)),
+        Style::default().fg(rgb(180, 180, 190)),
+    )]));
 
-    let max_w = inner.width as usize;
     for sample in cache.miss_attributions.iter().take(5) {
-        let head = format!(
-            "{} {} miss ",
-            format_cache_turn_label(sample.turn_number, sample.call_index),
-            compact_token_count(sample.missed_tokens)
-        );
-        let reason_w = max_w.saturating_sub(UnicodeWidthStr::width(head.as_str()) + 2);
-        framed.lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(
                 format_cache_turn_label(sample.turn_number, sample.call_index),
                 Style::default().fg(rgb(140, 180, 255)).bold(),
@@ -1621,82 +1678,20 @@ fn render_kv_cache_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
                 Style::default().fg(rgb(255, 200, 100)),
             ),
             Span::styled(
-                format!("({})", truncate_smart(&sample.reason, reason_w.max(4))),
+                format!("({})", sample.reason),
                 Style::default().fg(rgb(140, 140, 150)),
             ),
         ]));
     }
 
     if cache.miss_attributions.len() > 5 {
-        framed = framed.footer(frame::more(cache.miss_attributions.len() - 5));
+        lines.push(Line::from(vec![Span::styled(
+            format!("… {} more", cache.miss_attributions.len() - 5),
+            Style::default().fg(rgb(100, 100, 110)),
+        )]));
     }
 
-    framed
-}
-
-fn kv_cache_pcts(cache: &CacheHitInfo) -> Option<(u8, Option<u8>, Option<u8>, Color)> {
-    let lifetime_ratio = cache.hit_ratio()?;
-    let lifetime_pct = ratio_pct(lifetime_ratio);
-    let warm_pct = cache.optimal_ratio().map(ratio_pct);
-    let last_pct = cache.last_ratio().map(ratio_pct);
-    let last_optimal_pct = cache.last_optimal_ratio().map(ratio_pct);
-    let health_pct = last_optimal_pct
-        .or(last_pct)
-        .or(warm_pct)
-        .unwrap_or(lifetime_pct);
-    Some((
-        lifetime_pct,
-        warm_pct,
-        last_pct,
-        kv_cache_optimal_color(health_pct),
-    ))
-}
-
-/// Border headline: `KV cache 90% yield` (or `priming`).
-fn render_kv_cache_title(cache: &CacheHitInfo) -> Line<'static> {
-    let mut spans = vec![frame::label("KV cache ")];
-    match kv_cache_pcts(cache) {
-        Some((_, Some(warm), _, color)) => {
-            spans.push(Span::styled(
-                format!("{warm}%"),
-                Style::default().fg(color).bold(),
-            ));
-            spans.push(frame::dim(" yield"));
-        }
-        Some((_, None, _, color)) => {
-            spans.push(Span::styled("priming", Style::default().fg(color).bold()));
-        }
-        None => {}
-    }
-    Line::from(spans)
-}
-
-/// Body row: `last 94% · session 39%`.
-fn render_kv_cache_rates_line(cache: &CacheHitInfo) -> Line<'static> {
-    let Some((lifetime_pct, _, last_pct, color)) = kv_cache_pcts(cache) else {
-        return Line::default();
-    };
-    let mut spans = Vec::new();
-    if let Some(last_pct) = last_pct {
-        spans.push(Span::styled(
-            "last ",
-            Style::default().fg(rgb(140, 140, 150)),
-        ));
-        spans.push(Span::styled(
-            format!("{}%", last_pct),
-            Style::default().fg(color).bold(),
-        ));
-        spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
-    }
-    spans.push(Span::styled(
-        "session ",
-        Style::default().fg(rgb(140, 140, 150)),
-    ));
-    spans.push(Span::styled(
-        format!("{}%", lifetime_pct),
-        Style::default().fg(color).bold(),
-    ));
-    Line::from(spans)
+    lines
 }
 
 fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
@@ -1792,12 +1787,12 @@ fn compact_token_count(tokens: u64) -> String {
 }
 
 /// Render ambient mode status widget
-fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
+fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = &data.ambient_info else {
-        return Framed::default();
+        return Vec::new();
     };
     if !info.show_widget {
-        return Framed::default();
+        return Vec::new();
     }
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1830,11 +1825,13 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
         AmbientStatus::Disabled => ("○", "Not running".to_string(), dim),
     };
 
-    // Status is the headline: it lives on the top border.
-    let title = Line::from(vec![
+    lines.push(Line::from(vec![
         Span::styled(format!("{} ", icon), Style::default().fg(status_color)),
-        Span::styled(status_text, Style::default().fg(rgb(180, 180, 190)).bold()),
-    ]);
+        Span::styled(
+            truncate_smart(&status_text, inner.width.saturating_sub(3) as usize),
+            Style::default().fg(rgb(180, 180, 190)),
+        ),
+    ]));
 
     // Scheduled tasks count
     let queue_count = if matches!(info.status, AmbientStatus::Disabled) && info.reminder_count > 0 {
@@ -1862,10 +1859,13 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
             } else {
                 format!("{} tasks queued", queue_count)
             };
-        let mut spans = vec![Span::styled(count_text, Style::default().fg(label_color))];
+        let mut spans = vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(count_text, Style::default().fg(label_color)),
+        ];
         if let Some(preview) = queue_preview {
             spans.push(Span::styled(
-                truncate_smart(&format!(" ({})", preview), max_w.saturating_sub(16)),
+                truncate_smart(&format!(" ({})", preview), max_w.saturating_sub(18)),
                 Style::default().fg(dim),
             ));
         }
@@ -1874,12 +1874,12 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
 
     // Last run
     if let Some(ref ago) = info.last_run_ago {
-        let mut spans = vec![Span::styled(
-            format!("Ran {}", ago),
-            Style::default().fg(label_color),
-        )];
+        let mut spans = vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("Ran {}", ago), Style::default().fg(label_color)),
+        ];
         if let Some(ref summary) = info.last_summary {
-            let remaining = max_w.saturating_sub(4 + ago.len());
+            let remaining = max_w.saturating_sub(6 + ago.len());
             if remaining > 5 {
                 spans.push(Span::styled(
                     truncate_smart(&format!(" - {}", summary), remaining),
@@ -1903,18 +1903,19 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
         } else {
             "Next run"
         };
-        lines.push(Line::from(vec![Span::styled(
-            format!("{} {}", prefix, next),
-            Style::default().fg(label_color),
-        )]));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{} {}", prefix, next),
+                Style::default().fg(label_color),
+            ),
+        ]));
     }
 
-    let mut framed = Framed::body(lines).title(title);
-
-    // Budget meter rides the bottom border.
+    // Budget bar
     if let Some(budget) = info.budget_percent {
         let pct = (budget * 100.0).round().clamp(0.0, 100.0) as u8;
-        let bar_width = inner.width.saturating_sub(16).clamp(4, 10) as usize;
+        let bar_width = inner.width.saturating_sub(12).clamp(4, 10) as usize;
         let filled = ((budget * bar_width as f32).round() as usize).min(bar_width);
         let empty = bar_width.saturating_sub(filled);
 
@@ -1926,15 +1927,15 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
             rgb(100, 200, 100)
         };
 
-        framed = framed.footer_right(Line::from(vec![
-            frame::dim("budget "),
-            Span::styled("▰".repeat(filled), Style::default().fg(bar_color)),
-            Span::styled("▱".repeat(empty), Style::default().fg(rgb(60, 60, 70))),
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
+            Span::styled("░".repeat(empty), Style::default().fg(rgb(50, 50, 60))),
             Span::styled(format!(" {}%", pct), Style::default().fg(bar_color)),
         ]));
     }
 
-    framed
+    lines
 }
 
 /// Legacy render function - kept for backwards compatibility

@@ -1026,7 +1026,8 @@ impl App {
                 )));
                 // Keep account-sensitive UI state in sync immediately.
                 crate::auth::AuthStatus::invalidate_cache();
-                self.set_context_limit_and_sync_budget(self.provider.context_window());
+                self.context_limit = self.provider.context_window() as u64;
+                self.context_warning_shown = false;
             }
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -1097,7 +1098,8 @@ impl App {
                     label
                 )));
                 crate::auth::AuthStatus::invalidate_cache();
-                self.set_context_limit_and_sync_budget(self.provider.context_window());
+                self.context_limit = self.provider.context_window() as u64;
+                self.context_warning_shown = false;
             }
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -2291,74 +2293,70 @@ impl App {
                     ],
                 );
 
-                let save_result: anyhow::Result<()> = if let Some(resolved) =
-                    resolved_openai_compatible.as_ref()
-                {
-                    (|| {
-                        if resolved.requires_api_key {
-                            crate::provider_catalog::save_env_value_to_env_file(
-                                crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
-                                &resolved.env_file,
-                                None,
-                            )?;
-                            crate::provider_catalog::save_named_api_key(
-                                &resolved.env_file,
-                                &resolved.api_key_env,
-                                key.trim(),
-                            )
-                        } else {
-                            crate::provider_catalog::save_env_value_to_env_file(
-                                crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
-                                &resolved.env_file,
-                                Some("1"),
-                            )?;
-                            if key.trim().is_empty() {
+                let save_result: anyhow::Result<()> =
+                    if let Some(resolved) = resolved_openai_compatible.as_ref() {
+                        (|| {
+                            if resolved.requires_api_key {
+                                crate::provider_catalog::save_env_value_to_env_file(
+                                    crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
+                                    &resolved.env_file,
+                                    None,
+                                )?;
                                 crate::provider_catalog::save_env_value_to_env_file(
                                     &resolved.api_key_env,
                                     &resolved.env_file,
-                                    None,
+                                    Some(key.trim()),
                                 )
                             } else {
-                                crate::provider_catalog::save_named_api_key(
+                                crate::provider_catalog::save_env_value_to_env_file(
+                                    crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
                                     &resolved.env_file,
+                                    Some("1"),
+                                )?;
+                                crate::provider_catalog::save_env_value_to_env_file(
                                     &resolved.api_key_env,
-                                    key.trim(),
+                                    &resolved.env_file,
+                                    if key.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(key.trim())
+                                    },
                                 )
                             }
-                        }
-                    })()
-                } else if key_name == crate::subscription_catalog::JCODE_API_KEY_ENV {
-                    (|| {
-                        let mut content = format!("{}={}\n", key_name, key);
-                        if let Some(base) = crate::subscription_catalog::configured_api_base() {
-                            content.push_str(&format!(
-                                "{}={}\n",
-                                crate::subscription_catalog::JCODE_API_BASE_ENV,
-                                base
-                            ));
-                        }
+                        })()
+                    } else if key_name == crate::subscription_catalog::JCODE_API_KEY_ENV {
+                        (|| {
+                            let mut content = format!("{}={}\n", key_name, key);
+                            if let Some(base) = crate::subscription_catalog::configured_api_base() {
+                                content.push_str(&format!(
+                                    "{}={}\n",
+                                    crate::subscription_catalog::JCODE_API_BASE_ENV,
+                                    base
+                                ));
+                            }
 
-                        let config_dir = crate::storage::app_config_dir()?;
-                        std::fs::create_dir_all(&config_dir)?;
-                        crate::platform::set_directory_permissions_owner_only(&config_dir)?;
+                            let config_dir = crate::storage::app_config_dir()?;
+                            std::fs::create_dir_all(&config_dir)?;
+                            crate::platform::set_directory_permissions_owner_only(&config_dir)?;
 
-                        let file_path = config_dir.join(&env_file);
-                        std::fs::write(&file_path, content)?;
-                        crate::platform::set_permissions_owner_only(&file_path)?;
-                        Ok(())
-                    })()
-                } else if key_name == crate::provider::bedrock::API_KEY_ENV {
-                    (|| {
-                        crate::provider_catalog::save_named_api_key(&env_file, &key_name, &key)?;
-                        crate::provider_catalog::save_env_value_to_env_file(
-                            crate::provider::bedrock::REGION_ENV,
-                            &env_file,
-                            Some("us-east-2"),
-                        )
-                    })()
-                } else {
-                    crate::provider_catalog::save_named_api_key(&env_file, &key_name, &key)
-                };
+                            let file_path = config_dir.join(&env_file);
+                            std::fs::write(&file_path, content)?;
+                            crate::platform::set_permissions_owner_only(&file_path)?;
+                            crate::env::set_var(&key_name, &key);
+                            Ok(())
+                        })()
+                    } else if key_name == crate::provider::bedrock::API_KEY_ENV {
+                        (|| {
+                            Self::save_named_api_key(&env_file, &key_name, &key)?;
+                            crate::provider_catalog::save_env_value_to_env_file(
+                                crate::provider::bedrock::REGION_ENV,
+                                &env_file,
+                                Some("us-east-2"),
+                            )
+                        })()
+                    } else {
+                        Self::save_named_api_key(&env_file, &key_name, &key)
+                    };
 
                 match save_result {
                     Ok(()) => {
@@ -3372,6 +3370,21 @@ impl App {
         ))
     }
 
+    fn save_named_api_key(env_file: &str, key_name: &str, key: &str) -> anyhow::Result<()> {
+        if !crate::provider_catalog::is_safe_env_key_name(key_name) {
+            anyhow::bail!("Invalid API key variable name: {}", key_name);
+        }
+        if !crate::provider_catalog::is_safe_env_file_name(env_file) {
+            anyhow::bail!("Invalid env file name: {}", env_file);
+        }
+
+        let config_dir = crate::storage::app_config_dir()?;
+        let file_path = config_dir.join(env_file);
+        crate::storage::upsert_env_file_value(&file_path, key_name, Some(key))?;
+        crate::env::set_var(key_name, key);
+        Ok(())
+    }
+
     fn save_azure_config(
         endpoint: &str,
         model: &str,
@@ -3396,10 +3409,10 @@ impl App {
             Some(if use_entra { "1" } else { "0" }),
         )?;
         if let Some(api_key) = api_key {
-            crate::provider_catalog::save_named_api_key(
-                azure::ENV_FILE,
+            crate::provider_catalog::save_env_value_to_env_file(
                 azure::API_KEY_ENV,
-                api_key,
+                azure::ENV_FILE,
+                Some(api_key),
             )?;
         }
         azure::apply_runtime_env()?;
@@ -3474,10 +3487,10 @@ fn save_tui_openai_compatible_key(
             &resolved.env_file,
             None,
         )?;
-        crate::provider_catalog::save_named_api_key(
-            &resolved.env_file,
+        crate::provider_catalog::save_env_value_to_env_file(
             &resolved.api_key_env,
-            key.trim(),
+            &resolved.env_file,
+            Some(key.trim()),
         )?;
     } else {
         crate::provider_catalog::save_env_value_to_env_file(
@@ -3485,19 +3498,15 @@ fn save_tui_openai_compatible_key(
             &resolved.env_file,
             Some("1"),
         )?;
-        if key.trim().is_empty() {
-            crate::provider_catalog::save_env_value_to_env_file(
-                &resolved.api_key_env,
-                &resolved.env_file,
-                None,
-            )?;
-        } else {
-            crate::provider_catalog::save_named_api_key(
-                &resolved.env_file,
-                &resolved.api_key_env,
-                key.trim(),
-            )?;
-        }
+        crate::provider_catalog::save_env_value_to_env_file(
+            &resolved.api_key_env,
+            &resolved.env_file,
+            if key.trim().is_empty() {
+                None
+            } else {
+                Some(key.trim())
+            },
+        )?;
     }
     Ok(resolved)
 }

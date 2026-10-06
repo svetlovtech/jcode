@@ -1099,7 +1099,10 @@ mod tests {
             ("new_terminal", Some(&["new_terminal"])),
             ("open_resume", Some(&["open_resume"])),
             ("voice_input", Some(&["voice_input"])),
-            ("tool_row_time_toggle", Some(&["tool_row_time_toggle"])),
+            (
+                "tool_row_time_toggle",
+                Some(&["tool_row_time_toggle"]),
+            ),
         ];
 
         let registry = test_inputs_registry(true);

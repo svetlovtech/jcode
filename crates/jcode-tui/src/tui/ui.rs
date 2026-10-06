@@ -2816,8 +2816,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let has_file_diff_edits =
         !swarm_page_active && diff_mode.is_file() && app.has_display_edit_tool_messages();
     let has_right_side_pane_content = has_side_panel_content || has_file_diff_edits;
-    // Fullscreen side panel replaces the transcript area; status line and input stay.
-    let side_panel_fullscreen = has_side_panel_content && app.side_panel_fullscreen();
     // Regular side-panel pages and full-file diffs share the right-hand surface.
     // Suppress a separate diagram pane to avoid a triple-split layout.
     let suppress_side_diagram = has_right_side_pane_content;
@@ -2923,7 +2921,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         (area, None)
     };
 
-    let needs_side_pane = has_right_side_pane_content && !side_panel_fullscreen;
+    let needs_side_pane = has_right_side_pane_content;
 
     let (chat_area, diff_pane_area) = if needs_side_pane {
         const MIN_DIFF_WIDTH: u16 = 30;
@@ -3178,9 +3176,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Use packed layout when content fits, scrolling layout otherwise
     let use_packed = terminal_clear_collapsed
-        || (!swarm_page_active
-            && !side_panel_fullscreen
-            && content_height + fixed_height <= available_height);
+        || (!swarm_page_active && content_height + fixed_height <= available_height);
 
     // Layout: messages (includes header), queued, status, notification, inline UI, gap, input, donut
     // All vertical chunks are within the chat_area (left column).
@@ -3295,11 +3291,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Messages area is chunks[0] within the chat column (already excludes diagram).
     let messages_area = chunks[0];
-    let diff_pane_area = if side_panel_fullscreen {
-        Some(messages_area)
-    } else {
-        diff_pane_area
-    };
     let _ = swarm_strip_height;
     note_chat_layout(ChatLayoutMetrics {
         chat_area,
@@ -3345,10 +3336,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             centered: false,
             ..Default::default()
         }
-    } else if terminal_clear_collapsed || side_panel_fullscreen {
-        if side_panel_fullscreen {
-            clear_area(frame, messages_area);
-        }
+    } else if terminal_clear_collapsed {
         // Collapsed terminal-style clear: the messages chunk is zero-height, so
         // there is nothing to draw. Deliberately skip `draw_messages` so it does
         // not publish a zero-height viewport/max-scroll geometry that the scroll
@@ -3482,7 +3470,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         && !widget_data.is_empty()
         && !show_donut
         && !swarm_page_active
-        && !side_panel_fullscreen
     {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("render_info_widgets".to_string());

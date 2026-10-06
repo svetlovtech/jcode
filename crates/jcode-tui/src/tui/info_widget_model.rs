@@ -7,7 +7,6 @@
 //! throughput, and which session/swarm this is.
 
 use super::InfoWidgetData;
-use super::frame::{self, Framed};
 use super::text::truncate_smart;
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
@@ -21,31 +20,7 @@ pub(super) fn runtime_has_data(data: &InfoWidgetData) -> bool {
     !runtime_rows(data).is_empty()
 }
 
-/// Border layout: ` Runtime ` top-left, live throughput bottom-right (it is
-/// the one value that changes every turn), the rest as icon rows.
-pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
-    let max_len = inner.width as usize;
-    let tps = throughput(data);
-    let lines: Vec<Line<'static>> = runtime_rows(data)
-        .into_iter()
-        .filter(|row| tps.is_none() || row.icon != TPS_ICON)
-        .map(|row| row.into_line(max_len))
-        .collect();
-    let mut framed = Framed::body(lines).title(frame::label("Runtime"));
-    if let Some(tps) = tps {
-        framed = framed.footer_right(Line::from(vec![
-            Span::styled(
-                format!("{TPS_ICON} "),
-                Style::default().fg(rgb(140, 180, 255)),
-            ),
-            frame::dim(format!("{tps:.0} tok/s")),
-        ]));
-    }
-    framed
-}
-
-/// Overview section: every runtime fact as a row, no border.
-pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let max_len = inner.width.saturating_sub(2) as usize;
     runtime_rows(data)
         .into_iter()
@@ -53,15 +28,8 @@ pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
         .collect()
 }
 
-const TPS_ICON: &str = "⏱";
-
-/// Throughput worth showing on the border, only when another row keeps the
-/// body non-empty (a lone tok/s row stays in the body).
-fn throughput(data: &InfoWidgetData) -> Option<f32> {
-    let tps = data
-        .tokens_per_second
-        .filter(|t| t.is_finite() && *t > 0.1)?;
-    (runtime_rows(data).len() > 1).then_some(tps)
+pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+    render_model_widget(data, inner)
 }
 
 struct RuntimeRow {
@@ -74,10 +42,7 @@ struct RuntimeRow {
 impl RuntimeRow {
     fn into_line(self, max_len: usize) -> Line<'static> {
         Line::from(vec![
-            Span::styled(
-                format!("{} ", self.icon),
-                Style::default().fg(self.icon_color),
-            ),
+            Span::styled(format!("{} ", self.icon), Style::default().fg(self.icon_color)),
             Span::styled(
                 truncate_smart(&self.text, max_len.saturating_sub(2)),
                 Style::default().fg(self.text_color),
@@ -127,7 +92,7 @@ fn runtime_rows(data: &InfoWidgetData) -> Vec<RuntimeRow> {
         && tps > 0.1
     {
         rows.push(RuntimeRow {
-            icon: TPS_ICON,
+            icon: "⏱",
             icon_color: accent,
             text: format!("{tps:.0} tok/s"),
             text_color: muted,
@@ -164,7 +129,6 @@ fn short_service_tier(service_tier: &str) -> Option<&str> {
     }
     Some(match service_tier {
         "priority" => "fast",
-        "ultrafast" => "ultrafast",
         "flex" => "flex",
         other => other,
     })
@@ -190,12 +154,7 @@ mod tests {
     fn text(lines: Vec<Line<'static>>) -> String {
         lines
             .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -205,12 +164,9 @@ mod tests {
         let mut d = data();
         d.connection_type = Some("websocket".to_string());
         d.tokens_per_second = Some(61.7);
-        let out = text(render_model_widget(&d, Rect::new(0, 0, 30, 8)).all_lines());
+        let out = text(render_model_widget(&d, Rect::new(0, 0, 30, 8)));
         for owned in ["GPT", "codex", "high", "(hi)", "openai", "OAuth", "jcode"] {
-            assert!(
-                !out.contains(owned),
-                "{owned:?} belongs to the status line: {out}"
-            );
+            assert!(!out.contains(owned), "{owned:?} belongs to the status line: {out}");
         }
         assert!(out.contains("fast tier"), "{out}");
         assert!(out.contains("websocket"), "{out}");
@@ -221,9 +177,7 @@ mod tests {
     fn service_tier_only_for_openai() {
         let mut d = data();
         d.provider_name = Some("deepseek".to_string());
-        assert!(
-            !text(render_model_widget(&d, Rect::new(0, 0, 30, 8)).all_lines()).contains("tier")
-        );
+        assert!(!text(render_model_widget(&d, Rect::new(0, 0, 30, 8))).contains("tier"));
         for tier in [None, Some("off"), Some("default")] {
             let mut d = data();
             d.service_tier = tier.map(str::to_string);
@@ -245,8 +199,8 @@ mod tests {
         d.upstream_provider = Some("fireworks".to_string());
         d.session_name = Some("sauropod".to_string());
         d.session_count = Some(3);
-        let framed = render_model_widget(&d, Rect::new(0, 0, 30, 8));
-        assert_eq!(framed.lines.len() as u16, runtime_height(&d));
-        assert!(text(framed.all_lines()).contains("sauropod · 3 sessions"));
+        let lines = render_model_widget(&d, Rect::new(0, 0, 30, 8));
+        assert_eq!(lines.len() as u16, runtime_height(&d));
+        assert!(text(lines).contains("sauropod · 3 sessions"));
     }
 }

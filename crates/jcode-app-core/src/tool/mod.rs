@@ -7,7 +7,7 @@ mod bg;
 #[cfg(unix)]
 pub(crate) mod bridge_reload;
 mod browser;
-mod calendar;
+mod chat;
 mod communicate;
 mod compile_remote;
 #[cfg(target_os = "macos")]
@@ -28,6 +28,7 @@ mod gmail;
 pub mod applet;
 #[allow(dead_code)]
 mod goal;
+mod inbox;
 pub mod inflight;
 mod invalid;
 mod jcode_docs;
@@ -452,12 +453,6 @@ impl Registry {
             // Initiative is temporarily unavailable. Keep its implementation and
             // saved data intact so it can be restored without a migration.
             Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "calendar",
-                calendar::CalendarTool::new,
-            );
             Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
             Self::insert_tool_timed(
@@ -492,6 +487,15 @@ impl Registry {
         // definition (and provider KV cache), while newly created agents see
         // prompt edits immediately.
         Self::insert_tool(&mut tools, "swarm", communicate::CommunicateTool::new());
+        // AABEE chat integration: Telegram notifications and blocking user
+        // questions ([chat] in config.toml; unconfigured tools error with
+        // setup guidance instead of being absent from the tool list).
+        Self::insert_tool(&mut tools, "chat_notify", chat::ChatNotifyTool::new());
+        Self::insert_tool(&mut tools, "ask_user", chat::AskUserTool::new());
+        Self::insert_tool(&mut tools, "chat_send", chat::ChatSendTool::new());
+        Self::insert_tool(&mut tools, "inbox_list", inbox::InboxListTool::new());
+        Self::insert_tool(&mut tools, "inbox_read", inbox::InboxReadTool::new());
+        Self::insert_tool(&mut tools, "inbox_claim", inbox::InboxClaimTool::new());
         tools
     }
 
@@ -561,6 +565,9 @@ impl Registry {
         &self,
         allowed_tools: Option<&HashSet<String>>,
     ) -> Vec<ToolDefinition> {
+        if allowed_tools.is_none_or(|allowed| allowed.contains("compile_remote")) {
+            self.remote_compile_definition().await;
+        }
         let tools = self.tools.read().await;
         let mut defs: Vec<ToolDefinition> = tools
             .iter()
@@ -580,6 +587,15 @@ impl Registry {
         // Sort by name for deterministic ordering - critical for prompt cache hits
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
+    }
+
+    /// Subscription guidance is the one built-in definition that can change
+    /// after sign-in, sign-out, or entitlement refresh. Do not hold the registry
+    /// lock during the bounded account request.
+    pub(crate) async fn remote_compile_definition(&self) -> Option<ToolDefinition> {
+        let tool = self.tools.read().await.get("compile_remote").cloned()?;
+        compile_remote::refresh_access().await;
+        Some(tool.to_definition())
     }
 
     pub async fn tool_names(&self) -> Vec<String> {

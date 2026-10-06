@@ -458,10 +458,7 @@ pub fn pretty_picker_model_name(model: &str) -> String {
     }
     let (core, bracket) = split_bracket_suffix(bare);
     let (core, date) = split_snapshot_date(core);
-    let parts: Vec<&str> = core
-        .split(['-', '_', ' '])
-        .filter(|p| !p.is_empty())
-        .collect();
+    let parts: Vec<&str> = core.split(['-', '_', ' ']).filter(|p| !p.is_empty()).collect();
     let mut words: Vec<String> = Vec::new();
     let mut i = 0;
     while i < parts.len() {
@@ -551,10 +548,7 @@ fn pretty_picker_token(token: &str) -> String {
     // Mixed tokens: keep digits, capitalize a leading word (`qwen3` -> `Qwen3`).
     if token.chars().any(|c| c.is_ascii_digit()) {
         if token.starts_with(|c: char| c.is_ascii_lowercase()) {
-            let letters: String = token
-                .chars()
-                .take_while(|c| c.is_ascii_alphabetic())
-                .collect();
+            let letters: String = token.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
             if letters.len() > 1 {
                 let mut chars = token.chars();
                 let first = chars.next().unwrap().to_ascii_uppercase();
@@ -596,10 +590,7 @@ mod tests {
             ("opus-4-6", "Opus 4.6"),
             ("google.gemma-3-27b-it", "Gemma 3 27B IT"),
             ("mixtral-8x7b", "Mixtral 8x7B"),
-            (
-                "anthropic/claude-fable-5.1:batch",
-                "Claude Fable 5.1 (batch)",
-            ),
+            ("anthropic/claude-fable-5.1:batch", "Claude Fable 5.1 (batch)"),
             ("atlas-04", "Atlas 04"),
             ("mistral-large-2407", "Mistral Large 2407"),
         ] {
@@ -615,14 +606,8 @@ mod tests {
         ] {
             assert_eq!(pretty_picker_model_name(raw), raw);
         }
-        assert_eq!(
-            pretty_picker_model_name("comtegra:glm-51-nvfp4"),
-            "GLM-51 NVFP4"
-        );
-        assert_eq!(
-            pretty_picker_model_name("google:gemini-review"),
-            "Gemini Review"
-        );
+        assert_eq!(pretty_picker_model_name("comtegra:glm-51-nvfp4"), "GLM-51 NVFP4");
+        assert_eq!(pretty_picker_model_name("google:gemini-review"), "Gemini Review");
         assert_eq!(pretty_picker_model_name("openai:atlas-04"), "Atlas 04");
         assert_eq!(pretty_picker_model_name("  "), "");
     }

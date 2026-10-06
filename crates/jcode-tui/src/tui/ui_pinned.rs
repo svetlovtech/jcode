@@ -580,13 +580,8 @@ pub(super) fn draw_side_panel_markdown(
     ));
     title_parts.push(Span::styled(
         format!(
-            " {} {} ",
-            crate::tui::keybind::side_panel_toggle_key_label(),
-            if app.side_panel_fullscreen() {
-                "hide"
-            } else {
-                "fullscreen"
-            }
+            " {} hide ",
+            crate::tui::keybind::side_panel_toggle_key_label()
         ),
         Style::default().fg(dim_color()),
     ));

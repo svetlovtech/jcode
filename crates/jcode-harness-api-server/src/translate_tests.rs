@@ -1437,7 +1437,6 @@ fn capability_requests_need_an_attached_session() {
         ("rename_session", json!({})),
         ("rewind_undo", json!({})),
         ("cancel_soft_interrupts", json!({})),
-        ("background_tool", json!({})),
     ] {
         let mut state = BridgeState::default();
         let mut request = json!({"id": 1, "req": req});
@@ -3158,37 +3157,6 @@ fn text_framing_preserves_chunks_and_reasoning_then_separates_messages() {
             event: ApiEvent::TurnDone { .. },
             ..
         }]
-    ));
-}
-
-#[test]
-fn provider_native_web_search_reaches_sdk_as_tool_events_without_tool_call() {
-    // The agent renders a provider-executed search (Anthropic `srvtoolu_*`,
-    // OpenAI `ws_*`) as a normal tool row. SDK clients must see the full
-    // start/input/exec/done sequence and never a `tool_call` to answer.
-    let mut state = state_with_session();
-    let mut frames = Vec::new();
-    for event in [
-        json!({"type":"tool_start","id":"srvtoolu_1","name":"web_search"}),
-        json!({"type":"tool_input","id":"srvtoolu_1","delta":"{\"query\":\"rust news\"}"}),
-        json!({"type":"tool_exec","id":"srvtoolu_1","name":"web_search"}),
-        json!({"type":"tool_done","id":"srvtoolu_1","name":"web_search",
-            "output":"Rust Blog - https://blog.rust-lang.org/"}),
-    ] {
-        frames.extend(state.legacy_event_to_api(&event));
-    }
-    let events: Vec<_> = frames.iter().map(|frame| &frame.event).collect();
-    assert!(matches!(
-        events.as_slice(),
-        [
-            ApiEvent::ToolStart { call_id: a, name: n1, .. },
-            ApiEvent::ToolInputDelta { call_id: b, delta, .. },
-            ApiEvent::ToolExec { call_id: c, .. },
-            ApiEvent::ToolDone { call_id: d, name: n2, output, error: None, .. },
-        ] if [a, b, c, d].iter().all(|id| *id == "srvtoolu_1")
-            && n1 == "web_search" && n2 == "web_search"
-            && delta.contains("rust news")
-            && output.contains("https://blog.rust-lang.org/")
     ));
 }
 

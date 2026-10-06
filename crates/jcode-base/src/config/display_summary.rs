@@ -23,8 +23,6 @@ impl Config {
 - Model prev: `{}`
 - Effort increase: `{}`
 - Effort decrease: `{}`
-- Speed increase: `{}`
-- Speed decrease: `{}`
 - Centered toggle: `{}`
 - Prompt up: `{}`
 - Prompt down: `{}`
@@ -145,8 +143,6 @@ impl Config {
             self.keybindings.model_switch_prev,
             self.keybindings.effort_increase,
             self.keybindings.effort_decrease,
-            self.keybindings.speed_increase,
-            self.keybindings.speed_decrease,
             self.keybindings.centered_toggle,
             self.keybindings.scroll_prompt_up,
             self.keybindings.scroll_prompt_down,

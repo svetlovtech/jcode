@@ -3,7 +3,6 @@ pub mod acp;
 pub mod args;
 pub mod auth_import;
 pub mod auth_test;
-pub mod cloud_move;
 pub mod commands;
 pub mod debug;
 /// Fork: `jcode session export` CLI handler (fork-only module).

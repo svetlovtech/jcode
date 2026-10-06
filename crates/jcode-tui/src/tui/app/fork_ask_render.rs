@@ -254,7 +254,8 @@ pub(crate) fn truncate_display(text: &str, max_width: usize) -> String {
 /// line. Continuation lines are returned WITHOUT any indent; callers add the
 /// prefix that matches the row they continue.
 pub(crate) fn wrap_display(text: &str, max_width: usize) -> Vec<String> {
-    let char_width = |ch: char| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    let char_width =
+        |ch: char| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
     let mut lines: Vec<String> = Vec::new();
     for paragraph in text.split('\n') {
         let mut line = String::new();

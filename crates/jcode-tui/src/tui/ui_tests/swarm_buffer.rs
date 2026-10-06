@@ -462,16 +462,16 @@ fn swarm_dock_widget_full_render_writes_agent_rows_in_margin() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        dock_text.contains("1/2 active"),
+        dock_text.contains("1/2 agents"),
         "expected agents tally inside dock rect, got:\n{dock_text}"
     );
     assert!(
         dock_text.contains("nodes 3/7"),
-        "expected node progress on dock border, got:\n{dock_text}"
+        "expected node progress in dock header, got:\n{dock_text}"
     );
     assert!(
-        dock_text.contains("researcher") && dock_text.contains("reviewer"),
-        "expected one row per agent inside dock rect, got:\n{dock_text}"
+        dock_text.contains('▁'),
+        "expected plan progress bar inside dock rect, got:\n{dock_text}"
     );
     // Nothing from the dock leaked left of its rect.
     for row in &rows[rect.y as usize..(rect.y + rect.height) as usize] {
@@ -537,6 +537,10 @@ fn overscroll_line_state() -> TestState {
 
 fn overscroll_line_row(state: &TestState, width: u16) -> String {
     let _lock = viewport_snapshot_test_lock();
+    // These tests assert on the classic overscroll layout facts; keep the
+    // host's `footer_style = "pi"` / `[chat]` config from switching the
+    // rendered branch underneath them. The guard restores JCODE_HOME on drop.
+    let _config_guard = isolate_config_home();
     clear_flicker_frame_history_for_tests();
     let backend = TestBackend::new(width, 18);
     let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -565,10 +569,7 @@ fn overscroll_line_orders_dir_git_context_then_model_on_the_right() {
         "full 10-cell bar when roomy: {row}"
     );
     assert!(row.contains("OAuth") && row.contains("OpenAI"), "{row}");
-    assert!(
-        !row.contains("(overscroll"),
-        "no countdown on the pinned line: {row}"
-    );
+    assert!(!row.contains("(overscroll"), "no countdown on the pinned line: {row}");
 }
 
 #[test]
@@ -663,15 +664,11 @@ fn widgets_render_detail_layer_without_repeating_status_line_facts() {
     }
 
     let mut terminal = Terminal::new(TestBackend::new(160, 40)).expect("test terminal");
-    // The Updates box is a widget box too and lists the build's latest commit
-    // subjects; pin it empty so a subject like "… main …" cannot fail the scan.
-    crate::tui::ui::header::set_unseen_changelog_entries_override_for_tests(Some(Vec::new()));
     for _ in 0..3 {
         terminal
             .draw(|frame| crate::tui::ui::draw(frame, &state))
             .expect("frame");
     }
-    crate::tui::ui::header::set_unseen_changelog_entries_override_for_tests(None);
     let rows = buffer_rows(&terminal);
     let frame = rows.join("\n");
     // Text inside rounded widget boxes only: every column from a box's left
@@ -688,14 +685,9 @@ fn widgets_render_detail_layer_without_repeating_status_line_facts() {
         .join("\n");
     assert!(!widgets.is_empty(), "expected widgets:\n{frame}");
 
-    assert!(
-        widgets.contains("turn_execution.rs"),
-        "Changes detail:\n{frame}"
-    );
+    assert!(widgets.contains("turn_execution.rs"), "Changes detail:\n{frame}");
     assert!(widgets.contains("62 tok/s"), "Runtime detail:\n{frame}");
-    for owned in [
-        "GPT-5.6", "74k", "256k", "29%", "OAuth", "OpenAI", "main", "~3", "↑1",
-    ] {
+    for owned in ["GPT-5.6", "74k", "256k", "29%", "OAuth", "OpenAI", "main", "~3", "↑1"] {
         assert!(
             !widgets.contains(owned),
             "{owned:?} is a status-line fact and must not repeat in widgets:\n{frame}"

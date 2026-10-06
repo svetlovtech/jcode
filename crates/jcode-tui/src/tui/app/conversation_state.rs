@@ -243,11 +243,10 @@ impl App {
             return;
         }
         let provider_messages = self.materialized_provider_messages();
-        let context_budget = self.context_limit as usize;
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
             manager.reset();
-            manager.set_budget(context_budget);
+            manager.set_budget(self.context_limit as usize);
             if let Some(state) = self.session.compaction.as_ref() {
                 manager.restore_persisted_state_with(state, &provider_messages);
             } else {
@@ -308,10 +307,9 @@ impl App {
 
         self.session.compaction = Some(state.clone());
         let provider_messages = self.materialized_provider_messages();
-        let context_budget = self.context_limit as usize;
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
-            manager.set_budget(context_budget);
+            manager.set_budget(self.context_limit as usize);
             manager.restore_persisted_state_with(&state, &provider_messages);
         }
 

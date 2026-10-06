@@ -185,11 +185,8 @@ pub fn invalidate_session_list_cache() {
 }
 
 #[cfg(test)]
-type PublishHook = Box<dyn Fn() + Send>;
-
-#[cfg(test)]
-fn before_session_list_cache_publish_hook() -> &'static Mutex<Option<PublishHook>> {
-    static HOOK: OnceLock<Mutex<Option<PublishHook>>> = OnceLock::new();
+fn before_session_list_cache_publish_hook() -> &'static Mutex<Option<Box<dyn Fn() + Send>>> {
+    static HOOK: OnceLock<Mutex<Option<Box<dyn Fn() + Send>>>> = OnceLock::new();
     HOOK.get_or_init(|| Mutex::new(None))
 }
 

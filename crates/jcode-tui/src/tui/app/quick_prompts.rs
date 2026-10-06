@@ -132,7 +132,9 @@ pub(crate) fn prompt_sources_fingerprint() -> u64 {
                     && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
                 {
                     let nanos = since.as_nanos() as u64;
-                    state ^= nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17);
+                    state ^= nanos
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        .rotate_left(17);
                     state = state.rotate_left(7);
                 }
             }

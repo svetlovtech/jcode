@@ -498,11 +498,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(Line::from(""));
     lines.push(key_entry(
         &crate::tui::keybind::side_panel_toggle_key_label(),
-        "Cycle side panel: split, fullscreen, hidden",
-    ));
-    lines.push(key_entry(
-        &crate::tui::keybind::diagram_pane_visibility_key_label(),
-        "Show/hide diagram pane",
+        "Toggle side panel (or diagram pane if empty)",
     ));
     lines.push(key_entry(&alt("T"), "Toggle diagram position (side/top)"));
     lines.push(key_entry(

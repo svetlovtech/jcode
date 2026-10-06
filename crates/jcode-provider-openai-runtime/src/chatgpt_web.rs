@@ -672,8 +672,8 @@ fn build_web_prompt(
                 | ContentBlock::AnthropicThinking { .. }
                 | ContentBlock::OpenAIReasoning { .. }
                 | ContentBlock::OpenAICompaction { .. }
-                | ContentBlock::ToolReference { .. }
-                | ContentBlock::ProviderNative { .. } => {}            }
+                | ContentBlock::ToolReference { .. } => {}
+            }
         }
         conversation.push(json!({
             "index": index + 1,

@@ -5,27 +5,8 @@ async fn communicate_assign_task_can_spawn_fallback_agent() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Stand in for a developer config that pins spawns to an unrelated model.
-    // The isolation guard below must hide it, or this test fails.
-    let outer_home = tempfile::TempDir::new().expect("outer home tempdir");
-    std::fs::write(
-        outer_home.path().join("config.toml"),
-        "[agents]\nswarm_model = \"openai-api:isolation-probe-model\"\n",
-    )
-    .expect("write conflicting outer config");
-    let _outer_home = EnvGuard::set("JCODE_HOME", outer_home.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
-    // The env override would set agents.swarm_model regardless of JCODE_HOME.
-    let _swarm_model = EnvGuard::remove("JCODE_SWARM_MODEL");
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
-    crate::config::invalidate_config_cache();
-    assert_eq!(
-        crate::config::config().agents.swarm_model,
-        None,
-        "spawn config must come from the isolated JCODE_HOME"
-    );
 
     let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
         delay: Duration::from_millis(100),
@@ -137,8 +118,6 @@ async fn communicate_assign_next_assigns_next_runnable_task() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
 
@@ -247,8 +226,6 @@ async fn communicate_assign_next_can_prefer_fresh_spawn_server_side() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
 
@@ -357,8 +334,6 @@ async fn communicate_assign_next_can_spawn_if_needed_server_side() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
 
@@ -449,8 +424,6 @@ async fn communicate_fill_slots_tops_up_to_concurrency_limit() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
 
@@ -543,8 +516,6 @@ async fn communicate_assign_task_can_prefer_fresh_spawn_over_reuse() {
     let repo_dir = std::env::current_dir().expect("repo cwd");
     let socket_path = runtime_dir.path().join("jcode.sock");
     let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
-    // Keep the developer's real config (agents.swarm_model, providers) out of spawns.
-    let _home = EnvGuard::set("JCODE_HOME", runtime_dir.path());
     let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
     let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
 

@@ -46,8 +46,7 @@ fn stream_event_is_replay_visible(event: &StreamEvent) -> bool {
         | StreamEvent::OpenAIReasoning { .. }
         | StreamEvent::MessageEnd { .. }
         | StreamEvent::Compaction { .. }
-        | StreamEvent::NativeToolCall { .. }
-        | StreamEvent::ProviderNative { .. } => true,
+        | StreamEvent::NativeToolCall { .. } => true,
         StreamEvent::ThinkingStart
         | StreamEvent::ThinkingEnd
         | StreamEvent::ThinkingDone { .. }

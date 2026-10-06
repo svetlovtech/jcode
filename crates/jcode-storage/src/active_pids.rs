@@ -356,7 +356,8 @@ mod tests {
 
     /// Serialize tests that mutate `JCODE_HOME`.
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_jcode_home_lock()
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]

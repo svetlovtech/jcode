@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 
 #[test]

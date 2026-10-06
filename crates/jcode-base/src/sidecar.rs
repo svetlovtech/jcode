@@ -309,18 +309,10 @@ impl Sidecar {
         let provider = self.provider.as_ref().context(
             "No active provider registered for sidecar; memory features require a logged-in provider",
         )?;
-        let (text, usage) = provider
-            .complete_simple_with_usage(user_message, system)
+        provider
+            .complete_simple(user_message, system)
             .await
-            .context("Sidecar completion via active provider failed")?;
-        crate::telemetry::record_simple_completion_usage(
-            None,
-            provider.name(),
-            &provider.model(),
-            crate::telemetry::UsageSource::Sidecar,
-            usage,
-        );
-        Ok(text)
+            .context("Sidecar completion via active provider failed")
     }
 
     /// Complete via OpenAI Responses API.
@@ -488,7 +480,7 @@ impl Sidecar {
         }
 
         if is_chatgpt_mode {
-            collect_openai_sse_text(response, model)
+            collect_openai_sse_text(response)
                 .await
                 .map_err(OpenAiSidecarError::other)
         } else {
@@ -497,7 +489,6 @@ impl Sidecar {
                 .await
                 .context("Failed to parse OpenAI API response")
                 .map_err(OpenAiSidecarError::other)?;
-            record_openai_sidecar_usage(model, result.get("usage"));
             extract_openai_response_text(&result).map_err(OpenAiSidecarError::other)
         }
     }
@@ -572,7 +563,7 @@ impl Sidecar {
         .await
         .context("Failed to send request to Claude API")?;
 
-        Self::parse_claude_response(response, &self.model).await
+        Self::parse_claude_response(response).await
     }
 
     /// Direct API-key completion path (`x-api-key`).
@@ -608,11 +599,11 @@ impl Sidecar {
             .await
             .context("Failed to send request to Claude API")?;
 
-        Self::parse_claude_response(response, &self.model).await
+        Self::parse_claude_response(response).await
     }
 
     /// Shared response parsing for both Claude credential paths.
-    async fn parse_claude_response(response: reqwest::Response, model: &str) -> Result<String> {
+    async fn parse_claude_response(response: reqwest::Response) -> Result<String> {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -628,21 +619,6 @@ impl Sidecar {
             .json()
             .await
             .context("Failed to parse Claude API response")?;
-
-        if let Some(usage) = result.usage.as_ref() {
-            crate::telemetry::record_provider_usage(
-                None,
-                "claude",
-                model,
-                crate::telemetry::UsageSource::Sidecar,
-                crate::telemetry::ProviderUsage {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    cache_read_input_tokens: usage.cache_read_input_tokens,
-                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                },
-            );
-        }
 
         let text = result
             .content
@@ -941,7 +917,7 @@ pub struct ExtractedMemory {
 ///
 /// Parses `data: <json>` lines and accumulates text deltas from
 /// `response.output_text.delta` events, stopping on completion/done.
-async fn collect_openai_sse_text(response: reqwest::Response, model: &str) -> Result<String> {
+async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> {
     use futures::StreamExt;
     let mut stream = response.bytes_stream();
     let mut text = String::new();
@@ -968,10 +944,6 @@ async fn collect_openai_sse_text(response: reqwest::Response, model: &str) -> Re
                             }
                         }
                         "response.completed" | "response.incomplete" => {
-                            record_openai_sidecar_usage(
-                                model,
-                                event.response.as_ref().and_then(|r| r.get("usage")),
-                            );
                             return Ok(text);
                         }
                         "response.failed" | "error" => {
@@ -990,40 +962,6 @@ async fn collect_openai_sse_text(response: reqwest::Response, model: &str) -> Re
     }
 
     Ok(text)
-}
-
-/// Parsed OpenAI Responses API `usage` object. OpenAI reports cached prompt
-/// tokens as a subset of `input_tokens` (`input_tokens_details.cached_tokens`),
-/// so the total stays `input + output`; cache reads are surfaced separately for
-/// pricing, the same convention the agent path uses for OpenAI providers.
-fn parse_openai_usage(usage: &serde_json::Value) -> Option<crate::telemetry::ProviderUsage> {
-    let input = usage.get("input_tokens").and_then(|v| v.as_u64());
-    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
-    if input.is_none() && output.is_none() {
-        return None;
-    }
-    let cached = usage
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64());
-    Some(crate::telemetry::ProviderUsage {
-        input_tokens: input.unwrap_or(0),
-        output_tokens: output.unwrap_or(0),
-        cache_read_input_tokens: cached,
-        cache_creation_input_tokens: None,
-    })
-}
-
-fn record_openai_sidecar_usage(model: &str, usage: Option<&serde_json::Value>) {
-    if let Some(parsed) = usage.and_then(parse_openai_usage) {
-        crate::telemetry::record_provider_usage(
-            None,
-            "openai",
-            model,
-            crate::telemetry::UsageSource::Sidecar,
-            parsed,
-        );
-    }
 }
 
 /// Extract text from a non-streaming OpenAI Responses API JSON response.
@@ -1055,8 +993,6 @@ struct SseEvent {
     kind: String,
     delta: Option<String>,
     error: Option<serde_json::Value>,
-    #[serde(default)]
-    response: Option<serde_json::Value>,
 }
 
 // Claude API types
@@ -1151,7 +1087,8 @@ fn is_anthropic_oauth_forbidden(err: &anyhow::Error) -> bool {
 #[derive(Deserialize)]
 struct ClaudeMessagesResponse {
     content: Vec<ClaudeContentBlock>,
-    usage: Option<ClaudeUsage>,
+    #[serde(rename = "usage")]
+    _usage: Option<ClaudeUsage>,
 }
 
 #[derive(Deserialize)]
@@ -1165,14 +1102,10 @@ enum ClaudeContentBlock {
 
 #[derive(Deserialize)]
 struct ClaudeUsage {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: Option<u64>,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u64>,
+    #[serde(rename = "input_tokens")]
+    _input_tokens: u32,
+    #[serde(rename = "output_tokens")]
+    _output_tokens: u32,
 }
 
 #[cfg(test)]
@@ -1180,47 +1113,6 @@ mod tests {
     use super::*;
     use crate::auth::codex;
     use std::ffi::OsString;
-
-    #[test]
-    fn parses_openai_responses_usage_with_cached_subset() {
-        let usage = serde_json::json!({
-            "input_tokens": 1200,
-            "input_tokens_details": {"cached_tokens": 900},
-            "output_tokens": 80,
-            "total_tokens": 1280
-        });
-        let parsed = parse_openai_usage(&usage).expect("usage parsed");
-        assert_eq!(parsed.input_tokens, 1200);
-        assert_eq!(parsed.output_tokens, 80);
-        assert_eq!(parsed.cache_read_input_tokens, Some(900));
-        assert_eq!(parsed.cache_creation_input_tokens, None);
-        assert!(parse_openai_usage(&serde_json::json!({})).is_none());
-    }
-
-    #[test]
-    fn sse_completed_event_exposes_response_usage() {
-        let data = r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":3}}}"#;
-        let event: SseEvent = serde_json::from_str(data).expect("sse event");
-        let usage = event
-            .response
-            .as_ref()
-            .and_then(|r| r.get("usage"))
-            .and_then(parse_openai_usage)
-            .expect("usage");
-        assert_eq!(usage.input_tokens, 10);
-        assert_eq!(usage.output_tokens, 3);
-    }
-
-    #[test]
-    fn claude_response_usage_includes_cache_buckets() {
-        let body = r#"{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":2,"cache_read_input_tokens":400,"cache_creation_input_tokens":30}}"#;
-        let parsed: ClaudeMessagesResponse = serde_json::from_str(body).expect("claude response");
-        let usage = parsed.usage.expect("usage");
-        assert_eq!(usage.input_tokens, 5);
-        assert_eq!(usage.output_tokens, 2);
-        assert_eq!(usage.cache_read_input_tokens, Some(400));
-        assert_eq!(usage.cache_creation_input_tokens, Some(30));
-    }
 
     struct EnvVarGuard {
         key: &'static str,

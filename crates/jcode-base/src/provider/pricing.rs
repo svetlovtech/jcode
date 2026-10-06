@@ -86,11 +86,10 @@ pub(crate) fn openai_effective_auth_mode() -> &'static str {
         Ok(creds) if !creds.refresh_token.is_empty() || creds.id_token.is_some() => "oauth",
         Ok(_) => "api-key",
         Err(_) => {
-            if crate::provider_catalog::load_api_key_from_env_or_config(
-                "OPENAI_API_KEY",
-                "openai.env",
-            )
-            .is_some()
+            if std::env::var("OPENAI_API_KEY")
+                .ok()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
             {
                 "api-key"
             } else {
@@ -225,25 +224,14 @@ pub fn metered_pricing_for_source_with_tier(
     }
 
     // 3. Live models.dev catalog (disk cache; refreshes in the background).
-    let (cost, matched) = crate::model_pricing::lookup_with_provenance(source_key, model)?;
-    // A price borrowed from other providers' listings (reseller fallback) is
-    // a reasonable estimate, not the route's own published rate.
-    let (confidence, note) = match matched {
-        crate::model_pricing::PricingMatch::ProviderTable => {
-            (RouteCostConfidence::High, "models.dev pricing catalog")
-        }
-        crate::model_pricing::PricingMatch::CrossProvider => (
-            RouteCostConfidence::Medium,
-            "models.dev pricing catalog (inferred from other providers)",
-        ),
-    };
+    let cost = crate::model_pricing::lookup(source_key, model)?;
     Some(RouteCheapnessEstimate::metered(
         RouteCostSource::ModelsDevCatalog,
-        confidence,
+        RouteCostConfidence::High,
         usd_to_micros(cost.input_usd_per_mtok),
         usd_to_micros(cost.output_usd_per_mtok),
         cost.cache_read_usd_per_mtok.map(usd_to_micros),
-        Some(note.to_string()),
+        Some("models.dev pricing catalog".to_string()),
     ))
 }
 

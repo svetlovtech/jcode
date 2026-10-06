@@ -154,10 +154,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let socket_path = temp.path().join("missing.sock");
 
-        let err = match connect_swarm_socket(&socket_path).await {
-            Ok(_) => panic!("missing socket should fail"),
-            Err(err) => err,
-        };
+        let err = connect_swarm_socket(&socket_path)
+            .await
+            .expect_err("missing socket should fail");
 
         assert_eq!(err.to_string(), SERVER_NOT_RUNNING);
     }
@@ -171,10 +170,9 @@ mod tests {
             let _listener = crate::transport::Listener::bind(&socket_path).expect("bind listener");
         }
 
-        let err = match connect_swarm_socket(&socket_path).await {
-            Ok(_) => panic!("stale socket should refuse the connection"),
-            Err(err) => err,
-        };
+        let err = connect_swarm_socket(&socket_path)
+            .await
+            .expect_err("stale socket should refuse the connection");
 
         assert_eq!(err.to_string(), SERVER_NOT_RUNNING);
     }

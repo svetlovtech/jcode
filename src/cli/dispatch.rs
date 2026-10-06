@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::IsTerminal;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Instant;
@@ -307,32 +307,37 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             flow_id,
             cancel,
             no_validate,
-            google,
+            google_access_tier,
             api_base,
             api_key,
             api_key_env,
         }) => {
-            let mut options = login::LoginOptions {
-                no_browser,
-                print_auth_url,
-                callback_url,
-                auth_code,
-                json,
-                complete,
-                flow_id,
-                cancel,
-                no_validate,
-                openai_compatible_api_base: api_base,
-                openai_compatible_api_key: api_key,
-                openai_compatible_api_key_env: api_key_env,
-                openai_compatible_default_model: args.model.clone(),
-                ..Default::default()
-            };
-            google.apply(&mut options)?;
             login::run_login(
                 &login_provider.unwrap_or(args.provider),
                 account.as_deref(),
-                options,
+                login::LoginOptions {
+                    no_browser,
+                    print_auth_url,
+                    callback_url,
+                    auth_code,
+                    json,
+                    complete,
+                    flow_id,
+                    cancel,
+                    no_validate,
+                    google_access_tier: google_access_tier.map(|tier| match tier {
+                        super::args::GoogleAccessTierArg::Full => {
+                            auth::google::GmailAccessTier::Full
+                        }
+                        super::args::GoogleAccessTierArg::Readonly => {
+                            auth::google::GmailAccessTier::ReadOnly
+                        }
+                    }),
+                    openai_compatible_api_base: api_base,
+                    openai_compatible_api_key: api_key,
+                    openai_compatible_api_key_env: api_key_env,
+                    openai_compatible_default_model: args.model.clone(),
+                },
             )
             .await?;
         }
@@ -459,13 +464,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Ambient(subcmd)) => {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;
         }
-        Some(Command::Cloud(CloudCommand::Sessions { action })) => {
-            commands::run_cloud_command(commands::CloudSubcommand::Sessions(
-                map_cloud_sessions_subcommand(action),
-            ))?;
-        }
         Some(Command::Cloud(subcmd)) => {
-            super::cloud_move::run_cli(subcmd)?;
+            commands::run_cloud_command(map_cloud_subcommand(subcmd))?;
         }
         Some(Command::Pair { list, revoke }) => {
             commands::run_pair_command(list, revoke)?;
@@ -775,6 +775,14 @@ fn map_ambient_subcommand(subcmd: AmbientCommand) -> commands::AmbientSubcommand
         AmbientCommand::Trigger => commands::AmbientSubcommand::Trigger,
         AmbientCommand::Stop => commands::AmbientSubcommand::Stop,
         AmbientCommand::RunVisible => commands::AmbientSubcommand::RunVisible,
+    }
+}
+
+fn map_cloud_subcommand(subcmd: CloudCommand) -> commands::CloudSubcommand {
+    match subcmd {
+        CloudCommand::Sessions { action } => {
+            commands::CloudSubcommand::Sessions(map_cloud_sessions_subcommand(action))
+        }
     }
 }
 
@@ -1204,18 +1212,6 @@ fn try_acquire_spawn_lock(path: &std::path::Path) -> Result<Option<SpawnLockGuar
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
 
-    // The client acquires this lock before the daemon creates its socket directory.
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "Failed to create JCode runtime directory {}",
-                parent.display()
-            )
-        })?;
-    }
     let file = OpenOptions::new()
         .create(true)
         .write(true)

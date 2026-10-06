@@ -953,7 +953,6 @@ fn test_remote_model_switch_failure_shows_actionable_guidance() {
     app.is_remote = true;
     app.handle_server_event(
         crate::protocol::ServerEvent::ModelChanged {
-            context_window: None,
             id: 7,
             model: "claude-opus-4.6".to_string(),
             provider_name: Some("Copilot".to_string()),
@@ -1067,7 +1066,6 @@ fn test_remote_model_switch_failure_restores_deferred_prompt() {
 
     app.handle_server_event(
         crate::protocol::ServerEvent::ModelChanged {
-            context_window: None,
             id: 8,
             model: "Qwen/Qwen3-32B-TEE".to_string(),
             provider_name: Some("Chutes".to_string()),

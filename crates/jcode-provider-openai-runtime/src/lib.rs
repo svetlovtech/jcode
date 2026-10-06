@@ -1161,11 +1161,10 @@ impl OpenAIProvider {
 
         match value.as_str() {
             "fast" | "priority" => Ok(Some("priority".to_string())),
-            "ultrafast" | "ultra" | "ultra-fast" => Ok(Some("ultrafast".to_string())),
             "flex" => Ok(Some("flex".to_string())),
             "default" | "auto" | "none" | "off" | "standard" => Ok(None),
             other => anyhow::bail!(
-                "Unsupported OpenAI service tier '{}'; expected priority|fast|ultrafast|flex|standard|default|off",
+                "Unsupported OpenAI service tier '{}'; expected priority|fast|flex|standard|default|off",
                 other
             ),
         }
@@ -1259,11 +1258,7 @@ impl OpenAIProvider {
         system: &str,
         is_chatgpt_mode: bool,
     ) -> Value {
-        let hosted_tools =
-            native_web_search::hosted_tools_for_request(model_id, is_chatgpt_mode, tools);
-        let tools = native_web_search::without_local_websearch(tools, &hosted_tools);
-        let mut api_tools = build_tools(&tools);
-        api_tools.extend(hosted_tools);
+        let api_tools = build_tools(tools);
         let reasoning_effort = self
             .reasoning_effort
             .read()
@@ -1465,7 +1460,6 @@ use self::stream::{OpenAIResponsesStream, parse_openai_response_event};
 use self::stream::{handle_openai_output_item, parse_text_wrapped_tool_call};
 
 mod chatgpt_web;
-mod native_web_search;
 #[path = "openai_provider_impl.rs"]
 mod openai_provider_impl;
 #[path = "openai_stream_runtime.rs"]

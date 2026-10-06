@@ -89,7 +89,6 @@ pub(super) enum RemoteEventOutcome {
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
     app.refresh_terminal_title_metrics();
-    app.sync_herdr_agent_state();
     crate::tui::ui::set_frame_input_attribution(crate::tui::ui::FrameInputAttribution {
         event: Some("tick".to_string()),
         scroll_delta: None,
@@ -135,6 +134,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();
     needs_redraw |= app.progress_copy_selection_edge_autoscroll();
     app.progress_mouse_scroll_animation();
+    // Fork: chat-integration footer status probe (non-blocking).
+    crate::tui::chat_status::probe_if_stale();
     needs_redraw |= app.update_pinned_images_auto_hide();
     // Dissolve stale (off-screen) reasoning traces with zero visible motion.
     needs_redraw |= app.gc_offscreen_reasoning_traces();
@@ -170,6 +171,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.progress_update_simulator();
     needs_redraw |= app.refresh_keybindings_if_config_reloaded();
+    // Fork: surface finished /mcp operations in the transcript (no-op without
+    // a pending command; the manager itself is local-only).
+    needs_redraw |= super::mcp_command::poll_mcp_command(app);
 
     let _ = check_debug_command(app, remote).await;
 
@@ -272,10 +276,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         }
     }
 
-    // Esc redirect hold. On timeout this arms pending_queued_dispatch, which
-    // the next check hands to the normal follow-up path.
-    let holding_for_interrupt = app.awaiting_remote_interrupt_ack();
-    if holding_for_interrupt || app.pending_queued_dispatch {
+    if app.pending_queued_dispatch {
         return needs_redraw;
     }
 
@@ -501,9 +502,8 @@ async fn apply_terminal_event(
                                         )));
                                     } else {
                                         crate::auth::AuthStatus::invalidate_cache();
-                                        app.set_context_limit_and_sync_budget(
-                                            app.provider.context_window(),
-                                        );
+                                        app.context_limit = app.provider.context_window() as u64;
+                                        app.context_warning_shown = false;
                                         let _ = remote.switch_anthropic_account(&label).await;
                                         app.push_display_message(DisplayMessage::system(format!(
                                             "Switched to Anthropic account `{}`.",
@@ -523,9 +523,8 @@ async fn apply_terminal_event(
                                         )));
                                     } else {
                                         crate::auth::AuthStatus::invalidate_cache();
-                                        app.set_context_limit_and_sync_budget(
-                                            app.provider.context_window(),
-                                        );
+                                        app.context_limit = app.provider.context_window() as u64;
+                                        app.context_warning_shown = false;
                                         let _ = remote.switch_openai_account(&label).await;
                                         app.push_display_message(DisplayMessage::system(format!(
                                             "Switched to OpenAI account `{}`.",
@@ -647,7 +646,18 @@ pub(super) async fn handle_bus_event(
             app.handle_productivity_report_ready(event);
             true
         }
+        // Fork: /export finished writing; surface the path in the transcript.
+        Ok(BusEvent::SessionExportReady(event)) => {
+            app.handle_session_export_ready(event);
+            true
+        }
         Ok(BusEvent::MermaidRenderCompleted) => true,
+        // Fork: the ask_user tool resolved this question on another surface
+        // (Telegram won the race); close the local modal immediately.
+        Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
+            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
+            true
+        }
         Ok(BusEvent::UsageReportProgress(progress)) => {
             app.handle_usage_report_progress(progress);
             true
@@ -1261,6 +1271,21 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
 }
 
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+    // Fork: an answer staged by the ask modal is flushed here because the
+    // modal key handler is sync. The queued-message branch covers typed
+    // answers arriving while the turn is processing.
+    if app.fork_ask.has_staged_answer() && app.fork_ask_ops().flush_staged(remote).await {
+        return;
+    }
+
+    // Fork: a pending ask_user prompt turns the next queued message into the
+    // answer (Request::StdinResponse) even while the turn is processing -
+    // the blocking tool unblocks the moment it arrives.
+    if let Some(answer) = app.fork_ask_ops().take_queued_answer() {
+        app.fork_ask_ops().send_typed_answer(remote, &answer).await;
+        return;
+    }
+
     // A pending *server* reload must be dispatched even when the bootstrap
     // History payload was intentionally deferred. The runtime-identity /
     // stale-binary guard in the History handler sets `pending_server_reload =
@@ -1327,12 +1352,6 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
 
     if !remote.has_loaded_history() {
         note_startup_submit_deferred(app, "remote history not loaded yet");
-        return;
-    }
-
-    // Esc redirected to a pending prompt: the server sends Done before
-    // Interrupted. Sending now would let the late Interrupted end the new turn.
-    if app.awaiting_remote_interrupt_ack() {
         return;
     }
 

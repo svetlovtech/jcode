@@ -28,9 +28,6 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-mod routing;
-use routing::*;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CatalogSource {
     None,
@@ -55,9 +52,27 @@ pub struct CopilotApiProvider {
     premium_mode: Arc<std::sync::atomic::AtomicU8>,
     user_turn_count: Arc<std::sync::atomic::AtomicU64>,
     reasoning_effort: Arc<RwLock<Option<String>>>,
-    /// Per-model reasoning efforts advertised by the live `/models` catalog.
-    model_efforts: Arc<RwLock<std::collections::HashMap<String, Vec<String>>>>,
     created_at: std::time::Instant,
+}
+
+/// Reasoning efforts supported by Copilot's claude-sonnet-5 route,
+/// per live `/models` capabilities (issue #558).
+const SONNET5_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+fn copilot_model_supports_reasoning_effort(model: &str) -> bool {
+    model == "claude-sonnet-5"
+}
+
+fn copilot_model_uses_responses_api(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("gpt-5.6")
+}
+
+fn copilot_api_path(uses_responses_api: bool) -> &'static str {
+    if uses_responses_api {
+        "responses"
+    } else {
+        "chat/completions"
+    }
 }
 
 impl CopilotApiProvider {
@@ -77,30 +92,13 @@ impl CopilotApiProvider {
             .clone()
     }
 
-    fn efforts_for(&self, model: &str) -> Vec<String> {
-        let catalog = self
-            .model_efforts
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        copilot_model_efforts(&catalog, model)
-    }
-
-    /// Selected effort, only if the model supports that exact level, so
-    /// switching models never sends an unsupported level.
-    fn effective_reasoning_effort(&self, model: &str) -> Option<String> {
-        let effort = self.current_reasoning_effort()?;
-        self.efforts_for(model).contains(&effort).then_some(effort)
-    }
-
-    /// Add the effort as `reasoning.effort` (Responses) or top-level
-    /// `reasoning_effort` (Chat Completions) when supported.
-    fn add_reasoning_effort_parameter(&self, body: &mut Value, model: &str, responses: bool) {
-        if let Some(effort) = self.effective_reasoning_effort(model) {
-            if responses {
-                body["reasoning"] = json!({ "effort": effort });
-            } else {
-                body["reasoning_effort"] = json!(effort);
-            }
+    /// Add top-level `reasoning_effort` when set and the model supports it.
+    fn add_reasoning_effort_parameter(&self, body: &mut Value, model: &str) {
+        if !copilot_model_supports_reasoning_effort(model) {
+            return;
+        }
+        if let Some(effort) = self.current_reasoning_effort() {
+            body["reasoning_effort"] = json!(effort);
         }
     }
 
@@ -178,7 +176,6 @@ impl CopilotApiProvider {
             premium_mode: Arc::new(std::sync::atomic::AtomicU8::new(Self::env_premium_mode())),
             user_turn_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             reasoning_effort: Arc::new(RwLock::new(None)),
-            model_efforts: Arc::new(RwLock::new(Default::default())),
             created_at: std::time::Instant::now(),
         };
         provider.seed_cached_catalog();
@@ -215,7 +212,6 @@ impl CopilotApiProvider {
             premium_mode: Arc::new(std::sync::atomic::AtomicU8::new(Self::env_premium_mode())),
             user_turn_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             reasoning_effort: Arc::new(RwLock::new(None)),
-            model_efforts: Arc::new(RwLock::new(Default::default())),
             created_at: std::time::Instant::now(),
         };
         provider.seed_cached_catalog();
@@ -350,12 +346,6 @@ impl CopilotApiProvider {
                     .map(|m| m.id.clone())
                     .collect();
                 let all_ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
-                if let Ok(mut efforts) = self.model_efforts.write() {
-                    *efforts = models
-                        .iter()
-                        .map(|m| (m.id.clone(), m.reasoning_efforts()))
-                        .collect();
-                }
                 let default = copilot_auth::choose_default_model(&models);
                 jcode_base::logging::info(&format!(
                     "Copilot tier detection: bearer={}ms, fetch_models={}ms, total={}ms, {} total, {} picker-enabled, default -> {}. Picker: [{}]. All: [{}]",
@@ -922,6 +912,20 @@ impl CopilotApiProvider {
     }
 }
 
+fn is_retryable_error(error_str: &str) -> bool {
+    jcode_provider_core::is_transient_transport_error(error_str)
+        || error_str.contains("500 internal server error")
+        || error_str.contains("502 bad gateway")
+        || error_str.contains("503 service unavailable")
+        || error_str.contains("504 gateway timeout")
+        || error_str.contains("overloaded")
+        || error_str.contains("429 too many requests")
+        || error_str.contains("rate limit")
+        || error_str.contains("rate_limit")
+        || error_str.contains("stream error")
+        || error_str.contains("stream read timeout")
+}
+
 #[async_trait]
 impl Provider for CopilotApiProvider {
     async fn complete(
@@ -950,9 +954,7 @@ impl Provider for CopilotApiProvider {
         let uses_responses_api = copilot_model_uses_responses_api(&model_for_fingerprint);
         let (canonical_payload, fingerprint_input, system_value, built_tools) =
             if uses_responses_api {
-                let mut input = jcode_provider_openai::build_responses_input(messages);
-                // Copilot never declares OpenAI's hosted web_search tool.
-                jcode_provider_openai::downgrade_web_search_calls(&mut input);
+                let input = jcode_provider_openai::build_responses_input(messages);
                 let tools = jcode_provider_openai::build_tools(tools);
                 let mut payload = json!({
                     "model": &model_for_fingerprint,
@@ -963,7 +965,6 @@ impl Provider for CopilotApiProvider {
                 if !system.is_empty() {
                     payload["instructions"] = json!(system);
                 }
-                self.add_reasoning_effort_parameter(&mut payload, &model_for_fingerprint, true);
                 if !tools.is_empty() {
                     payload["tools"] = json!(&tools);
                 }
@@ -982,7 +983,7 @@ impl Provider for CopilotApiProvider {
                     "stream": true,
                 });
                 Self::add_max_token_parameter(&mut payload, &model_for_fingerprint, 32_768u32);
-                self.add_reasoning_effort_parameter(&mut payload, &model_for_fingerprint, false);
+                self.add_reasoning_effort_parameter(&mut payload, &model_for_fingerprint);
                 if !tools.is_empty() {
                     payload["tools"] = json!(&tools);
                 }
@@ -1031,7 +1032,6 @@ impl Provider for CopilotApiProvider {
             premium_mode: self.premium_mode.clone(),
             user_turn_count: self.user_turn_count.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
-            model_efforts: self.model_efforts.clone(),
             created_at: self.created_at,
         };
 
@@ -1146,31 +1146,31 @@ impl Provider for CopilotApiProvider {
             premium_mode: self.premium_mode.clone(),
             user_turn_count: self.user_turn_count.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
-            model_efforts: self.model_efforts.clone(),
             created_at: self.created_at,
         })
     }
 
     fn reasoning_effort(&self) -> Option<String> {
-        self.effective_reasoning_effort(&self.model())
+        if !copilot_model_supports_reasoning_effort(&self.model()) {
+            return None;
+        }
+        self.current_reasoning_effort()
     }
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         let model = self.model();
-        let supported = self.efforts_for(&model);
-        if supported.is_empty() {
+        if !copilot_model_supports_reasoning_effort(&model) {
             anyhow::bail!(
-                "Reasoning effort is not supported for Copilot model '{}'",
+                "Reasoning effort is not supported for Copilot model '{}' (only claude-sonnet-5)",
                 model
             );
         }
         let normalized = effort.trim().to_lowercase();
-        if !supported.contains(&normalized) {
+        if !SONNET5_EFFORTS.contains(&normalized.as_str()) {
             anyhow::bail!(
-                "Unsupported reasoning effort '{}' for Copilot model '{}'. Supported: {}",
+                "Unsupported reasoning effort '{}' for Copilot claude-sonnet-5. Supported: {}",
                 effort,
-                model,
-                supported.join(", ")
+                SONNET5_EFFORTS.join(", ")
             );
         }
         let mut guard = self
@@ -1182,12 +1182,11 @@ impl Provider for CopilotApiProvider {
     }
 
     fn available_efforts(&self) -> Vec<&'static str> {
-        const KNOWN: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-        let supported = self.efforts_for(&self.model());
-        KNOWN
-            .into_iter()
-            .filter(|e| supported.iter().any(|s| s == e))
-            .collect()
+        if copilot_model_supports_reasoning_effort(&self.model()) {
+            SONNET5_EFFORTS.to_vec()
+        } else {
+            vec![]
+        }
     }
 }
 

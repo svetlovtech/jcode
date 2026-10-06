@@ -1,24 +1,22 @@
 use super::*;
 
-/// Border layout: `🧠 42 memories` top-left, status badge in the body, and
-/// the last trace on the bottom border.
-pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
+pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = &data.memory_info else {
-        return Framed::default();
+        return Vec::new();
     };
     if inner.width == 0 || inner.height == 0 {
-        return Framed::default();
+        return Vec::new();
     }
     if !info.should_render() {
-        return Framed::default();
+        return Vec::new();
     }
 
     let mut lines: Vec<Line> = Vec::new();
     let max_width = inner.width as usize;
     let activity = info.activity.as_ref();
     let show_activity = info.should_show_activity();
-    let title = render_memory_header_line(info, max_width);
-    let mut footer = None;
+
+    lines.push(render_memory_header_line(info, max_width));
 
     if show_activity && let Some(activity) = activity {
         if lines.len() < inner.height as usize {
@@ -34,15 +32,15 @@ pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Framed
             }
         }
 
-        footer = render_memory_last_trace_line(activity, max_width);
+        if lines.len() < inner.height as usize
+            && let Some(trace_line) = render_memory_last_trace_line(activity, max_width)
+        {
+            lines.push(trace_line);
+        }
     }
 
     lines.truncate(inner.height as usize);
-    let mut framed = Framed::body(lines).title(title);
-    if let Some(footer) = footer {
-        framed = framed.footer(footer);
-    }
-    framed
+    lines
 }
 
 fn render_memory_header_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {

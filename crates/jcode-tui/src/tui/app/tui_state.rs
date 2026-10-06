@@ -47,6 +47,19 @@ impl WidgetProviderKind {
             Some(provider) if matches!(provider.as_str(), "anthropic" | "claude") => {
                 Self::Anthropic
             }
+            // Fork: user-defined [providers.<key>] sections are billed per
+            // token when they declare requires_api_key (bearer API-key auth).
+            // Classify them as cost-based so the footer can show session
+            // token totals (Σ) and cost instead of rendering nothing.
+            Some(provider)
+                if crate::config::config()
+                    .providers
+                    .get(&provider)
+                    .and_then(|profile| profile.requires_api_key)
+                    .unwrap_or(false) =>
+            {
+                Self::CostBasedApiKey
+            }
             _ => Self::Unknown,
         }
     }
@@ -847,6 +860,10 @@ impl crate::tui::TuiState for App {
         Some(self.app_started.elapsed())
     }
 
+    fn session_age_secs(&self) -> Option<u64> {
+        Some(self.app_started.elapsed().as_secs())
+    }
+
     fn client_focused(&self) -> bool {
         App::client_focused(self)
     }
@@ -1225,10 +1242,6 @@ impl crate::tui::TuiState for App {
                         }
                         ContentBlock::ToolReference { tool_name, .. } => {
                             user_chars += tool_name.len();
-                        }
-                        ContentBlock::ProviderNative { item, .. } => {
-                            tool_result_count += 1;
-                            tool_result_chars += item.to_string().len();
                         }
                     }
                 }
@@ -1895,9 +1908,6 @@ impl crate::tui::TuiState for App {
     fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot {
         &self.side_panel
     }
-    fn side_panel_fullscreen(&self) -> bool {
-        self.side_panel_fullscreen
-    }
     fn pin_images(&self) -> bool {
         self.pin_images && !self.side_panel_user_hidden
     }
@@ -1972,6 +1982,11 @@ impl crate::tui::TuiState for App {
         &self,
     ) -> Option<&RefCell<crate::tui::account_picker::AccountPicker>> {
         self.account_picker_overlay.as_ref()
+    }
+
+    // Fork: expose the structured ask_user modal to the shared renderer.
+    fn pending_ask_modal(&self) -> Option<&crate::tui::app::fork_ask_modal::AskModal> {
+        self.fork_ask.modal()
     }
 
     fn usage_overlay(&self) -> Option<&RefCell<crate::tui::usage_overlay::UsageOverlay>> {

@@ -1,6 +1,7 @@
 //! MCP Client - handles communication with a single MCP server
 
 use super::protocol::*;
+use super::remote::RemoteTransport;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -17,16 +18,16 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 #[derive(Clone)]
 pub struct McpHandle {
     pub(crate) name: String,
-    request_id: Arc<AtomicU64>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    pub(crate) request_id: Arc<AtomicU64>,
+    pub(crate) pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     /// Set by the reader on stdout EOF: no reply can arrive, so requests fail fast.
-    closed: Arc<AtomicBool>,
-    writer_tx: mpsc::Sender<String>,
-    server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
-    capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
-    tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
+    pub(crate) closed: Arc<AtomicBool>,
+    pub(crate) writer_tx: mpsc::Sender<String>,
+    pub(crate) server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
+    pub(crate) capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
+    pub(crate) tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
     /// Reply timeout applied to every request on this server.
-    request_timeout: std::time::Duration,
+    pub(crate) request_timeout: std::time::Duration,
 }
 
 /// Default reply timeout when a server config does not set `timeout_secs`.
@@ -42,33 +43,6 @@ pub fn request_timeout_for(config: &McpServerConfig) -> std::time::Duration {
 }
 
 impl McpHandle {
-    /// Fork: assemble a handle from pre-built parts. Remote (HTTP/SSE)
-    /// transports drive their own reader/writer tasks and only need the
-    /// request-correlation plumbing this struct provides.
-    pub(crate) fn from_parts(
-        name: String,
-        request_id: Arc<AtomicU64>,
-        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
-        closed: Arc<AtomicBool>,
-        writer_tx: mpsc::Sender<String>,
-        server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
-        capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
-        tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
-        request_timeout: std::time::Duration,
-    ) -> Self {
-        Self {
-            name,
-            request_id,
-            pending,
-            closed,
-            writer_tx,
-            server_info,
-            capabilities,
-            tools,
-            request_timeout,
-        }
-    }
-
     /// Send a request and wait for response
     pub async fn request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
@@ -166,20 +140,18 @@ impl McpHandle {
     }
 }
 
-/// MCP Client - owns the child process and provides shared handles.
-/// Only one McpClient exists per MCP server process, but many McpHandle
+/// MCP Client - owns the child process (stdio) or the remote transport state
+/// (HTTP/SSE) and provides shared handles.
+/// Only one McpClient exists per MCP server, but many McpHandle
 /// clones can be distributed to different sessions.
 pub struct McpClient {
     handle: McpHandle,
     transport: ClientTransport,
 }
 
-/// Fork: MCP servers come in two flavors — stdio subprocesses and remote
-/// HTTP (streamable/SSE) endpoints. The transport owns process/socket
-/// lifecycle; the handle owns request correlation for both.
 enum ClientTransport {
     Stdio(Child),
-    Remote(super::remote::RemoteTransport),
+    Remote(RemoteTransport),
 }
 
 impl McpClient {
@@ -242,7 +214,7 @@ impl McpClient {
         if let Some(dir) = working_dir {
             command.current_dir(dir);
         }
-        let mut child: Child = command
+        let mut child = command
             .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {}", config.command))?;
 
@@ -373,6 +345,7 @@ impl McpClient {
         Ok(client)
     }
 
+    /// Connect to a remote MCP server over streamable HTTP or legacy SSE.
     /// Get a shareable handle to this client
     pub fn handle(&self) -> McpHandle {
         self.handle.clone()
@@ -506,7 +479,6 @@ impl Drop for McpClient {
 }
 
 /// Correlate a response into the pending map, if anyone is waiting on its id.
-/// Fork helper used by `mcp/remote.rs` to route streamed responses to waiters.
 pub(crate) async fn correlate_pending(
     pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     response: JsonRpcResponse,
@@ -519,6 +491,7 @@ pub(crate) async fn correlate_pending(
     }
 }
 
+/// Build a synthetic JSON-RPC error response for transport-level failures.
 #[cfg(all(test, unix))]
 mod tests {
     use super::{McpClient, is_sensitive_inherited_env_key, mcp_child_env};

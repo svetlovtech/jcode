@@ -38,7 +38,7 @@ use Disposition::{ClientInternal, Covered, Gap};
 ///
 /// Sorted by name so additions produce clean diffs.
 const LEDGER: &[(&str, Disposition)] = &[
-    ("BackgroundTool", Covered),
+    ("BackgroundTool", ClientInternal),
     ("Cancel", Covered),
     ("CancelSoftInterrupts", Covered),
     ("Clear", Covered),

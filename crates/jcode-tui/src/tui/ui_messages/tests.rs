@@ -882,52 +882,6 @@ fn render_todos_message_wraps_goal_scores_at_narrow_widths() {
 }
 
 #[test]
-fn render_todos_message_packs_multiple_goal_gates_per_row() {
-    let todos = vec![crate::todo::TodoItem {
-        id: "1".to_string(),
-        content: "Render the card".to_string(),
-        status: "in_progress".to_string(),
-        priority: "high".to_string(),
-        group: Some("todo rendering".to_string()),
-        confidence: Some(crate::todo::ConfidenceState::from_legacy_score(85)),
-        completion_confidence: None,
-        confidence_history: Vec::new(),
-        blocked_by: Vec::new(),
-        assigned_to: None,
-    }];
-    let goals = vec![crate::todo::TodoGoal {
-        group: Some("todo rendering".to_string()),
-        closed_feedback_loop: Some(crate::todo::FeedbackLoopState::Usable),
-        feedback_loop_relevance: Some(crate::todo::FeedbackLoopRelevance::Representative),
-        feedback_loop_coverage: Some(crate::todo::FeedbackLoopCoverage::MainPaths),
-        delivery_state: Some(crate::todo::DeliveryState::WorkflowValidated),
-        ..Default::default()
-    }];
-    let msg =
-        DisplayMessage::todos(serde_json::json!({ "todos": todos, "goals": goals }).to_string());
-
-    let lines = render_todos_message(&msg, 80, crate::config::DiffDisplayMode::Off);
-    let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
-    let gate_rows: Vec<&String> = rendered
-        .iter()
-        .filter(|line| {
-            ["Closed feedback loop", "Relevance", "Coverage", "Delivery"]
-                .iter()
-                .any(|label| line.contains(label))
-        })
-        .collect();
-    assert!(
-        gate_rows.len() < 4,
-        "gates should share rows instead of one per line: {rendered:#?}"
-    );
-    assert!(
-        gate_rows.iter().any(|line| line.contains(" · ")),
-        "{rendered:#?}"
-    );
-    assert!(lines.iter().all(|line| line.width() <= 78), "{rendered:#?}");
-}
-
-#[test]
 fn render_todos_message_empty_list_shows_placeholder() {
     let msg = DisplayMessage::todos("[]");
     let plain = render_todos_message(&msg, 100, crate::config::DiffDisplayMode::Off)
@@ -3471,52 +3425,71 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
     assert!(plain.contains("no tasks"), "{plain}");
 }
 
-/// The edit row must not repeat the file path that the inline diff header
-/// directly below already shows. With an intent it reads like any other tool
-/// row, and without one it falls back to the bare name plus change counts.
 #[test]
-fn render_tool_message_edit_row_does_not_duplicate_diff_header_path() {
-    for intent in [Some("Fix the network hint"), None] {
-        let msg = DisplayMessage {
-            role: "tool".to_string(),
-            content: "Edited".to_string(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: Some(crate::message::ToolCall {
-                id: "call_edit".to_string(),
-                name: "edit".to_string(),
-                input: serde_json::json!({
-                    "file_path": "/repo/src/very_specific_name.rs",
-                    "old_string": "old\n",
-                    "new_string": "new\n",
-                }),
-                intent: intent.map(str::to_string),
-                thought_signature: None,
-            }),
-            timestamp: None,
-            tool_duration_ms: None,
-        };
+fn tool_row_time_badge_shows_stamp_and_duration() {
+    // Access the private helpers through the sibling module path.
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T14:32:05Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(123_400),
+    };
+    let (suffix, severity) = {
+        let segs = super::tool_row_time_segments(&msg).expect("segments present");
+        (
+            segs.stamp.clone().unwrap_or_default() + &segs.duration.clone().map(|(l, _)| l).unwrap_or_default(),
+            segs.duration.as_ref().map(|(_, s)| *s).unwrap_or(crate::util::ApproxTokenSeverity::Normal),
+        )
+    };
+    assert!(suffix.contains(":"), "time-of-day stamp missing: {suffix}");
+    assert!(suffix.contains("2m 3s"), "duration missing: {suffix}");
+    assert_eq!(
+        severity,
+        crate::util::ApproxTokenSeverity::Danger,
+        "2m3s is over the 60s danger threshold"
+    );
 
-        let lines = render_tool_message(&msg, 160, crate::config::DiffDisplayMode::Inline);
-        let text: Vec<String> = lines.iter().map(extract_line_text).collect();
-        let occurrences = text
-            .iter()
-            .filter(|line| line.contains("very_specific_name.rs"))
-            .count();
-        assert_eq!(occurrences, 1, "path should appear once: {text:#?}");
-        assert!(
-            text[1].contains("diff · /repo/src/very_specific_name.rs"),
-            "{text:#?}"
-        );
-        if let Some(intent) = intent {
-            assert!(text[0].contains(&format!("edit · {intent}")), "{text:#?}");
-        }
+    let msg_ms = DisplayMessage {
+        tool_duration_ms: Some(400),
+        timestamp: None,
+        ..msg.clone()
+    };
+    let (suffix, severity) = {
+        let segs = super::tool_row_time_segments(&msg_ms).expect("segments present");
+        (
+            segs.stamp.clone().unwrap_or_default() + &segs.duration.clone().map(|(l, _)| l).unwrap_or_default(),
+            segs.duration.as_ref().map(|(_, s)| *s).unwrap_or(crate::util::ApproxTokenSeverity::Normal),
+        )
+    };
+    assert!(suffix.contains("400ms"), "sub-second duration missing: {suffix}");
+    assert_eq!(
+        severity,
+        crate::util::ApproxTokenSeverity::Normal,
+        "400ms is below the 10s warning threshold"
+    );
+    assert!(!suffix.contains(':'), "no stamp expected: {suffix}");
 
-        // With diffs hidden the row is the only place the path can appear.
-        let lines = render_tool_message(&msg, 160, crate::config::DiffDisplayMode::Off);
-        if intent.is_none() {
-            assert!(extract_line_text(&lines[0]).contains("very_specific_name.rs"));
-        }
-    }
+    let msg_none = DisplayMessage {
+        timestamp: None,
+        tool_duration_ms: None,
+        ..msg.clone()
+    };
+    assert!(super::tool_row_time_segments(&msg_none).is_none());
+}
+
+#[test]
+fn tool_row_duration_format_buckets() {
+    assert_eq!(super::format_tool_row_duration(45), "45ms");
+    assert_eq!(super::format_tool_row_duration(940), "940ms");
+    assert_eq!(super::format_tool_row_duration(1_000), "1.0s");
+    assert_eq!(super::format_tool_row_duration(42_300), "42.3s");
+    assert_eq!(super::format_tool_row_duration(123_400), "2m 3s");
+    assert_eq!(super::format_tool_row_duration(3_900_000), "1h 05m");
 }

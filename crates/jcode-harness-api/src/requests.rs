@@ -286,11 +286,6 @@ pub enum ApiRequest {
     /// follow-up must also let them take it back before it lands.
     CancelSoftInterrupts { session_id: String },
 
-    /// Move the currently running tool call to the background so the turn can
-    /// continue without waiting for it. The TUI's Alt+B. Acknowledged with
-    /// `Ok` whether or not a tool was running.
-    BackgroundTool { session_id: String },
-
     /// Liveness check.
     Ping,
 
