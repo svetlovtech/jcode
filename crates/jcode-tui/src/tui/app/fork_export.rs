@@ -42,8 +42,9 @@ pub(super) fn handle_export_command(app: &mut App, trimmed: &str) -> bool {
     app.set_status_notice(format!("Export -> {label}"));
 
     std::thread::spawn(move || {
-        let result = export_session_to_file(&session, format, explicit_path.as_deref(), include_swarm)
-            .map_err(|error| error.to_string());
+        let result =
+            export_session_to_file(&session, format, explicit_path.as_deref(), include_swarm)
+                .map_err(|error| error.to_string());
         Bus::global().publish(BusEvent::SessionExportReady(SessionExportReady {
             session_id,
             result,
@@ -106,8 +107,8 @@ fn export_session_to_file(
     } else {
         Vec::new()
     };
-    let related_inputs: Vec<jcode_export_core::RelatedSessionInput> = std::iter::once(
-        jcode_export_core::RelatedSessionInput {
+    let related_inputs: Vec<jcode_export_core::RelatedSessionInput> =
+        std::iter::once(jcode_export_core::RelatedSessionInput {
             id: session.id.clone(),
             short_name: session.short_name.clone(),
             custom_title: session.custom_title.clone(),
@@ -124,27 +125,26 @@ fn export_session_to_file(
             ),
             is_primary: true,
             message_count: session.messages.len(),
-        },
-    )
-    .chain(related_sessions.iter().map(|s| {
-        jcode_export_core::RelatedSessionInput {
-            id: s.id.clone(),
-            short_name: s.short_name.clone(),
-            custom_title: s.custom_title.clone(),
-            model: s.model.clone(),
-            created_at: Some(
-                s.created_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            ),
-            updated_at: Some(
-                s.updated_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            ),
-            is_primary: false,
-            message_count: s.messages.len(),
-        }
-    }))
-    .collect();
+        })
+        .chain(related_sessions.iter().map(|s| {
+            jcode_export_core::RelatedSessionInput {
+                id: s.id.clone(),
+                short_name: s.short_name.clone(),
+                custom_title: s.custom_title.clone(),
+                model: s.model.clone(),
+                created_at: Some(
+                    s.created_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+                updated_at: Some(
+                    s.updated_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+                is_primary: false,
+                message_count: s.messages.len(),
+            }
+        }))
+        .collect();
     let source_path = crate::session::session_path(&session.id).ok();
     let raw_session_json: Option<serde_json::Value> = source_path
         .as_deref()
@@ -215,9 +215,7 @@ impl App {
                 self.set_status_notice(format!("Exported: {}", path.display()));
             }
             Err(error) => {
-                self.push_display_message(DisplayMessage::error(format!(
-                    "Export failed: {error}"
-                )));
+                self.push_display_message(DisplayMessage::error(format!("Export failed: {error}")));
             }
         }
     }
@@ -274,8 +272,8 @@ mod tests {
             stored.save().expect("save stored session");
 
             // Simulate the remote-mode App view: same id/metadata, 0 messages.
-            let mut in_memory = crate::session::Session::load(&stored.id)
-                .expect("reload stored session");
+            let mut in_memory =
+                crate::session::Session::load(&stored.id).expect("reload stored session");
             in_memory.messages.clear();
             assert!(in_memory.messages.is_empty(), "fixture must be empty");
 

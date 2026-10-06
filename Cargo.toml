@@ -68,6 +68,7 @@ members = [
     "crates/jcode-provider-doctor",
     "crates/jcode-tui-markdown",
     "crates/jcode-tui-messages",
+    "crates/jcode-export-core",
     "crates/jcode-usage-types",
     "crates/jcode-tui-core",
     "crates/jcode-tui-mermaid",
@@ -189,6 +190,8 @@ jcode-tui = { path = "crates/jcode-tui", default-features = false }
 # `jcode provider-doctor` / provider diagnostics; sits downstream of jcode-base
 # so doctor edits do not rebuild the base -> app-core -> tui spine.
 jcode-provider-doctor = { path = "crates/jcode-provider-doctor" }
+# Fork: `jcode session export` + TUI /export; leaf crate (pure data + templates).
+jcode-export-core = { path = "crates/jcode-export-core" }
 # Gemini provider runtime; sits downstream of jcode-base so gemini edits do
 # not rebuild the base -> app-core -> tui spine. Registered with the external
 # provider registry at startup (src/cli/startup.rs).

@@ -109,7 +109,6 @@ impl AskModal {
     }
 }
 
-
 pub(crate) fn handle_modal_key(
     app: &mut App,
     code: ratatui::crossterm::event::KeyCode,

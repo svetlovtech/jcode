@@ -402,6 +402,8 @@ pub fn render_messages_and_images_with_compacted_history(
             content,
             tool_calls: Vec::new(),
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
             stored_index: None,
         });
     }
@@ -431,6 +433,8 @@ pub fn render_messages_and_images_with_compacted_history(
                 content: summary.to_string(),
                 tool_calls: Vec::new(),
                 tool_data: None,
+                timestamp: None,
+                tool_duration_ms: None,
                 stored_index: Some(stored_index),
             });
             continue;
@@ -506,6 +510,8 @@ pub fn render_messages_and_images_with_compacted_history(
                             content: combined,
                             tool_calls: tool_calls.clone(),
                             tool_data: None,
+                            timestamp: msg.timestamp,
+                            tool_duration_ms: None,
                             stored_index: Some(stored_index),
                         });
                     }
@@ -527,6 +533,8 @@ pub fn render_messages_and_images_with_compacted_history(
                         content: content.clone(),
                         tool_calls: Vec::new(),
                         tool_data,
+                        timestamp: msg.timestamp,
+                        tool_duration_ms: msg.tool_duration_ms,
                         stored_index: Some(stored_index),
                     });
                 }
@@ -587,6 +595,8 @@ pub fn render_messages_and_images_with_compacted_history(
                             content: combined,
                             tool_calls: std::mem::take(&mut tool_calls),
                             tool_data: None,
+                            timestamp: msg.timestamp,
+                            tool_duration_ms: None,
                             stored_index: Some(stored_index),
                         });
                     }
@@ -606,6 +616,8 @@ pub fn render_messages_and_images_with_compacted_history(
                         content: output,
                         tool_calls: Vec::new(),
                         tool_data: Some(tool_data),
+                        timestamp: msg.timestamp,
+                        tool_duration_ms: msg.tool_duration_ms,
                         stored_index: Some(stored_index),
                     });
                 }
@@ -624,6 +636,8 @@ pub fn render_messages_and_images_with_compacted_history(
                 content: combined,
                 tool_calls,
                 tool_data: None,
+                timestamp: msg.timestamp,
+                tool_duration_ms: None,
                 stored_index: Some(stored_index),
             });
         } else if !pending_prompt_image_indices.is_empty() {

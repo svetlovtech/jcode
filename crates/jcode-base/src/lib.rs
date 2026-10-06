@@ -23,6 +23,7 @@ pub mod applets;
 pub mod auth;
 pub mod background;
 pub mod browser;
+pub mod chat;
 pub mod browser_detect;
 pub mod bus;
 pub mod cache_invalidation;

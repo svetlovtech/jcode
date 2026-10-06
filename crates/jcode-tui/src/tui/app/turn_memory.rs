@@ -183,7 +183,8 @@ impl App {
                     | ContentBlock::AnthropicThinking { .. }
                     | ContentBlock::OpenAIReasoning { .. }
                     | ContentBlock::ToolReference { .. }
-                    | ContentBlock::ProviderNative { .. } => {}                    ContentBlock::Image { .. } => {
+                    | ContentBlock::ProviderNative { .. } => {}
+                    ContentBlock::Image { .. } => {
                         transcript.push_str("[Image]\n");
                     }
                     ContentBlock::OpenAICompaction { .. } => {

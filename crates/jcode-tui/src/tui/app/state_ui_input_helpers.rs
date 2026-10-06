@@ -1262,10 +1262,9 @@ impl App {
 
         // Fork: quick prompts are user-owned shortcuts - surface any that
         // matched at the front of the palette (see quick_prompts module).
-        super::quick_prompts::promote_in_suggestions(self.rank_suggestions(
-            &prefix,
-            self.command_candidates(),
-        ))
+        super::quick_prompts::promote_in_suggestions(
+            self.rank_suggestions(&prefix, self.command_candidates()),
+        )
     }
 
     /// Get command suggestions based on current input

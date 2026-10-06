@@ -688,6 +688,7 @@ impl Agent {
                                     name,
                                     output,
                                     error: is_error.then(|| "Provider tool error".to_string()),
+                                    duration_ms: None,
                                 });
                             }
                             None => {}

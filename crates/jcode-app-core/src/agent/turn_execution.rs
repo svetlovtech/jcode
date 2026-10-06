@@ -865,7 +865,6 @@ impl Agent {
         self.announced_skills_scan_index = self.session.messages.len();
     }
 
->>>>>>> upstream/master
     /// Mark MCP tools the transcript already describes as announced: tools
     /// loaded by a tool reference (`mcp connect` / `mcp_search` results carry
     /// their schemas) and tools named in earlier announcements (which matters

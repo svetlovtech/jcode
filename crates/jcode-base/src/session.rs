@@ -70,7 +70,7 @@ pub use storage_paths::session_journal_path_from_snapshot;
 pub(crate) use storage_paths::session_path_in_dir;
 use storage_paths::{estimate_json_bytes, persist_vector_mode_label};
 pub use storage_paths::{session_exists, session_journal_path, session_path};
-pub use {jcode_session_types::prompt_title, persistence::drain_saves_for_shutdown};
+pub use persistence::drain_saves_for_shutdown;
 
 fn stored_messages_to_messages(messages: &[StoredMessage]) -> Vec<Message> {
     messages.iter().map(StoredMessage::to_message).collect()

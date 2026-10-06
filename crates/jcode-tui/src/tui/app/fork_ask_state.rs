@@ -81,7 +81,6 @@ pub enum AskModalAction {
     Cancel,
 }
 
-
 impl AskModal {
     pub fn new(request_id: String, spec: AskSpecUi) -> Self {
         let len = spec.options.len() + 1; // last row = own answer
@@ -159,7 +158,6 @@ impl AskModal {
             .map(|(option, _)| option.label.clone())
             .collect()
     }
-
 }
 
 impl From<jcode_protocol::AskSpec> for AskSpecUi {
@@ -628,8 +626,7 @@ mod tests {
         // ellipsis may only appear on rows the spec does not own (the hint
         // line and the built-in "Свой вариант…" row).
         for line in &lines {
-            if line.contains('…')
-                && !(line.contains("Свой вариант") || line.contains("цифра"))
+            if line.contains('…') && !(line.contains("Свой вариант") || line.contains("цифра"))
             {
                 panic!("unexpected truncation in a description row:\n{text}");
             }
@@ -645,8 +642,7 @@ mod tests {
     fn render_long_question_wraps_instead_of_truncating() {
         let mut spec = long_description_spec();
         spec.question =
-            "Пожалуйста выберите один из вариантов миграции базы данных описанных ниже"
-                .to_string();
+            "Пожалуйста выберите один из вариантов миграции базы данных описанных ниже".to_string();
         let modal = AskModal::new("r1".into(), spec);
         let lines = render_lines(&modal, 44, 30);
         let text = lines.join("\n");
@@ -674,8 +670,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.trim_start().starts_with("очень") == false
-                    && l.contains("очень")),
+                .any(|l| l.trim_start().starts_with("очень") == false && l.contains("очень")),
             "first label row should carry the marker prefix:\n{text}"
         );
     }
@@ -695,7 +690,8 @@ mod tests {
 
         assert_eq!(list_top, custom_top, "box top must not move");
         assert_eq!(
-            list_bottom, custom_bottom,
+            list_bottom,
+            custom_bottom,
             "box bottom must not move:\nlist:\n{}\ncustom:\n{}",
             list_lines.join("\n"),
             custom_lines.join("\n")

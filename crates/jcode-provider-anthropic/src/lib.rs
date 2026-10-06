@@ -36,8 +36,6 @@ pub fn format_messages_with_tools(
     is_oauth: bool,
     api_tools: &[ApiTool],
 ) -> Vec<ApiMessage> {
-<<<<<<< HEAD
-=======
     format_messages_with_native(messages, is_oauth, api_tools, false)
 }
 
@@ -55,7 +53,6 @@ pub fn format_messages_with_native(
     api_tools: &[ApiTool],
     native_replay: bool,
 ) -> Vec<ApiMessage> {
->>>>>>> upstream/master
     use std::collections::HashSet;
     let available: HashSet<&str> = api_tools.iter().map(|tool| tool.name.as_str()).collect();
     // Pre-pass: drop duplicate tool_results for the same tool_use_id.
@@ -124,11 +121,7 @@ pub fn format_messages_with_native(
             Role::Assistant => "assistant",
         };
 
-<<<<<<< HEAD
-        let mut content = format_content_blocks(&msg.content, is_oauth);
-=======
         let mut content = format_content_blocks_with_native(&msg.content, is_oauth, native_replay);
->>>>>>> upstream/master
         apply_tool_references(&mut content, &msg.content, is_oauth, &available);
 
         if !content.is_empty() {
@@ -209,7 +202,98 @@ pub fn format_messages_with_native(
         }
     }
 
->>>>>>> upstream/master
+    rewrite_orphaned_tool_results(&mut merged);
+    answer_unpaired_tool_uses(&mut merged);
+
+    // Anthropic rejects a request whose final message is an assistant turn on
+    // models that do not support assistant prefill ("This model does not support
+    // assistant message prefill. The conversation must end with a user message.").
+    // jcode never intends to prefill, so a trailing assistant turn here is always
+    // an upstream accident: the reload auto-resume path starts a turn with empty
+    // user content and delivers its continuation as a system reminder, leaving the
+    // transcript ending on the interrupted assistant turn. Repair the shape at the
+    // last formatting step. See issue #600.
+    //
+    // Exception: a turn that stopped with `pause_turn` mid server-tool use must
+    // be resent exactly as-is so the API can resume it. Those turns end on an
+    // assistant message carrying raw server tool blocks.
+    if merged
+        .last()
+        .is_some_and(|last| last.role == "assistant" && !is_paused_server_tool_turn(last))
+    {
+        jcode_logging::warn(
+            "[anthropic] Conversation ended with an assistant message; appending a \
+             continuation user turn to avoid a model prefill rejection (400)",
+        );
+        merged.push(ApiMessage {
+            role: "user".to_string(),
+            content: vec![ApiContentBlock::Text {
+                text: CONTINUATION_USER_TURN.to_string(),
+                cache_control: None,
+            }],
+        });
+    }
+
+    // Validate: check each assistant message with tool_use has matching tool_result in next user message
+    for (i, msg) in merged.iter().enumerate() {
+        if msg.role == "assistant" {
+            let tool_uses: Vec<&String> = msg
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if let ApiContentBlock::ToolUse { id, .. } = b {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !tool_uses.is_empty() {
+                // Check next message
+                if let Some(next) = merged.get(i + 1) {
+                    if next.role != "user" {
+                        jcode_logging::warn(&format!(
+                            "[anthropic] Message {} has tool_use but next message is {} (should be user)",
+                            i, next.role
+                        ));
+                    } else {
+                        let tool_results: std::collections::HashSet<&String> = next
+                            .content
+                            .iter()
+                            .filter_map(|b| {
+                                if let ApiContentBlock::ToolResult { tool_use_id, .. } = b {
+                                    Some(tool_use_id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        for tu_id in &tool_uses {
+                            if !tool_results.contains(*tu_id) {
+                                jcode_logging::warn(&format!(
+                                    "[anthropic] Message {} has tool_use {} but no matching tool_result in message {}",
+                                    i,
+                                    tu_id,
+                                    i + 1
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    jcode_logging::warn(&format!(
+                        "[anthropic] Message {} has tool_use but no next message",
+                        i
+                    ));
+                }
+            }
+        }
+    }
+
+    merged
+}
+
 /// Convert our ContentBlock to Anthropic API format
 pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<ApiContentBlock> {
     format_content_blocks_with_native(blocks, is_oauth, false)
@@ -387,126 +471,6 @@ fn anthropic_input_schema(schema: &Value) -> Value {
 /// never replaced. Hand-curated OAuth schemas drifted from the real tools and
 /// silently dropped options like `intent` (#706, #1223).
 pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool) -> Vec<ApiTool> {
-<<<<<<< HEAD
-    if is_oauth {
-        // A curated builtin may only be advertised when at least one backing
-        // local tool is actually registered. Otherwise the model calls e.g.
-        // `Agent`/`Glob`, the reverse mapping resolves to `subagent`/`glob`,
-        // and the registry lookup fails with "Unknown tool" (see #572).
-        let has_backing = |candidates: &[&str]| {
-            candidates
-                .iter()
-                .any(|candidate| tools.iter().any(|tool| tool.name == *candidate))
-        };
-        // Curated Claude-Code builtin tool definitions. These remain hand-tuned
-        // because the Anthropic OAuth (subscription) endpoint expects the
-        // builtin names with compatible schemas. Anything not represented here
-        // is appended from the real registry below so OAuth users keep the full
-        // toolset (websearch, webfetch, browser, codesearch, memory, ...).
-        let curated: Vec<(&[&str], ApiTool)> = vec![
-            (
-                &["subagent"],
-                ApiTool {
-                    name: "Agent".to_string(),
-                    description: "Launch a new agent to handle complex, multi-step tasks."
-                        .to_string(),
-                    input_schema: json!({"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"},"run_in_background":{"type":"boolean"}},"required":["description","prompt"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["edit"],
-                ApiTool {
-                    name: "Edit".to_string(),
-                    description: "Performs exact string replacements in files.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["file_path","old_string","new_string"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["glob"],
-                ApiTool {
-                    name: "Glob".to_string(),
-                    description: "Fast file pattern matching tool.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["grep"],
-                ApiTool {
-                    name: "Grep".to_string(),
-                    description: "A powerful search tool built on ripgrep.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"-B":{"type":"number"},"-A":{"type":"number"},"-C":{"type":"number"},"context":{"type":"number"},"-n":{"type":"boolean"},"-i":{"type":"boolean"},"type":{"type":"string"},"head_limit":{"type":"number"},"offset":{"type":"number"},"multiline":{"type":"boolean"}},"required":["pattern"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["read"],
-                ApiTool {
-                    name: "Read".to_string(),
-                    description: "Reads a file from the local filesystem.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","exclusiveMinimum":0},"pages":{"type":"string"}},"required":["file_path"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["skill_manage"],
-                ApiTool {
-                    name: "Skill".to_string(),
-                    description: "Execute a skill within the main conversation".to_string(),
-                    input_schema: json!({"type":"object","properties":{"skill":{"type":"string"},"args":{"type":"string"}},"required":["skill"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-            (
-                &["write"],
-                ApiTool {
-                    name: "Write".to_string(),
-                    description: "Writes a file to the local filesystem.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"content":{"type":"string"}},"required":["file_path","content"],"additionalProperties":false}),
-                    cache_control: None,
-                    defer_loading: false,
-                },
-            ),
-        ];
-        let mut out: Vec<ApiTool> = curated
-            .into_iter()
-            .filter(|(backing, _)| has_backing(backing))
-            .map(|(_, tool)| tool)
-            .collect();
-
-        // Forward every other registered tool, remapping its name to the
-        // OAuth-accepted form. This restores websearch/webfetch/browser/
-        // codesearch/memory/swarm/multiedit/open/etc. for subscription users,
-        // matching the documented "remap names, keep the full toolset" behavior.
-        for tool in tools {
-            if OAUTH_BUILTIN_LOCAL_TOOLS.contains(&tool.name.as_str()) {
-                continue;
-            }
-            out.push(ApiTool {
-                name: map_tool_name_for_oauth(&tool.name),
-                description: tool.description.clone(),
-                input_schema: anthropic_input_schema(&tool.input_schema),
-                cache_control: None,
-                defer_loading: tool.defer_loading,
-            });
-        }
-
-        return finish_tool_list(out, cache_ttl_1h);
-    }
-
-    let out = tools
-        .iter()
-        .map(|tool| ApiTool {
-            name: tool.name.clone(),
-=======
     let out = tools
         .iter()
         .map(|tool| ApiTool {
@@ -514,7 +478,8 @@ pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool
                 map_tool_name_for_oauth(&tool.name)
             } else {
                 tool.name.clone()
-            },            description: tool.description.clone(),
+            },
+            description: tool.description.clone(),
             input_schema: anthropic_input_schema(&tool.input_schema),
             cache_control: None,
             defer_loading: tool.defer_loading,
@@ -880,8 +845,6 @@ pub struct ApiTool {
     pub cache_control: Option<CacheControlParam>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub defer_loading: bool,
-<<<<<<< HEAD
-=======
 }
 
 /// One entry of the request `tools` array: a client tool jcode executes, or an
@@ -904,7 +867,6 @@ pub fn request_tools(custom: Vec<ApiTool>, server: Vec<Value>) -> Option<Vec<Api
     out.extend(server.into_iter().map(ApiToolParam::Server));
     out.extend(deferred.into_iter().map(ApiToolParam::Custom));
     (!out.is_empty()).then_some(out)
->>>>>>> upstream/master
 }
 
 #[cfg(test)]
@@ -1220,12 +1182,9 @@ mod duplicate_tool_result_tests;
 mod wedge_fixture_check;
 
 #[cfg(test)]
-<<<<<<< HEAD
-=======
 #[path = "native_web_search_repair_tests.rs"]
 mod native_web_search_repair_tests;
 
 #[cfg(test)]
->>>>>>> upstream/master
 #[path = "deferred_tools_tests.rs"]
 mod deferred_tools_tests;

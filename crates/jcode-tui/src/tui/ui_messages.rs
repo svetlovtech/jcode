@@ -4050,7 +4050,10 @@ pub(crate) fn render_tool_message(
     // Fork: the time-of-day stamp leads the row (clock, then tool), rendered
     // in the neutral blue-grey so the clock never picks up severity colors.
     let mut tool_line = Vec::with_capacity(8);
-    if let Some(stamp) = time_segments.as_ref().and_then(|segs| segs.stamp.as_deref()) {
+    if let Some(stamp) = time_segments
+        .as_ref()
+        .and_then(|segs| segs.stamp.as_deref())
+    {
         tool_line.push(Span::styled(
             format!("{stamp} "),
             Style::default().fg(rgb(120, 130, 145)),
@@ -4065,7 +4068,10 @@ pub(crate) fn render_tool_message(
             Style::default().fg(icon_color),
         ));
     }
-    tool_line.push(Span::styled(display_name, Style::default().fg(tool_color())));
+    tool_line.push(Span::styled(
+        display_name,
+        Style::default().fg(tool_color()),
+    ));
     if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(
@@ -4509,20 +4515,24 @@ fn tool_row_time_segments(msg: &DisplayMessage) -> Option<ToolRowTimeSegments> {
     if !tools_ui::show_tool_row_time() {
         return None;
     }
-    let tz = crate::config::config().display.timestamp_fixed_offset_secs();
-    let stamp = msg.timestamp.map(|ts| match tz.and_then(chrono::FixedOffset::east_opt) {
-        Some(offset) => ts.with_timezone(&offset).format("%H:%M:%S").to_string(),
-        None => ts.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
-    });
-    let duration = msg
-        .tool_duration_ms
-        .filter(|ms| *ms > 0)
-        .map(|ms| {
-            (
-                format!(" · {}", format_tool_row_duration(ms)),
-                crate::util::tool_duration_severity(ms),
-            )
+    let tz = crate::config::config()
+        .display
+        .timestamp_fixed_offset_secs();
+    let stamp = msg
+        .timestamp
+        .map(|ts| match tz.and_then(chrono::FixedOffset::east_opt) {
+            Some(offset) => ts.with_timezone(&offset).format("%H:%M:%S").to_string(),
+            None => ts
+                .with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string(),
         });
+    let duration = msg.tool_duration_ms.filter(|ms| *ms > 0).map(|ms| {
+        (
+            format!(" · {}", format_tool_row_duration(ms)),
+            crate::util::tool_duration_severity(ms),
+        )
+    });
     if stamp.is_none() && duration.is_none() {
         return None;
     }

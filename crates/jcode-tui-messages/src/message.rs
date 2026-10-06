@@ -469,6 +469,8 @@ mod tests {
                 intent: None,
                 thought_signature: None,
             }),
+            timestamp: None,
+            tool_duration_ms: None,
         }
     }
 
@@ -496,6 +498,8 @@ mod tests {
             content: "done".to_string(),
             tool_calls: vec!["read".to_string()],
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
             stored_index: None,
         };
 

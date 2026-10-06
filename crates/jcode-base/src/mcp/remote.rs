@@ -133,17 +133,17 @@ pub(super) async fn connect_remote(
         writer_rx,
     );
 
-    let handle = McpHandle {
-        name: name.clone(),
-        request_id: Arc::new(AtomicU64::new(1)),
+    let handle = McpHandle::from_parts(
+        name.clone(),
+        Arc::new(AtomicU64::new(1)),
         pending,
-        closed: Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
         writer_tx,
-        server_info: Arc::new(std::sync::RwLock::new(None)),
-        capabilities: Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),
-        tools: Arc::new(std::sync::RwLock::new(Vec::new())),
-        request_timeout: request_timeout_for(config),
-    };
+        Arc::new(std::sync::RwLock::new(None)),
+        Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),
+        Arc::new(std::sync::RwLock::new(Vec::new())),
+        request_timeout_for(config),
+    );
 
     let transport = RemoteTransport {
         kind,

@@ -66,10 +66,7 @@ fn test_tool_row_renders_time_and_duration_badge() {
         row.contains("48.3s"),
         "duration badge missing from rendered row: {row}"
     );
-    assert!(
-        row.contains("tok"),
-        "token badge must stay: {row}"
-    );
+    assert!(row.contains("tok"), "token badge must stay: {row}");
 
     // Layout contract (user request): stamp, then tool type, then the
     // description, then the duration at the right edge.
@@ -144,7 +141,10 @@ fn test_tool_row_time_badge_survives_narrow_width() {
         tool_duration_ms: Some(48_300),
     };
 
-    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    let expected_stamp = stamp
+        .with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string();
     for width in [40, 56, 72, 120] {
         let row = row_text(&msg, width);
         assert!(
@@ -191,16 +191,31 @@ fn test_tool_row_time_toggle_hides_stamp_and_duration() {
     crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(false);
     let row = row_text(&msg, 200);
     println!("observed hidden-time row: {row}");
-    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
-    assert!(!row.contains(&expected_stamp), "stamp must be hidden: {row}");
+    let expected_stamp = stamp
+        .with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string();
+    assert!(
+        !row.contains(&expected_stamp),
+        "stamp must be hidden: {row}"
+    );
     assert!(!row.contains("48.3s"), "duration must be hidden: {row}");
     assert!(row.contains("tok"), "token badge must stay: {row}");
-    assert!(row.contains("Hidden time acceptance"), "intent must stay: {row}");
+    assert!(
+        row.contains("Hidden time acceptance"),
+        "intent must stay: {row}"
+    );
 
     crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let row = row_text(&msg, 200);
-    assert!(row.contains(&expected_stamp), "stamp must return when re-enabled: {row}");
-    assert!(row.contains("48.3s"), "duration must return when re-enabled: {row}");
+    assert!(
+        row.contains(&expected_stamp),
+        "stamp must return when re-enabled: {row}"
+    );
+    assert!(
+        row.contains("48.3s"),
+        "duration must return when re-enabled: {row}"
+    );
 }
 
 /// Fork: observed-behavior proof for the user-reported "0.0s" complaint.
@@ -235,7 +250,10 @@ fn test_tool_row_ms_duration_observed_output() {
     let row = row_text(&msg, 200);
     println!("observed tool row: {row}");
 
-    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    let expected_stamp = stamp
+        .with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string();
     assert!(row.contains("45ms"), "ms duration missing: {row}");
     assert!(!row.contains("0.0s"), "0.0s must be gone: {row}");
     assert!(!row.contains("0ms"), "0ms must be gone: {row}");
@@ -272,12 +290,12 @@ fn test_tool_row_stamp_stays_neutral_only_duration_is_severity_colored() {
         tool_duration_ms: Some(48_300),
     };
 
-    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    let expected_stamp = stamp
+        .with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string();
     let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let spans = &lines
-        .first()
-        .expect("tool row rendered")
-        .spans;
+    let spans = &lines.first().expect("tool row rendered").spans;
 
     let stamp_span = spans
         .iter()
@@ -342,7 +360,6 @@ fn test_tool_row_stamp_renders_in_configured_utc3() {
     assert!(row.contains("45ms"), "ms duration missing: {row}");
     assert!(!row.contains("0.0s"), "0.0s banned: {row}");
 }
-
 
 /// Fork: pin the exact in-binary UTC+3 arithmetic on the live-session data:
 /// stored 2026-09-23T21:51:28Z with timestamp_tz=UTC+3 must render
