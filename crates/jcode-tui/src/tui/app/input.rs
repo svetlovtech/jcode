@@ -2455,6 +2455,10 @@ pub(super) fn handle_pre_control_shortcuts(
         app.set_status_notice(status);
         return true;
     }
+    if app.toggle_keys.tool_row_time.matches(code, modifiers) {
+        super::commands::toggle_tool_row_time(app);
+        return true;
+    }
     if app.toggle_keys.todo_card.matches(code, modifiers) {
         app.toggle_todo_card();
         return true;

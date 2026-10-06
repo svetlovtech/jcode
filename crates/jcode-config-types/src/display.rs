@@ -129,6 +129,11 @@ pub struct DisplayConfig {
     /// like "UTC+3" / "UTC-5" / "UTC+0". Unknown values fall back to local.
     #[serde(default)]
     pub timestamp_tz: String,
+    /// Fork: show the time-of-day stamp (left) and duration badge (right) on
+    /// tool rows (default: true). Toggle with Alt+Shift+T or
+    /// `/tool-row-time`; set false to free ~13 columns for the description.
+    #[serde(default = "default_true")]
+    pub tool_row_time: bool,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -169,6 +174,7 @@ impl Default for DisplayConfig {
             usage_display: "left".to_string(),
             footer_style: "classic".to_string(),
             timestamp_tz: String::new(),
+            tool_row_time: true,
         }
     }
 }

@@ -3010,6 +3010,63 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+/// Fork: shared implementation for the Alt+Shift+T hotkey and the
+/// `/tool-row-time` command: flip `display.tool_row_time`, persist it, and
+/// surface the result as a status notice.
+pub(super) fn toggle_tool_row_time(app: &mut App) {
+    let enabled = !crate::config::config().display.tool_row_time;
+    apply_tool_row_time(app, enabled);
+}
+
+fn apply_tool_row_time(app: &mut App, enabled: bool) {
+    app.set_status_notice(if enabled {
+        "Tool row time: ON"
+    } else {
+        "Tool row time: OFF"
+    });
+    if let Err(error) = crate::config::Config::set_tool_row_time(enabled) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Applied tool row time {} for this session, but failed to save it as the default: {}",
+            if enabled { "on" } else { "off" },
+            error
+        )));
+    }
+}
+
+fn handle_tool_row_time_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/tool-row-time" && !trimmed.starts_with("/tool-row-time ") {
+        return false;
+    }
+
+    let rest = trimmed
+        .strip_prefix("/tool-row-time")
+        .unwrap_or_default()
+        .trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let current = crate::config::config().display.tool_row_time;
+        app.push_display_message(DisplayMessage::system(format!(
+            "Tool row time badges are currently {}.\n\nWhen on, tool rows show the HH:MM:SS stamp on the left and the duration badge on the right. When off, both disappear so the tool description gets the full row width.\n\nUse /tool-row-time on or /tool-row-time off to change it.",
+            if current { "on" } else { "off" }
+        )));
+        return true;
+    }
+
+    let Some(enabled) = parse_on_off_value(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /tool-row-time (show), /tool-row-time on, or /tool-row-time off".to_string(),
+        ));
+        return true;
+    };
+
+    apply_tool_row_time(app, enabled);
+    app.push_display_message(DisplayMessage::system(format!(
+        "Saved tool row time: {}. Applied to this session immediately.",
+        if enabled { "on" } else { "off" }
+    )));
+    true
+}
+
 fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed != "/show-agentgrep-output" && !trimmed.starts_with("/show-agentgrep-output ") {
         return false;
@@ -3429,6 +3486,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if handle_tool_call_details_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_tool_row_time_command(app, trimmed) {
         return true;
     }
 

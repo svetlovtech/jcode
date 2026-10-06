@@ -1,17 +1,25 @@
-//! Fork: acceptance tests for the tool row time badge (timestamp + duration
-//! + severity coloring) and the configured UTC offset rendering. Split from
-//! ui_tests/tools.rs so the shared tool-summary tests stay focused.
+//! Fork: acceptance tests for the tool row time badge. The HH:MM:SS stamp
+//! leads the row (left of the tool name), the duration trails the token
+//! count on the right, and `display.tool_row_time = false` hides both so the
+//! description gets the full row width. Split from ui_tests/tools.rs so the
+//! shared tool-summary tests stay focused.
 
 use super::*;
 
-/// Fork acceptance proof: a completed tool row with a stored timestamp and
-/// duration renders the time badge through the real render_tool_message
-/// pipeline: time-of-day HH:MM:SS plus the compact duration, after the
-/// token count. This is the exact path the transcript draws every frame.
-#[test]
-fn test_tool_row_renders_time_and_duration_badge() {
-    let _lock = viewport_snapshot_test_lock();
-    let _config_guard = isolate_config_home();
+fn row_text(msg: &DisplayMessage, width: u16) -> String {
+    let lines = messages::render_tool_message(&msg, width, crate::config::DiffDisplayMode::Off);
+    lines
+        .first()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
+fn time_badge_msg() -> (DisplayMessage, String) {
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Local);
@@ -31,19 +39,25 @@ fn test_tool_row_renders_time_and_duration_badge() {
         timestamp: Some(stamp.with_timezone(&chrono::Utc)),
         tool_duration_ms: Some(48_300),
     };
-
-    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let row: String = lines
-        .first()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
-
     let expected_stamp = stamp.format("%H:%M:%S").to_string();
+    (msg, expected_stamp)
+}
+
+/// Fork acceptance proof: a completed tool row with a stored timestamp and
+/// duration renders through the real render_tool_message pipeline with the
+/// clock on the LEFT (before the tool name), the description after it, and
+/// the compact duration after the token count on the right. This is the
+/// exact path the transcript draws every frame.
+#[test]
+fn test_tool_row_renders_time_and_duration_badge() {
+    let _lock = viewport_snapshot_test_lock();
+    let _config_guard = isolate_config_home();
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
+    let (msg, expected_stamp) = time_badge_msg();
+
+    let row = row_text(&msg, 200);
+    println!("observed tool row: {row}");
+
     assert!(
         row.contains(&expected_stamp),
         "time-of-day stamp missing from rendered row: {row}"
@@ -56,10 +70,29 @@ fn test_tool_row_renders_time_and_duration_badge() {
         row.contains("tok"),
         "token badge must stay: {row}"
     );
+
+    // Layout contract (user request): stamp, then tool type, then the
+    // description, then the duration at the right edge.
+    let stamp_pos = row.find(&expected_stamp).expect("stamp present");
+    let tool_pos = row.find("bash").expect("tool name present");
+    let intent_pos = row.find("Acceptance: time badge").expect("intent present");
+    let duration_pos = row.find("48.3s").expect("duration present");
+    assert!(
+        stamp_pos < tool_pos,
+        "stamp must lead the row, before the tool name: {row}"
+    );
+    assert!(
+        tool_pos < intent_pos,
+        "tool name must precede the description: {row}"
+    );
+    assert!(
+        intent_pos < duration_pos,
+        "duration must trail the description on the right: {row}"
+    );
 }
 
 /// A live row without stored time data (older server, pending reload) keeps
-/// the classic token-only badge: no empty separator pair.
+/// the classic token-only badge: no empty separator pair, no clock prefix.
 #[test]
 fn test_tool_row_without_time_data_has_no_badge() {
     let msg = DisplayMessage {
@@ -79,26 +112,18 @@ fn test_tool_row_without_time_data_has_no_badge() {
         tool_duration_ms: None,
     };
 
-    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let row: String = lines
-        .first()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    let row = row_text(&msg, 200);
     assert!(!row.contains("::"), "no time stamp expected: {row}");
 }
 
-/// Fork: at a narrow width the time badge must survive as part of the
-/// preserved suffix (token badge + time badge stay, summary truncates) —
-/// the same guarantee the token badge already has.
+/// Fork: at a narrow width the duration badge must survive as part of the
+/// preserved suffix (token badge + duration stay, summary truncates) — the
+/// same guarantee the token badge already has.
 #[test]
 fn test_tool_row_time_badge_survives_narrow_width() {
     let _lock = viewport_snapshot_test_lock();
     let _config_guard = isolate_config_home();
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
@@ -121,29 +146,61 @@ fn test_tool_row_time_badge_survives_narrow_width() {
 
     let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
     for width in [40, 56, 72, 120] {
-        let lines = messages::render_tool_message(&msg, width, crate::config::DiffDisplayMode::Off);
-        let row: String = lines
-            .first()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
+        let row = row_text(&msg, width);
         assert!(
-            row.contains(&expected_stamp),
-            "stamp lost at width {width}: {row}"
+            row.contains("48.3s"),
+            "duration lost at width {width}: {row}"
         );
-        assert!(row.contains("48.3s"), "duration lost at width {width}: {row}");
         assert!(row.contains("tok"), "tokens lost at width {width}: {row}");
-        let stamp_pos = row.find(&expected_stamp).expect("stamp present");
+        let duration_pos = row.find("48.3s").expect("duration present");
         let tok_pos = row.find("tok").expect("tokens present");
         assert!(
-            tok_pos < stamp_pos,
-            "time badge must trail the token badge at width {width}: {row}"
+            tok_pos < duration_pos,
+            "duration must trail the token badge at width {width}: {row}"
         );
     }
+}
+
+/// Fork: hotkey acceptance proof (user request: "отключить время чтобы больше
+/// инфы поместилось"). With the toggle off the stamp and duration disappear
+/// entirely; the token badge and description keep rendering.
+#[test]
+fn test_tool_row_time_toggle_hides_stamp_and_duration() {
+    let _lock = viewport_snapshot_test_lock();
+    let _config_guard = isolate_config_home();
+    let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
+        .expect("parse stamp")
+        .with_timezone(&chrono::Utc);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call-hide".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo ok" }),
+            intent: Some("Hidden time acceptance".to_string()),
+            thought_signature: None,
+        }),
+        timestamp: Some(stamp),
+        tool_duration_ms: Some(48_300),
+    };
+
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(false);
+    let row = row_text(&msg, 200);
+    println!("observed hidden-time row: {row}");
+    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    assert!(!row.contains(&expected_stamp), "stamp must be hidden: {row}");
+    assert!(!row.contains("48.3s"), "duration must be hidden: {row}");
+    assert!(row.contains("tok"), "token badge must stay: {row}");
+    assert!(row.contains("Hidden time acceptance"), "intent must stay: {row}");
+
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
+    let row = row_text(&msg, 200);
+    assert!(row.contains(&expected_stamp), "stamp must return when re-enabled: {row}");
+    assert!(row.contains("48.3s"), "duration must return when re-enabled: {row}");
 }
 
 /// Fork: observed-behavior proof for the user-reported "0.0s" complaint.
@@ -154,6 +211,7 @@ fn test_tool_row_time_badge_survives_narrow_width() {
 fn test_tool_row_ms_duration_observed_output() {
     let _lock = viewport_snapshot_test_lock();
     let _config_guard = isolate_config_home();
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:23:35Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
@@ -174,16 +232,7 @@ fn test_tool_row_ms_duration_observed_output() {
         tool_duration_ms: Some(45),
     };
 
-    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let row: String = lines
-        .first()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    let row = row_text(&msg, 200);
     println!("observed tool row: {row}");
 
     let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
@@ -202,6 +251,7 @@ fn test_tool_row_ms_duration_observed_output() {
 fn test_tool_row_stamp_stays_neutral_only_duration_is_severity_colored() {
     let _lock = viewport_snapshot_test_lock();
     let _config_guard = isolate_config_home();
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:15:42Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
@@ -254,13 +304,14 @@ fn test_tool_row_stamp_stays_neutral_only_duration_is_severity_colored() {
 /// scenario from their screenshot (near-instant agentgrep row) rendered
 /// with display.timestamp_tz = "UTC+3" set through the isolated config
 /// home. The observed row must show the UTC+3 stamp (20:23:35Z stored ->
-/// 23:23:35 displayed), ms duration, and no 0.0s.
+/// 23:23:35 displayed) leading the row, ms duration on the right, no 0.0s.
 #[test]
 fn test_tool_row_stamp_renders_in_configured_utc3() {
     let _lock = viewport_snapshot_test_lock();
     let _guard = isolate_config_home_with(
         "[display]\nfooter_style = \"advanced\"\ntimestamp_tz = \"UTC+3\"\n",
     );
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T20:23:35Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
@@ -281,16 +332,7 @@ fn test_tool_row_stamp_renders_in_configured_utc3() {
         tool_duration_ms: Some(45),
     };
 
-    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let row: String = lines
-        .first()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    let row = row_text(&msg, 200);
     println!("observed UTC+3 row: {row}");
 
     assert!(
@@ -310,6 +352,7 @@ fn test_tool_row_stamp_renders_in_configured_utc3() {
 fn test_tool_row_utc3_exact_offset_arithmetic() {
     let _lock = viewport_snapshot_test_lock();
     let _guard = isolate_config_home_with("[display]\ntimestamp_tz = \"UTC+3\"\n");
+    crate::tui::ui::tools_ui::tests_show_tool_row_time_override::set(true);
     let stamp = chrono::DateTime::parse_from_rfc3339("2026-09-23T21:51:28Z")
         .expect("parse stamp")
         .with_timezone(&chrono::Utc);
@@ -330,16 +373,7 @@ fn test_tool_row_utc3_exact_offset_arithmetic() {
         tool_duration_ms: Some(2_325),
     };
 
-    let lines = messages::render_tool_message(&msg, 200, crate::config::DiffDisplayMode::Off);
-    let row: String = lines
-        .first()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    let row = row_text(&msg, 200);
     println!("observed: {row}");
     assert!(
         row.contains("00:51:28"),
@@ -347,4 +381,3 @@ fn test_tool_row_utc3_exact_offset_arithmetic() {
     );
     assert!(row.contains("2.3s"), "2_325ms must render 2.3s: {row}");
 }
-

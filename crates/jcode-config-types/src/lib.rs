@@ -1231,6 +1231,10 @@ pub struct KeybindingsConfig {
     pub diff_mode_cycle: String,
     /// Toggle the info widget (default: "alt+i")
     pub info_widget_toggle: String,
+    /// Fork: toggle the tool row time badge (HH:MM:SS stamp on the left +
+    /// duration on the right) so rows free up width for the description
+    /// (default: "alt+shift+t")
+    pub tool_row_time_toggle: String,
     /// Show/dismiss the session todo list as an inline card in the chat
     /// transcript (default: "alt+x")
     pub todo_card_toggle: String,
@@ -1289,6 +1293,7 @@ impl Default for KeybindingsConfig {
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
             diff_mode_cycle: get("diff_mode_cycle", "alt+g"),
             info_widget_toggle: get("info_widget_toggle", "alt+i"),
+            tool_row_time_toggle: get("tool_row_time_toggle", "alt+shift+t"),
             todo_card_toggle: get("todo_card_toggle", "alt+x"),
             swarm_panel_focus: get("swarm_panel_focus", "alt+n"),
             new_terminal: get("new_terminal", ""),

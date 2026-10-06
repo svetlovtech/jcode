@@ -385,6 +385,8 @@ pub struct ToggleKeys {
     pub info_widget: ToggleBinding,
     pub todo_card: ToggleBinding,
     pub swarm_panel_focus: ToggleBinding,
+    /// Fork: toggle the tool row time badge (clock left + duration right).
+    pub tool_row_time: ToggleBinding,
 }
 
 pub fn load_toggle_keys() -> ToggleKeys {
@@ -407,6 +409,14 @@ pub fn load_toggle_keys() -> ToggleKeys {
         swarm_panel_focus: ToggleBinding::load_with_default(
             &cfg.keybindings.swarm_panel_focus,
             swarm_panel_focus_default(),
+        ),
+        // Fork: Alt+Shift+T (shifted so it never collides with Alt+T diagram).
+        tool_row_time: ToggleBinding::load_with_default(
+            &cfg.keybindings.tool_row_time_toggle,
+            KeyBinding {
+                code: KeyCode::Char('T'),
+                modifiers: KeyModifiers::ALT,
+            },
         ),
     }
 }

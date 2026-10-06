@@ -347,6 +347,14 @@ pub const KEYBINDING_DEFAULTS: &[KeybindingDefault] = &[
         macos: PlatformDefault::dev("ctrl+space"),
         other: PlatformDefault::dev("ctrl+space"),
     },
+    KeybindingDefault {
+        id: "tool_row_time_toggle",
+        description: "Toggle the tool row time badge (clock + duration)",
+        // Alt+Shift+T is free on both platforms: Alt+T alone toggles the
+        // diagram pane.
+        macos: PlatformDefault::dev("alt+shift+t"),
+        other: PlatformDefault::dev("alt+shift+t"),
+    },
 ];
 
 /// Look up a keybinding action by id.

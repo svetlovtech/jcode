@@ -519,6 +519,11 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app.toggle_keys.tool_row_time.matches(code, modifiers) {
+        app_mod::commands::toggle_tool_row_time(app);
+        return Ok(());
+    }
+
     // Swarm views: Alt+N cycles chat → inline controls → full live page → chat.
     // Selection/open/prompt controls stay available in both active views, while
     // plain typing continues to flow to the chat input.

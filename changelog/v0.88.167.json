@@ -1,0 +1,15 @@
+{
+  "version": "0.88.167",
+  "date": "2026-10-06",
+  "title": "Tool row clock moved to the left, Alt+Shift+T to hide it, and fixed empty /export",
+  "highlights": [
+    "Tool rows now read clock-first: HH:MM:SS on the left, then the tool, then the description, with the duration badge staying on the right",
+    "Press Alt+Shift+T (or /tool-row-time) to hide the time badge entirely so the tool description gets the full row width",
+    "/export no longer writes an empty viewer when the in-memory session copy has no messages (remote mode); it falls back to the stored transcript on disk"
+  ],
+  "improvements": [
+    "display.tool_row_time config (default true), JCODE_TOOL_ROW_TIME env override, and the keybindings.tool_row_time_toggle binding keep the new toggle persistent",
+    "The duration badge keeps its severity color while the clock stays neutral, and both survive narrow terminal widths",
+    "Old .tmp scratch directories older than three days are pruned during housekeeping"
+  ]
+}

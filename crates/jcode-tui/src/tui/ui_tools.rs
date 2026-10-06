@@ -67,6 +67,37 @@ pub(crate) mod tests_show_bash_output_override {
     }
 }
 
+/// Fork: whether tool rows render the time-of-day stamp (left) and the
+/// duration badge (right). `display.tool_row_time = false` (hotkey
+/// Alt+Shift+T or `/tool-row-time off`) hides both so more of the tool
+/// description fits on each row (default: true).
+#[cfg(not(test))]
+pub(crate) fn show_tool_row_time() -> bool {
+    crate::config::config().display.tool_row_time
+}
+
+#[cfg(test)]
+pub(crate) fn show_tool_row_time() -> bool {
+    tests_show_tool_row_time_override::get()
+}
+
+#[cfg(test)]
+pub(crate) mod tests_show_tool_row_time_override {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SHOW_TIME: Cell<bool> = const { Cell::new(true) };
+    }
+
+    pub(crate) fn get() -> bool {
+        SHOW_TIME.with(Cell::get)
+    }
+
+    pub(crate) fn set(value: bool) {
+        SHOW_TIME.with(|cell| cell.set(value));
+    }
+}
+
 fn infer_bg_action_from_intent_for_display(intent: Option<&str>) -> Option<&'static str> {
     let intent = intent?.trim().to_ascii_lowercase();
     if intent.is_empty() {

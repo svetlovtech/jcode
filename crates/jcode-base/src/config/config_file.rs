@@ -254,6 +254,16 @@ impl Config {
         Ok(())
     }
 
+    /// Fork: update the persisted tool-row time badge preference (stamp on
+    /// the left + duration on the right of each tool row).
+    pub fn set_tool_row_time(show: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.tool_row_time = show;
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.tool_row_time to config: {}", show));
+        Ok(())
+    }
+
     /// Persist the baked global launch-hotkey mapping.
     ///
     /// Auto-import calls this once with the per-repo chord -> directory layout it

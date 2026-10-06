@@ -165,6 +165,11 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
         "toggle the info widget",
     );
     push(
+        inputs.toggles.tool_row_time.binding().cloned(),
+        "tool_row_time_toggle",
+        "toggle the tool row time badge (clock + duration)",
+    );
+    push(
         inputs.toggles.todo_card.binding().cloned(),
         "todo_card_toggle",
         "show/dismiss the inline todo card",
@@ -1094,6 +1099,10 @@ mod tests {
             ("new_terminal", Some(&["new_terminal"])),
             ("open_resume", Some(&["open_resume"])),
             ("voice_input", Some(&["voice_input"])),
+            (
+                "tool_row_time_toggle",
+                Some(&["tool_row_time_toggle"]),
+            ),
         ];
 
         let registry = test_inputs_registry(true);
@@ -1174,6 +1183,7 @@ mod tests {
             ),
             ("diff_mode_cycle", toggles.diff_mode_cycle.binding()),
             ("info_widget_toggle", toggles.info_widget.binding()),
+            ("tool_row_time_toggle", toggles.tool_row_time.binding()),
             ("swarm_panel_focus", toggles.swarm_panel_focus.binding()),
         ];
         for (name, binding) in toggle_bindings {

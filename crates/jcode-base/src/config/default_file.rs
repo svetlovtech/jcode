@@ -78,6 +78,9 @@ diagram_pane_toggle = "alt+t"
 typing_scroll_lock_toggle = "alt+s"
 diff_mode_cycle = "alt+g"
 info_widget_toggle = "alt+i"
+# Toggle the tool row time badge (HH:MM:SS stamp on the left + duration on
+# the right) so rows free up width for the tool description.
+tool_row_time_toggle = "alt+shift+t"
 # Focus the inline swarm panel (list of agents this session manages). Press
 # again to cycle agents. While focused: alt+↑/↓ select, alt+o pops the agent
 # out to a new terminal, esc exits. Plain typing still goes to the chat input.
@@ -228,6 +231,11 @@ prompt_entry_animation = true
 # with an intent show just the intent; rows without an intent still show the
 # technical detail.
 # tool_call_details = false
+
+# Show the time badge on tool rows: the HH:MM:SS stamp on the left and the
+# duration on the right (default: true). Toggle with Alt+Shift+T or
+# /tool-row-time; set false to free ~13 columns for the description.
+# tool_row_time = true
 
 # Occasionally surface a "learn this keybinding" nudge (in a distinct color)
 # when you keep doing something the slow way (e.g. /resume) instead of using
