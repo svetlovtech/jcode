@@ -903,6 +903,11 @@ export class JcodeClient extends EventEmitter {
     await this.requestOk({ req: "cancel_soft_interrupts", session_id: sessionId });
   }
 
+  /** Move the running tool call to the background (the TUI's Alt+B). */
+  async backgroundTool(sessionId: string): Promise<void> {
+    await this.requestOk({ req: "background_tool", session_id: sessionId });
+  }
+
   async ping(): Promise<void> {
     await this.requestOk({ req: "ping" });
   }

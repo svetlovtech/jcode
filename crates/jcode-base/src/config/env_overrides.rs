@@ -39,6 +39,12 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_EFFORT_DECREASE_KEY") {
             self.keybindings.effort_decrease = v;
         }
+        if let Ok(v) = std::env::var("JCODE_SPEED_INCREASE_KEY") {
+            self.keybindings.speed_increase = v;
+        }
+        if let Ok(v) = std::env::var("JCODE_SPEED_DECREASE_KEY") {
+            self.keybindings.speed_decrease = v;
+        }
         if let Ok(v) = std::env::var("JCODE_CENTERED_TOGGLE_KEY") {
             self.keybindings.centered_toggle = v;
         }
@@ -77,6 +83,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("JCODE_DIAGRAM_PANE_TOGGLE_KEY") {
             self.keybindings.diagram_pane_toggle = v;
+        }
+        if let Ok(v) = std::env::var("JCODE_DIAGRAM_PANE_VISIBILITY_TOGGLE_KEY") {
+            self.keybindings.diagram_pane_visibility_toggle = v;
         }
         if let Ok(v) = std::env::var("JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY") {
             self.keybindings.typing_scroll_lock_toggle = v;
@@ -564,6 +573,22 @@ impl Config {
             && !v.trim().is_empty()
         {
             self.websearch.searxng_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_PREFER_NATIVE")
+            && let Some(parsed) = parse_env_bool(&v)
+        {
+            self.websearch.prefer_native = parsed;
+        }
+        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_NATIVE_MAX_USES")
+            && let Ok(parsed) = v.trim().parse::<u32>()
+        {
+            self.websearch.native_max_uses = (parsed > 0).then_some(parsed);
+        }
+        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_NATIVE_ALLOWED_DOMAINS") {
+            self.websearch.native_allowed_domains = parse_env_list(&v);
+        }
+        if let Ok(v) = std::env::var("JCODE_WEBSEARCH_NATIVE_BLOCKED_DOMAINS") {
+            self.websearch.native_blocked_domains = parse_env_list(&v);
         }
 
         if let Ok(v) = std::env::var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES") {

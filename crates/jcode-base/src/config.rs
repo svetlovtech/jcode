@@ -4,15 +4,14 @@
 //! Environment variables override config file settings.
 
 pub use jcode_config_types::{
-    AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, ChatConfig,
-    CompactionConfig, CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode,
-    DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig,
-    HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry,
-    LaunchHotkeysConfig, MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig,
-    NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig, NotificationsConfig,
-    PowerConfig, ProviderConfig, QuickPromptsConfig, ReasoningDisplayMode, SafetyConfig,
-    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
-    UpdateChannel, WebSearchConfig, WebSearchEngine,
+    AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
+    CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
+    DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
+    KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
+    MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+    NamedProviderType, NativeScrollbarConfig, NotificationsConfig, PowerConfig, ProviderConfig,
+    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
+    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -75,6 +74,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_DIFF_MODE",
     "JCODE_DIFF_MODE_CYCLE_KEY",
     "JCODE_DIAGRAM_PANE_TOGGLE_KEY",
+    "JCODE_DIAGRAM_PANE_VISIBILITY_TOGGLE_KEY",
     "JCODE_DISABLE_BASE_TOOLS",
     "JCODE_DISABLED_ANIMATIONS",
     "JCODE_DISABLED_TOOLS",
@@ -85,6 +85,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_DISPLAY_CENTERED",
     "JCODE_EFFORT_DECREASE_KEY",
     "JCODE_EFFORT_INCREASE_KEY",
+    "JCODE_SPEED_DECREASE_KEY",
+    "JCODE_SPEED_INCREASE_KEY",
     "JCODE_EMAIL_REPLY_ENABLED",
     "JCODE_EMAIL_TO",
     "JCODE_FOCUS_HOOK",
@@ -123,7 +125,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_ENABLED",
     "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_ENABLE_MERMAID",
-    "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_MEMORY_MODEL",
     "JCODE_MEMORY_SIDECAR_ENABLED",
     "JCODE_PERSIST_MEMORY_INJECTIONS",
@@ -196,6 +197,10 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_VOICE_INPUT_KEY",
     "JCODE_WEBSEARCH_ENGINE",
     "JCODE_WEBSEARCH_FALLBACK_ENGINES",
+    "JCODE_WEBSEARCH_NATIVE_ALLOWED_DOMAINS",
+    "JCODE_WEBSEARCH_NATIVE_BLOCKED_DOMAINS",
+    "JCODE_WEBSEARCH_NATIVE_MAX_USES",
+    "JCODE_WEBSEARCH_PREFER_NATIVE",
     "JCODE_WORKSPACE_DOWN_KEY",
     "JCODE_WORKSPACE_LEFT_KEY",
     "JCODE_WORKSPACE_RIGHT_KEY",
@@ -534,14 +539,6 @@ pub struct Config {
 
     /// Safety / notification configuration
     pub safety: SafetyConfig,
-
-    /// AABEE chat integration for chat_notify / ask_user agent tools (and the
-    /// fallback source for permission "ask" when [permissions] chat is unset)
-    pub chat: ChatConfig,
-
-    /// Quick prompts: named snippets insertable into the composer via the
-    /// slash palette
-    pub prompts: QuickPromptsConfig,
 
     /// Desktop notifications for interactive sessions (e.g. turn completion)
     pub notifications: NotificationsConfig,

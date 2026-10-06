@@ -21,6 +21,7 @@ pub(crate) struct InfoPage {
 pub(crate) struct PageLayout {
     pub pages: Vec<InfoPage>,
     pub max_page_height: u16,
+    /// Page dots, drawn on the widget's bottom border (they take no row).
     pub show_dots: bool,
 }
 
@@ -78,26 +79,8 @@ pub(crate) fn compute_page_layout(
         }
     }
 
-    let mut show_dots = false;
-    if pages.len() > 1 {
-        let filtered: Vec<InfoPage> = pages
-            .iter()
-            .copied()
-            .filter(|page| page.height < inner_height)
-            .collect();
-        if filtered.len() > 1 {
-            pages = filtered;
-            show_dots = true;
-        } else if filtered.len() == 1 {
-            pages = filtered;
-        }
-    }
-
-    let max_page_height = pages
-        .iter()
-        .map(|page| page.height + u16::from(show_dots))
-        .max()
-        .unwrap_or(0);
+    let show_dots = pages.len() > 1;
+    let max_page_height = pages.iter().map(|page| page.height).max().unwrap_or(0);
 
     PageLayout {
         pages,

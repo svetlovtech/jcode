@@ -30,8 +30,8 @@ dependencies = [
 
 [[package]]
 name = "agentgrep"
-version = "0.1.6"
-source = "git+https://github.com/1jehuang/agentgrep.git?tag=v0.1.6#b01b804008ab0662fa14e6b60b10bff61716e6f1"
+version = "0.1.7"
+source = "git+https://github.com/1jehuang/agentgrep.git?tag=v0.1.7#525fc54117962f5f75f93cbffb53b8becf7b3add"
 dependencies = [
  "clap",
  "globset",
@@ -143,7 +143,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -154,7 +154,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -257,13 +257,13 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.89"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -3144,7 +3144,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jcode"
-version = "0.89.0"
+version = "0.91.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3158,7 +3158,6 @@ dependencies = [
  "global-hotkey",
  "hex",
  "jcode-build-meta",
- "jcode-export-core",
  "jcode-harness-api",
  "jcode-harness-api-server",
  "jcode-provider-anthropic-runtime",
@@ -3245,7 +3244,6 @@ dependencies = [
  "jcode-overnight-core",
  "jcode-pdf",
  "jcode-plan",
- "jcode-protocol",
  "jcode-provider-core",
  "jcode-schema-dialect",
  "jcode-selfdev-types",
@@ -3437,11 +3435,8 @@ dependencies = [
 name = "jcode-config-types"
 version = "0.1.0"
 dependencies = [
- "dirs",
  "serde",
  "serde_json",
- "tempfile",
- "toml",
 ]
 
 [[package]]
@@ -3465,19 +3460,6 @@ dependencies = [
  "tokenizers",
  "tract-hir",
  "tract-onnx",
-]
-
-[[package]]
-name = "jcode-export-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "jcode-message-types",
- "jcode-session-types",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -4139,7 +4121,6 @@ dependencies = [
  "async-trait",
  "jcode-agent-runtime",
  "jcode-message-types",
- "jcode-protocol",
  "jcode-tool-types",
  "serde_json",
  "tokio",
@@ -4182,11 +4163,9 @@ dependencies = [
  "jcode-build-meta",
  "jcode-config-types",
  "jcode-core",
- "jcode-export-core",
  "jcode-fuzzy",
  "jcode-logging",
  "jcode-productivity-core",
- "jcode-protocol",
  "jcode-provider-core",
  "jcode-selfdev-types",
  "jcode-session-types",
@@ -4290,7 +4269,6 @@ dependencies = [
 name = "jcode-tui-messages"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "jcode-config-types",
  "jcode-message-types",
  "jcode-session-types",
@@ -8907,7 +8885,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

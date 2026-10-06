@@ -71,6 +71,7 @@ const CAPABILITIES: &[Capability] = &[
     cap("applet_action", "appletAction"),
     cap("close_applet", "closeApplet"),
     cap("cancel_soft_interrupts", "cancelSoftInterrupts"),
+    cap("background_tool", "backgroundTool"),
     cap("ping", "ping"),
     cap("run", "run"),
     cap("run_structured", "runStructured"),

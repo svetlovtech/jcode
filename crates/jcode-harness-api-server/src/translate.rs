@@ -41,6 +41,7 @@ const REQUIRES_ATTACH: &[&str] = &[
     "cancel",
     "soft_interrupt",
     "cancel_soft_interrupts",
+    "background_tool",
     "clear",
     "rewind",
     "rewind_undo",
@@ -1171,6 +1172,13 @@ impl BridgeState {
                     json!({"type": "cancel_soft_interrupts", "id": id}),
                 )]
             }
+            "background_tool" => {
+                let id = self.legacy_id();
+                self.pending_simple.push((id, api_id, SimpleKind::Ok));
+                vec![Outbound::Legacy(
+                    json!({"type": "background_tool", "id": id}),
+                )]
+            }
             "detach_session" => {
                 let id = self.legacy_id();
                 // Done is the release barrier. The daemon's initial Ack is
@@ -1687,7 +1695,10 @@ impl BridgeState {
                 expected_tokens: event["expected_tokens"].as_u64().unwrap_or(0),
                 read_tokens: event["read_tokens"].as_u64().unwrap_or(0),
                 documented_cause: event["documented_cause"].as_str().map(str::to_string),
-                message: event["message"].as_str().unwrap_or("KV cache miss").to_string(),
+                message: event["message"]
+                    .as_str()
+                    .unwrap_or("KV cache miss")
+                    .to_string(),
             })],
             "done" => {
                 let id = event["id"].as_u64().unwrap_or(0);

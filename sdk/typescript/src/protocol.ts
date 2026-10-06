@@ -198,6 +198,7 @@ export type ApiRequest =
   | { req: "close_applet"; session_id: string; instance: string }
   | { req: "rewind_undo"; session_id: string }
   | { req: "cancel_soft_interrupts"; session_id: string }
+  | { req: "background_tool"; session_id: string }
   | { req: "ping" };
 
 /** Markdown/PDF panel state, shared with the native runtime. */
@@ -491,6 +492,7 @@ export const KNOWN_REQUEST_KINDS = [
   "close_applet",
   "rewind_undo",
   "cancel_soft_interrupts",
+  "background_tool",
   "ping",
 ] as const;
 

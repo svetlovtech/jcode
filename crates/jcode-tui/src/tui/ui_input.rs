@@ -1976,33 +1976,6 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
             .map(str::to_string),
     };
 
-    let total_width = area.width as usize;
-
-    // Fork: the advanced footer replaces the fact-derived span list. Build
-    // its spans first and fall back to truncation fit; the info block sits on
-    // the left edge (the classic style pins it right).
-    if crate::config::config().display.footer_style_advanced() {
-        let spans = advanced_footer::overscroll_advanced_spans(app, &data);
-        let spans = if spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>()
-            <= total_width
-        {
-            spans
-        } else {
-            overscroll_truncate_spans(spans, total_width)
-        };
-        let info_alignment = if app.centered_mode() {
-            Alignment::Center
-        } else {
-            Alignment::Left
-        };
-        let line = Line::from(spans).alignment(info_alignment);
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
-
     let alignment = if app.centered_mode() {
         Alignment::Center
     } else {
@@ -2042,7 +2015,6 @@ struct OverscrollLevels {
     auth: u8,
     provider: u8,
     model: u8,
-    tight_separators: bool,
 }
 
 /// Compaction ladder, applied one step at a time until the line fits.
@@ -2053,17 +2025,16 @@ struct OverscrollLevels {
 /// only shortened, so the line always answers "where am I, what am I running,
 /// how full is the context".
 const OVERSCROLL_LADDER: &[fn(&mut OverscrollLevels)] = &[
-    |l| l.auth = 1,                // hide auth ("OAuth"/"API key")
-    |l| l.git = 1,                 // "~3 +1 ?2 ↑1" -> "±6 ↑1"
-    |l| l.context = 1,             // "74k/256k ▰▰▰▱▱▱▱▱▱▱ 29%" -> "▰▱▱▱ 29%"
-    |l| l.branch = 1,              // long branch -> 12 chars
-    |l| l.provider = 1,            // hide provider
-    |l| l.context = 2,             // "▰▱▱▱ 29%" -> "29%"
-    |l| l.git = 2,                 // hide git status
-    |l| l.branch = 2,              // hide branch
-    |l| l.tight_separators = true, // " · " -> " "
-    |l| l.model = 1,               // drop reasoning effort
-    |l| l.dir = 1,                 // "~/…/jcode" -> "jcode"
+    |l| l.auth = 1,     // hide auth ("OAuth"/"API key")
+    |l| l.git = 1,      // "~3 +1 ?2 ↑1" -> "±6 ↑1"
+    |l| l.context = 1,  // "74k/256k ▰▰▰▱▱▱▱▱▱▱ 29%" -> "▰▱▱▱ 29%"
+    |l| l.branch = 1,   // long branch -> 12 chars
+    |l| l.provider = 1, // hide provider
+    |l| l.context = 2,  // "▰▱▱▱ 29%" -> "29%"
+    |l| l.git = 2,      // hide git status
+    |l| l.branch = 2,   // hide branch
+    |l| l.model = 1,    // drop reasoning effort
+    |l| l.dir = 1,      // "~/…/jcode" -> "jcode"
 ];
 
 fn overscroll_fact_spans(
@@ -2181,14 +2152,10 @@ fn overscroll_fact_spans(
 fn overscroll_fit_facts(facts: &OverscrollFacts, max_width: usize) -> (Vec<Span<'static>>, bool) {
     use unicode_width::UnicodeWidthStr;
     let render = |levels: OverscrollLevels| {
-        let sep_text = if levels.tight_separators { " " } else { " · " };
         let mut out: Vec<Span<'static>> = Vec::new();
         for group in overscroll_fact_spans(facts, levels) {
             if !out.is_empty() {
-                out.push(Span::styled(
-                    sep_text,
-                    Style::default().fg(rgb(100, 100, 110)),
-                ));
+                out.push(Span::raw(" "));
             }
             out.extend(group);
         }
@@ -3083,8 +3050,3 @@ pub(crate) fn visual_line_move(
         target.start_char + chars_in,
     ))
 }
-
-/// Fork: advanced footer spans live in their own module so upstream
-/// merges only see this declaration.
-#[path = "advanced_footer.rs"]
-mod advanced_footer;

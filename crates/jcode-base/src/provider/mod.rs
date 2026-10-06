@@ -2470,6 +2470,7 @@ impl Provider for MultiProvider {
         match self.active_provider() {
             ActiveProvider::Claude => self.anthropic_provider().and_then(|a| a.service_tier()),
             ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.service_tier()),
+            ActiveProvider::Cursor => self.cursor_provider().and_then(|c| c.service_tier()),
             _ => None,
         }
     }
@@ -2484,8 +2485,12 @@ impl Provider for MultiProvider {
                 .openai_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
                 .set_service_tier(service_tier),
+            ActiveProvider::Cursor => self
+                .cursor_provider()
+                .ok_or_else(|| anyhow::anyhow!("Cursor provider not available"))?
+                .set_service_tier(service_tier),
             _ => Err(anyhow::anyhow!(
-                "Service tier switching is only supported for OpenAI models and Claude Opus 4.8"
+                "Service tier switching is only supported for OpenAI models, Cursor models, and Claude Opus 4.8"
             )),
         }
     }
@@ -2499,6 +2504,10 @@ impl Provider for MultiProvider {
             ActiveProvider::OpenAI => self
                 .openai_provider()
                 .map(|o| o.available_service_tiers())
+                .unwrap_or_default(),
+            ActiveProvider::Cursor => self
+                .cursor_provider()
+                .map(|c| c.available_service_tiers())
                 .unwrap_or_default(),
             _ => vec![],
         }
@@ -2893,7 +2902,13 @@ impl Provider for MultiProvider {
             ActiveProvider::Copilot => None,
             ActiveProvider::Antigravity => None,
             ActiveProvider::Gemini => None,
-            ActiveProvider::Cursor => None,
+            // Cursor's AgentService keeps its bidirectional stream open until
+            // the MCP tool result is sent back over the same stream. Dropping
+            // the sender here made every Cursor tool call hang after the tool
+            // ran locally.
+            ActiveProvider::Cursor => self
+                .cursor_provider()
+                .and_then(|provider| provider.native_result_sender()),
             ActiveProvider::Bedrock => None,
             ActiveProvider::OpenRouter => None,
         }

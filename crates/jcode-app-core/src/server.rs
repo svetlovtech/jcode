@@ -1300,7 +1300,7 @@ impl Server {
             .await;
         });
 
-        // Log when we receive SIGTERM for debugging
+        // On SIGTERM: log, unregister, let in-flight session saves finish, exit.
         #[cfg(unix)]
         {
             let sigterm_server_name = self.identity.name.clone();
@@ -1308,9 +1308,9 @@ impl Server {
                 use tokio::signal::unix::{SignalKind, signal};
                 if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
                     sigterm.recv().await;
-                    crate::logging::info("Server received SIGTERM, shutting down gracefully");
                     crate::lid_override::release_for_exiting_process();
                     let _ = crate::registry::unregister_server(&sigterm_server_name).await;
+                    lifecycle::drain_session_saves_before_exit().await;
                     std::process::exit(0);
                 }
             });
@@ -2269,6 +2269,11 @@ impl Server {
 
     /// Start the server (both main and debug sockets)
     pub async fn run(&self) -> Result<()> {
+        // Pin the binary this server runs before a later install can repoint
+        // the channel link it was started through (see running_server_binary).
+        if let Some(binary) = self::util::running_server_binary() {
+            crate::logging::info(&format!("Server binary: {}", binary.display()));
+        }
         // Ensure socket directory exists (for named sockets like /run/user/1000/jcode/)
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;

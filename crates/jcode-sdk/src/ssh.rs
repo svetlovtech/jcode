@@ -201,9 +201,10 @@ impl SshConnectOptions {
         let stderr = read(Box::new(child.stderr.take().expect("piped stderr")));
         let deadline = std::time::Instant::now() + timeout;
         let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| {
-                Error::new(ErrorKind::Transport, format!("ssh wait failed: {e}"))
-            })? {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| Error::new(ErrorKind::Transport, format!("ssh wait failed: {e}")))?
+            {
                 break status;
             }
             if std::time::Instant::now() >= deadline {

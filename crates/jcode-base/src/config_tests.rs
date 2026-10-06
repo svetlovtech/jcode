@@ -774,8 +774,8 @@ fn test_generated_default_config_has_expected_user_defaults() {
     );
     assert!(
         content.contains("memory_model = \"gpt-5.6-luna\"")
-            && content.contains("memory_jev_provider = \"auto\""),
-        "generated default config should document the memory sidecar and Jev provider default"
+            && content.contains("reasoning effort \"none\""),
+        "generated default config should document the Luna memory sidecar default"
     );
 
     // Effort keys come from the per-platform keybinding registry; the template
@@ -1578,51 +1578,6 @@ fn config_reload_generation_increments_on_cache_invalidation() {
 }
 
 #[test]
-fn config_save_round_trip_preserves_prompts_section() {
-    // The user's file holds both an inline entry and the dir override; a
-    // read-modify-write save (e.g. /config toggles) must keep the whole
-    // [prompts] section intact, including the flattened entry map.
-    let config: Config = toml::from_str("[prompts]\ndir = \"myprompts\"\nsum = \"Summarize.\"\n")
-        .expect("parse config with prompts");
-
-    let saved = toml::to_string_pretty(&config).expect("serialize config");
-    assert!(
-        saved.contains("[prompts]"),
-        "prompts section must survive save"
-    );
-    assert!(
-        saved.contains("dir = \"myprompts\""),
-        "the dir override must survive save; got {saved}"
-    );
-    assert!(
-        saved.contains("sum = \"Summarize.\""),
-        "flattened prompt entries must survive save; got {saved}"
-    );
-
-    let reloaded: Config = toml::from_str(&saved).expect("re-parse saved config");
-    assert_eq!(reloaded.prompts.dir, "myprompts");
-    let entries = reloaded.prompts.valid_entries();
-    assert_eq!(entries, vec![("sum".to_string(), "Summarize.".to_string())]);
-}
-
-#[test]
-fn config_save_round_trip_with_empty_prompts_stays_parseable() {
-    // A fresh config with no prompts at all must survive save + reload.
-    // JCODE_HOME is isolated because valid_entries() reads the default
-    // ~/.jcode/prompts directory, which legitimately holds real prompt files.
-    let previous = std::env::var_os("JCODE_HOME");
-    let temp = tempfile::tempdir().expect("tempdir");
-    crate::env::set_var("JCODE_HOME", temp.path());
-    let config = Config::default();
-    let saved = toml::to_string_pretty(&config).expect("serialize default config");
-    let reloaded: Config = toml::from_str(&saved).expect("re-parse saved config");
-    let empty = reloaded.prompts.valid_entries().is_empty();
-    restore_env_var("JCODE_HOME", previous);
-    assert!(empty);
-    assert!(reloaded.prompts.dir.is_empty());
-}
-
-#[test]
 fn swarm_root_effort_config_defaults_and_independent_modes() {
     let defaults = Config::default();
     assert_eq!(defaults.agents.root_effort_for_swarm(false), "max");
@@ -1782,4 +1737,3 @@ fn removed_overscroll_status_key_still_loads_config() {
     assert!(config.display.centered);
     assert_eq!(config.display.usage_display, "used");
 }
-

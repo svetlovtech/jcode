@@ -48,8 +48,6 @@ fn create_scroll_test_app(
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
         DisplayMessage {
             role: "assistant".to_string(),
@@ -58,8 +56,6 @@ fn create_scroll_test_app(
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
     ];
     app.bump_display_messages_version();
@@ -86,8 +82,6 @@ fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBacke
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
         DisplayMessage {
             role: "assistant".to_string(),
@@ -96,8 +90,6 @@ fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBacke
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
     ];
     app.bump_display_messages_version();
@@ -123,8 +115,6 @@ fn create_blockquote_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
         DisplayMessage {
             role: "assistant".to_string(),
@@ -134,8 +124,6 @@ fn create_blockquote_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
             duration_secs: None,
             title: None,
             tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
         },
     ];
     app.bump_display_messages_version();
@@ -414,8 +402,6 @@ fn test_chat_native_scrollbar_hidden_when_content_fits() {
         duration_secs: None,
         title: None,
         tool_data: None,
-        timestamp: None,
-        tool_duration_ms: None,
     }];
     app.bump_display_messages_version();
     app.session.short_name = Some("test".to_string());
@@ -718,15 +704,17 @@ fn test_file_activity_scroll_reproduces_trailing_ghost_after_native_scroll_like_
         app.scroll_offset += 1;
         clean = render_and_snap(&app, &mut terminal);
     }
-    assert!(
-        !clean.contains('Z'),
-        "ghost marker must not be present before injection:\n{clean}"
-    );
     let target_row = clean
         .lines()
         .position(|line| line.contains("read lines"))
         .unwrap_or_else(|| panic!("expected file activity line to be visible, got:\n{clean}"));
     let target_line = clean.lines().nth(target_row).expect("target line text");
+    // Check only the injected row: the header and status line show the cwd and
+    // the session name, either of which can contain a 'Z'.
+    assert!(
+        !target_line.contains('Z'),
+        "ghost marker must not be present before injection:\n{clean}"
+    );
     let trail_start = target_line
         .find("read lines 1-9")
         .expect("expected file activity suffix")
@@ -747,7 +735,10 @@ fn test_file_activity_scroll_reproduces_trailing_ghost_after_native_scroll_like_
     let scrolled = render_and_snap(&app, &mut terminal);
 
     assert!(
-        scrolled.contains('Z'),
+        scrolled
+            .lines()
+            .nth(target_row)
+            .is_some_and(|line| line.contains('Z')),
         "expected an injected ghost marker to remain after scroll-like repaint:\n{scrolled}"
     );
 }
@@ -888,13 +879,23 @@ fn test_local_alt_s_toggles_typing_scroll_lock() {
 }
 
 #[test]
-fn test_local_alt_m_toggles_side_panel_visibility() {
+fn test_local_alt_m_cycles_side_panel_split_fullscreen_hidden() {
     let mut app = create_test_app();
     app.side_panel = test_side_panel_snapshot("plan", "Plan");
     app.last_side_panel_focus_id = Some("plan".to_string());
 
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
+    assert!(app.side_panel_fullscreen);
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert_eq!(
+        app.status_notice(),
+        Some("Side panel: Plan (fullscreen)".to_string())
+    );
+
+    app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(!app.side_panel_fullscreen);
     assert_eq!(app.side_panel.focused_page_id, None);
     assert_eq!(app.status_notice(), Some("Side panel: OFF".to_string()));
 
@@ -912,6 +913,8 @@ fn test_local_alt_m_hidden_side_panel_stays_hidden_across_snapshot_update() {
 
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
+    app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
+        .unwrap();
     assert_eq!(app.side_panel.focused_page_id, None);
 
     app.set_side_panel_snapshot(test_side_panel_snapshot("plan", "Updated plan"));
@@ -925,7 +928,7 @@ fn test_local_alt_m_hidden_side_panel_stays_hidden_across_snapshot_update() {
 }
 
 #[test]
-fn test_local_alt_m_falls_back_to_diagram_pane_when_side_panel_is_empty() {
+fn test_local_alt_m_does_not_toggle_diagram_pane_when_side_panel_is_empty() {
     let mut app = create_test_app();
     app.side_panel = crate::side_panel::SidePanelSnapshot::default();
     app.diagram_pane_enabled = true;
@@ -933,8 +936,31 @@ fn test_local_alt_m_falls_back_to_diagram_pane_when_side_panel_is_empty() {
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
 
+    assert!(app.diagram_pane_enabled);
+    assert!(
+        app.status_notice()
+            .is_some_and(|notice| notice.starts_with("Side panel: no pages")),
+        "notice: {:?}",
+        app.status_notice()
+    );
+}
+
+#[test]
+fn test_local_alt_shift_m_toggles_diagram_pane() {
+    let mut app = create_test_app();
+    app.side_panel = crate::side_panel::SidePanelSnapshot::default();
+    app.diagram_pane_enabled = true;
+
+    app.handle_key(KeyCode::Char('M'), KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .unwrap();
     assert!(!app.diagram_pane_enabled);
     assert_eq!(app.status_notice(), Some("Diagram pane: OFF".to_string()));
+
+    // Legacy terminals send uppercase with only ALT.
+    app.handle_key(KeyCode::Char('M'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(app.diagram_pane_enabled);
+    assert_eq!(app.status_notice(), Some("Diagram pane: ON".to_string()));
 }
 
 #[test]
@@ -961,13 +987,21 @@ fn test_images_do_not_drive_side_panel_visibility() {
 }
 
 #[test]
-fn test_remote_alt_m_toggles_side_panel_visibility() {
+fn test_remote_alt_m_cycles_side_panel_split_fullscreen_hidden() {
     let mut app = create_test_app();
     app.side_panel = test_side_panel_snapshot("plan", "Plan");
     app.last_side_panel_focus_id = Some("plan".to_string());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    assert!(app.side_panel_fullscreen);
+    assert_eq!(
+        app.status_notice(),
+        Some("Side panel: Plan (fullscreen)".to_string())
+    );
 
     rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
         .unwrap();
@@ -1447,6 +1481,13 @@ fn changes_widget_end_to_end_on_real_git_repo() {
     assert_eq!(info.dirty_files[0].path, "src/lib.rs", "newest first");
     assert_eq!(info.dirty_files.last().unwrap().path, "gone.txt", "no mtime sorts last");
     assert_eq!(info.repo_root.as_deref(), Some(root.as_path()));
+    // Commits widget data comes from the same probe against real git output.
+    assert_eq!(info.recent_commits.len(), 1, "{:?}", info.recent_commits);
+    let init = &info.recent_commits[0];
+    assert_eq!(init.subject, "init");
+    assert_eq!((init.added, init.removed), (Some(9), Some(0)), "text lines only");
+    assert!(!init.unpushed, "no upstream means ahead=0");
+    assert!(init.timestamp > 0 && init.hash.len() >= 7);
 
     // Real App frame: transcript edited src/lib.rs relative to the repo.
     crate::tui::app::helpers::seed_git_info_cache_for_tests(Some(info));
@@ -1484,7 +1525,7 @@ fn changes_widget_end_to_end_on_real_git_repo() {
     assert!(row("new.rs").contains("+3 −0"), "{frame}");
     assert!(!row("logo.bin").contains('+'), "binary shows no counts:\n{frame}");
     assert!(
-        frame.contains("● edited by agent"),
+        frame.contains("● agent"),
         "legend explains the dot when one is shown:\n{frame}"
     );
 
@@ -1498,16 +1539,19 @@ fn changes_widget_end_to_end_on_real_git_repo() {
         frame2 = render_and_snap(&app2, &mut terminal2);
     }
     crate::tui::app::helpers::seed_git_info_cache_for_tests(None);
-    // Scope the dot checks to the Changes widget box: on machines with real
-    // credentials (e.g. OPENAI_API_KEY in the environment) the header auth
-    // inventory legitimately renders its own "● provider(key)" bullets, which
-    // say nothing about the agent-edit dot under test.
-    let changes_box = frame2
+    assert!(frame2.contains("src/lib.rs"), "{frame2}");
+    assert!(!frame2.contains("● agent"), "{frame2}");
+    let changes_rows: Vec<_> = frame2
         .lines()
-        .filter(|l| l.contains("src/lib.rs") || l.contains("logo.bin"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(changes_box.contains("src/lib.rs"), "{frame2}");
-    assert!(!frame2.contains("edited by agent"), "{frame2}");
-    assert!(!changes_box.contains('●'), "{frame2}");
+        .filter(|line| {
+            ["src/lib.rs", "new.rs", "logo.bin", "new_name.rs", "gone.txt"]
+                .iter()
+                .any(|path| line.contains(path))
+        })
+        .collect();
+    assert_eq!(changes_rows.len(), 5, "{frame2}");
+    assert!(
+        changes_rows.iter().all(|line| !line.contains('●')),
+        "no agent-edit dot on clean Changes rows:\n{frame2}"
+    );
 }

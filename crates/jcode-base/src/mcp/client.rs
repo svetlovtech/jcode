@@ -1,7 +1,6 @@
 //! MCP Client - handles communication with a single MCP server
 
 use super::protocol::*;
-use super::remote::RemoteTransport;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,16 +17,16 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 #[derive(Clone)]
 pub struct McpHandle {
     pub(crate) name: String,
-    pub(crate) request_id: Arc<AtomicU64>,
-    pub(crate) pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    request_id: Arc<AtomicU64>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     /// Set by the reader on stdout EOF: no reply can arrive, so requests fail fast.
-    pub(crate) closed: Arc<AtomicBool>,
-    pub(crate) writer_tx: mpsc::Sender<String>,
-    pub(crate) server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
-    pub(crate) capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
-    pub(crate) tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
+    closed: Arc<AtomicBool>,
+    writer_tx: mpsc::Sender<String>,
+    server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
+    capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
+    tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
     /// Reply timeout applied to every request on this server.
-    pub(crate) request_timeout: std::time::Duration,
+    request_timeout: std::time::Duration,
 }
 
 /// Default reply timeout when a server config does not set `timeout_secs`.
@@ -140,18 +139,12 @@ impl McpHandle {
     }
 }
 
-/// MCP Client - owns the child process (stdio) or the remote transport state
-/// (HTTP/SSE) and provides shared handles.
-/// Only one McpClient exists per MCP server, but many McpHandle
+/// MCP Client - owns the child process and provides shared handles.
+/// Only one McpClient exists per MCP server process, but many McpHandle
 /// clones can be distributed to different sessions.
 pub struct McpClient {
     handle: McpHandle,
-    transport: ClientTransport,
-}
-
-enum ClientTransport {
-    Stdio(Child),
-    Remote(RemoteTransport),
+    child: Child,
 }
 
 impl McpClient {
@@ -169,28 +162,6 @@ impl McpClient {
         config: &McpServerConfig,
         working_dir: Option<&std::path::Path>,
     ) -> Result<Self> {
-        if config.is_remote() {
-            let (handle, transport) = super::remote::connect_remote(name.clone(), config).await?;
-            let mut client = Self {
-                handle,
-                transport: ClientTransport::Remote(transport),
-            };
-            client
-                .initialize()
-                .await
-                .with_context(|| format!("MCP server '{}' failed to initialize", name))?;
-            client
-                .handle
-                .refresh_tools()
-                .await
-                .with_context(|| format!("MCP server '{}' failed to list tools", name))?;
-            crate::logging::info(&format!(
-                "MCP: Connected to '{}' with {} tools",
-                name,
-                client.handle.tools().len()
-            ));
-            return Ok(client);
-        }
         let working_dir = working_dir.filter(|dir| dir.is_dir());
         crate::logging::info(&format!(
             "MCP: Connecting to '{}' ({} {:?}) cwd={:?}",
@@ -320,10 +291,7 @@ impl McpClient {
             request_timeout: request_timeout_for(config),
         };
 
-        let mut client = Self {
-            handle,
-            transport: ClientTransport::Stdio(child),
-        };
+        let mut client = Self { handle, child };
 
         client
             .initialize()
@@ -345,7 +313,6 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Connect to a remote MCP server over streamable HTTP or legacy SSE.
     /// Get a shareable handle to this client
     pub fn handle(&self) -> McpHandle {
         self.handle.clone()
@@ -391,12 +358,10 @@ impl McpClient {
 
     /// Check if server is still running
     pub fn is_running(&mut self) -> bool {
-        match &mut self.transport {
-            ClientTransport::Stdio(child) => match child.try_wait() {
-                Ok(None) => true,
-                _ => false,
-            },
-            ClientTransport::Remote(remote) => super::remote::remote_is_running(remote),
+        match self.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(_)) => false,
+            Err(_) => false,
         }
     }
 
@@ -408,15 +373,9 @@ impl McpClient {
             .send("{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}\n".to_string())
             .await;
 
-        match &mut self.transport {
-            ClientTransport::Stdio(child) => {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let _ = child.kill().await;
-            }
-            ClientTransport::Remote(remote) => {
-                super::remote::remote_shutdown(&self.handle, remote).await;
-            }
-        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let _ = self.child.kill().await;
     }
 
     // === Legacy compatibility methods that delegate to handle ===
@@ -472,26 +431,10 @@ fn mcp_child_env(
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        if let ClientTransport::Stdio(child) = &mut self.transport {
-            let _ = child.start_kill();
-        }
+        let _ = self.child.start_kill();
     }
 }
 
-/// Correlate a response into the pending map, if anyone is waiting on its id.
-pub(crate) async fn correlate_pending(
-    pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
-    response: JsonRpcResponse,
-) {
-    if let Some(id) = response.id {
-        let mut pending = pending.lock().await;
-        if let Some(tx) = pending.remove(&id) {
-            let _ = tx.send(response);
-        }
-    }
-}
-
-/// Build a synthetic JSON-RPC error response for transport-level failures.
 #[cfg(all(test, unix))]
 mod tests {
     use super::{McpClient, is_sensitive_inherited_env_key, mcp_child_env};

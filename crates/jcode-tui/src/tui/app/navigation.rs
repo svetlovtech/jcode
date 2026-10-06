@@ -1099,7 +1099,7 @@ impl App {
                     self.sync_diagram_fit_context();
                     self.set_status_notice("Image side panel: ON");
                 } else {
-                    self.toggle_diagram_pane();
+                    self.notify_no_side_panel_pages();
                 }
                 return;
             }
@@ -1116,11 +1116,26 @@ impl App {
         }
 
         if self.side_panel.pages.is_empty() {
-            self.toggle_diagram_pane();
+            self.notify_no_side_panel_pages();
             return;
         }
 
         if self.side_panel.focused_page().is_some() {
+            // Alt+M cycle: split -> fullscreen -> hidden -> split.
+            if !self.side_panel_fullscreen {
+                self.side_panel_fullscreen = true;
+                self.sync_diagram_fit_context();
+                crate::tui::clear_side_panel_render_caches();
+                let title = self
+                    .side_panel
+                    .focused_page()
+                    .map(|page| page.title.clone())
+                    .unwrap_or_default();
+                self.set_status_notice(format!("Side panel: {title} (fullscreen)"));
+                return;
+            }
+            self.side_panel_fullscreen = false;
+            crate::tui::clear_side_panel_render_caches();
             self.last_side_panel_focus_id = self.side_panel.focused_page_id.clone();
             self.side_panel.focused_page_id = None;
             self.side_panel_user_hidden = true;
@@ -1141,12 +1156,13 @@ impl App {
             .or_else(|| self.side_panel.pages.first().map(|page| page.id.clone()));
 
         let Some(restore_id) = restore_id else {
-            self.toggle_diagram_pane();
+            self.notify_no_side_panel_pages();
             return;
         };
 
         self.side_panel.focused_page_id = Some(restore_id.clone());
         self.last_side_panel_focus_id = Some(restore_id);
+        self.side_panel_fullscreen = false;
         self.side_panel_user_hidden = false;
         self.side_panel_explicit_hidden = false;
         self.sync_diagram_fit_context();
@@ -1156,6 +1172,13 @@ impl App {
             .map(|page| format!("Side panel: {}", page.title))
             .unwrap_or_else(|| "Side panel: ON".to_string());
         self.set_status_notice(status);
+    }
+
+    fn notify_no_side_panel_pages(&mut self) {
+        let diagram_key = crate::tui::keybind::diagram_pane_visibility_key_label();
+        self.set_status_notice(format!(
+            "Side panel: no pages ({diagram_key} toggles diagrams)"
+        ));
     }
 
     pub(super) fn adjust_diagram_zoom(&mut self, delta: i8) {

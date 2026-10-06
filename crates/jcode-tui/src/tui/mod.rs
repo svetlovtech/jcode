@@ -32,6 +32,7 @@ pub(crate) mod chat_status;
 pub(crate) mod color_support;
 mod core;
 pub(crate) mod fuzzy;
+pub mod herdr;
 // Terminal image display + metadata helpers now live in the dependency-free
 // `jcode-terminal-image` crate (shared with the `read` tool). Re-exported here
 // so existing `crate::tui::image` paths keep working.
@@ -79,7 +80,7 @@ pub use crate::generated_image::{
     generated_image_side_panel_markdown, generated_image_side_panel_page_id,
     write_generated_image_side_panel_page,
 };
-pub use app::{App, CopyBadgeUiState, ProcessingStatus, RunResult};
+pub use app::{App, CloudHandoff, CopyBadgeUiState, ProcessingStatus, RunResult};
 
 use crate::message::ToolCall;
 use ratatui::prelude::Frame;
@@ -760,6 +761,10 @@ pub trait TuiState {
     /// Session-scoped side panel state managed by the side_panel tool
     // ---- Side panel ----
     fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot;
+    /// Whether the side panel replaces the transcript (fullscreen mode).
+    fn side_panel_fullscreen(&self) -> bool {
+        false
+    }
     /// Whether to pin read images to a side pane
     fn pin_images(&self) -> bool;
     /// Whether inline transcript images render expanded. When false, each

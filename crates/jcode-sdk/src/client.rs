@@ -1346,6 +1346,14 @@ impl JcodeClient {
         .map(drop)
     }
 
+    /// Move the running tool call to the background (the TUI's Alt+B).
+    pub fn background_tool(&self, session_id: &str) -> Result<()> {
+        self.request_ok(ApiRequest::BackgroundTool {
+            session_id: session_id.to_string(),
+        })
+        .map(drop)
+    }
+
     pub fn ping(&self) -> Result<()> {
         self.request_ok(ApiRequest::Ping).map(drop)
     }
