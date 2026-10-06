@@ -4026,10 +4026,14 @@ pub(crate) fn render_tool_message(
     // the tool name, so rows read "clock, tool, description". Only the
     // duration (" · 2m 3s") rides with the token suffix on the right.
     let time_segments = tool_row_time_segments(msg);
+    // With a stamp the row is "HH:MM:SS ✓ tool ..." (stamp + one space +
+    // icon); without it the icon keeps its classic two-space indent. The
+    // summary budget accounts for the saved space (user request: tighter
+    // gap between the clock and the status icon).
     let stamp_prefix_width = time_segments
         .as_ref()
         .and_then(|segs| segs.stamp.as_deref())
-        .map(|stamp| UnicodeWidthStr::width(format!("{stamp} ").as_str()))
+        .map(|stamp| UnicodeWidthStr::width(format!("{stamp} ").as_str()) - 1)
         .unwrap_or(0);
     let time_suffix_width = time_segments
         .as_ref()
@@ -4098,11 +4102,16 @@ pub(crate) fn render_tool_message(
             format!("{stamp} "),
             Style::default().fg(rgb(120, 130, 145)),
         ));
+        tool_line.push(Span::styled(
+            format!("{} ", icon),
+            Style::default().fg(icon_color),
+        ));
+    } else {
+        tool_line.push(Span::styled(
+            format!("  {} ", icon),
+            Style::default().fg(icon_color),
+        ));
     }
-    tool_line.push(Span::styled(
-        format!("  {} ", icon),
-        Style::default().fg(icon_color),
-    ));
     tool_line.push(Span::styled(display_name, Style::default().fg(tool_color())));
     if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
