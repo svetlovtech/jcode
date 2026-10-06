@@ -1,7 +1,26 @@
 # Upstream PR Prep: tool duration + tool timestamp
 
-Status: PRs NOT sent upstream yet (owner requested parking here first).
-Everything below is enough to resume in a fresh session.
+Status (updated 2026-10-06): **both PRs are OPEN and current**.
+
+- PR #1478 (duration): https://github.com/1jehuang/jcode/pull/1478
+  - head `feat/issue-1453-tool-duration` @ `ec7851e77` (origin, includes all Greptile review fixes)
+  - MERGEABLE, merge-tree clean against upstream/master `a0c41dc2f`
+- PR #1480 (timestamp): https://github.com/1jehuang/jcode/pull/1480
+  - head `feat/issue-1454-tool-timestamp` @ `542598b6d` (origin, merge of upstream master + fixes)
+  - MERGEABLE, merge-tree clean against upstream/master `a0c41dc2f`
+
+Local `-work` branches are stale snapshots kept for reference; origin PR heads
+contain everything. No further action needed unless upstream master drifts
+(then rebase/merge and force-push the PR branches).
+
+The fork-only follow-up (clock moved to the LEFT edge + Alt+Shift+T hide
+toggle + `/export` disk fallback) lives on `svetlovtech/main` commit
+`a390b24a2`; port it upstream only after #1478/#1480 land, stacking on the
+same files (`ui_messages.rs` render, `MessageCacheContext`, keybind registry).
+
+---
+
+(Historical planning notes below.)
 
 ## Upstream issues (already created)
 
