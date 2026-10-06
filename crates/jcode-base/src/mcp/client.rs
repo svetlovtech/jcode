@@ -171,7 +171,15 @@ impl McpHandle {
 /// clones can be distributed to different sessions.
 pub struct McpClient {
     handle: McpHandle,
-    child: Child,
+    transport: ClientTransport,
+}
+
+/// Fork: MCP servers come in two flavors — stdio subprocesses and remote
+/// HTTP (streamable/SSE) endpoints. The transport owns process/socket
+/// lifecycle; the handle owns request correlation for both.
+enum ClientTransport {
+    Stdio(Child),
+    Remote(super::remote::RemoteTransport),
 }
 
 impl McpClient {
@@ -189,6 +197,28 @@ impl McpClient {
         config: &McpServerConfig,
         working_dir: Option<&std::path::Path>,
     ) -> Result<Self> {
+        if config.is_remote() {
+            let (handle, transport) = super::remote::connect_remote(name.clone(), config).await?;
+            let mut client = Self {
+                handle,
+                transport: ClientTransport::Remote(transport),
+            };
+            client
+                .initialize()
+                .await
+                .with_context(|| format!("MCP server '{}' failed to initialize", name))?;
+            client
+                .handle
+                .refresh_tools()
+                .await
+                .with_context(|| format!("MCP server '{}' failed to list tools", name))?;
+            crate::logging::info(&format!(
+                "MCP: Connected to '{}' with {} tools",
+                name,
+                client.handle.tools().len()
+            ));
+            return Ok(client);
+        }
         let working_dir = working_dir.filter(|dir| dir.is_dir());
         crate::logging::info(&format!(
             "MCP: Connecting to '{}' ({} {:?}) cwd={:?}",
@@ -212,7 +242,7 @@ impl McpClient {
         if let Some(dir) = working_dir {
             command.current_dir(dir);
         }
-        let mut child = command
+        let mut child: Child = command
             .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {}", config.command))?;
 
@@ -318,7 +348,10 @@ impl McpClient {
             request_timeout: request_timeout_for(config),
         };
 
-        let mut client = Self { handle, child };
+        let mut client = Self {
+            handle,
+            transport: ClientTransport::Stdio(child),
+        };
 
         client
             .initialize()
@@ -385,10 +418,12 @@ impl McpClient {
 
     /// Check if server is still running
     pub fn is_running(&mut self) -> bool {
-        match self.child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(_)) => false,
-            Err(_) => false,
+        match &mut self.transport {
+            ClientTransport::Stdio(child) => match child.try_wait() {
+                Ok(None) => true,
+                _ => false,
+            },
+            ClientTransport::Remote(remote) => super::remote::remote_is_running(remote),
         }
     }
 
@@ -400,9 +435,15 @@ impl McpClient {
             .send("{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}\n".to_string())
             .await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let _ = self.child.kill().await;
+        match &mut self.transport {
+            ClientTransport::Stdio(child) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let _ = child.kill().await;
+            }
+            ClientTransport::Remote(remote) => {
+                super::remote::remote_shutdown(&self.handle, remote).await;
+            }
+        }
     }
 
     // === Legacy compatibility methods that delegate to handle ===
@@ -458,7 +499,9 @@ fn mcp_child_env(
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        if let ClientTransport::Stdio(child) = &mut self.transport {
+            let _ = child.start_kill();
+        }
     }
 }
 
