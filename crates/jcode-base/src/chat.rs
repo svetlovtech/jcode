@@ -195,6 +195,10 @@ impl ChatServiceClient {
         let response = self
             .http
             .post(format!("{}/api/chat-service/question", self.base_url))
+            // Per-request timeout overrides the client-wide timeout so a
+            // long ask (e.g. timeout_seconds: 3600 for PRD sessions) is not
+            // cut off by the default [chat] timeout_secs budget.
+            .timeout(Duration::from_secs(timeout_secs.max(60) + 10))
             .bearer_auth(&self.token)
             .json(&payload)
             .send()
