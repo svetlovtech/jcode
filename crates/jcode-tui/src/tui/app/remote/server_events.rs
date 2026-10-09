@@ -2998,6 +2998,13 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
+        // Fork: the question was answered on another surface (Telegram won the
+        // race) - close the modal now instead of letting it swallow keys until
+        // its timeout. Mirrors the in-process BusEvent handler.
+        ServerEvent::AskQuestionResolved { answer, .. } => {
+            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
+            false
+        }
         _ => false,
     }
 }

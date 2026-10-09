@@ -973,6 +973,16 @@ pub(super) async fn handle_client(
                             }
                         });
                     }
+                    // Fork: an ask_user question was answered on another
+                    // surface (Telegram won the race) - tell remote clients to
+                    // close the interactive modal now instead of letting it
+                    // swallow keys until its timeout.
+                    Ok(BusEvent::AskQuestionResolved { request_id, answer }) => {
+                        let _ = client_event_tx.send(ServerEvent::AskQuestionResolved {
+                            request_id,
+                            answer,
+                        });
+                    }
                     _ => {}
                 }
                 continue;

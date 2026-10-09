@@ -47,6 +47,29 @@ impl ForkAskState {
         self.modal.as_ref()
     }
 
+    /// Fork fix: a terminal paste while the ask modal is open must land in the
+    /// modal's own-answer draft, not in the composer hidden behind the modal.
+    /// Multi-line pastes are flattened (the answer is a single line).
+    pub(super) fn modal_paste(&mut self, text: &str) {
+        let Some(modal) = self.modal.as_mut() else {
+            return;
+        };
+        let flat = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if flat.is_empty() {
+            return;
+        }
+        modal.custom_mode = true;
+        if !modal.custom_draft.is_empty() {
+            modal.custom_draft.push(' ');
+        }
+        modal.custom_draft.push_str(&flat);
+    }
+
     /// Whether a question is waiting for the user's typed answer.
     pub fn has_pending_prompt(&self) -> bool {
         self.pending_stdin.is_some()

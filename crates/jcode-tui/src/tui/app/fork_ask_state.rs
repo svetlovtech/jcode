@@ -933,6 +933,70 @@ mod tests {
     }
 
     #[test]
+    fn paste_while_modal_open_seeds_the_draft_and_enter_submits() {
+        // Fork fix regression: a paste used to bypass the modal into the
+        // hidden composer, so pasting an answer looked like nothing happened.
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
+        assert!(app.fork_ask.modal.is_some());
+
+        app.fork_ask.modal_paste("мой вариант\nиз нескольких строк");
+        let modal = app.fork_ask.modal.as_ref().unwrap();
+        assert!(modal.custom_mode);
+        assert_eq!(modal.custom_draft, "мой вариант из нескольких строк");
+        assert!(app.input.is_empty(), "paste must not leak into the composer");
+
+        assert!(super::super::fork_ask_keys::handle_modal_key(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::NONE
+        ));
+        let (_, answer) = app.fork_ask.staged_answer.clone().unwrap();
+        assert_eq!(answer, "мой вариант из нескольких строк");
+    }
+
+    #[test]
+    fn paste_without_open_modal_goes_to_the_composer() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        app.fork_ask.modal_paste("обычный текст");
+        assert!(app.fork_ask.modal.is_none());
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn wire_ask_question_resolved_event_closes_the_modal() {
+        // Fork fix regression: the daemon-side resolution used to be
+        // process-local only, so a Telegram answer left the remote client's
+        // modal open until its timeout.
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(true))), &mut remote);
+        assert!(app.fork_ask.modal.is_some());
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::AskQuestionResolved {
+                request_id: "ask-42".into(),
+                answer: "из Telegram".into(),
+            },
+            &mut remote,
+        );
+        assert!(app.fork_ask.modal.is_none());
+        assert!(app.fork_ask.pending_stdin.is_none());
+        let last = app.display_messages.last().unwrap();
+        assert!(last.content.contains("из Telegram"));
+    }
+
+    #[test]
     fn stdin_request_without_spec_keeps_textual_fallback() {
         let mut app = crate::tui::app::tests::create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();

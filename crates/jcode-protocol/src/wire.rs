@@ -1457,6 +1457,18 @@ pub enum ServerEvent {
         new_socket: Option<String>,
     },
 
+    /// Fork: an ask_user question was answered on another surface (e.g.
+    /// Telegram) while this client still shows the interactive modal.
+    /// The client must close its modal and drop the pending stdin
+    /// interception; `answer` carries the winning answer text.
+    #[serde(rename = "ask_question_resolved")]
+    AskQuestionResolved {
+        /// The StdinRequest request_id the pending modal belongs to
+        request_id: String,
+        /// The winning answer text (for the transcript note)
+        answer: String,
+    },
+
     /// Progress update during server reload
     #[serde(rename = "reload_progress")]
     ReloadProgress {

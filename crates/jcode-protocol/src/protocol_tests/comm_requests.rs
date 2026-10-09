@@ -167,6 +167,29 @@ fn test_stdin_request_event_with_ask_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_ask_question_resolved_event_roundtrip() -> Result<()> {
+    // Fork: the daemon forwards a Telegram-won ask_user answer to clients so
+    // they can close the interactive modal immediately.
+    let event = ServerEvent::AskQuestionResolved {
+        request_id: "ask-1758".to_string(),
+        answer: "Staging".to_string(),
+    };
+    let json = encode_event(&event);
+    assert!(
+        json.contains("ask_question_resolved"),
+        "unexpected json: {json}"
+    );
+
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::AskQuestionResolved { request_id, answer } = decoded else {
+        return Err(anyhow!("expected AskQuestionResolved"));
+    };
+    assert_eq!(request_id, "ask-1758");
+    assert_eq!(answer, "Staging");
+    Ok(())
+}
+
+#[test]
 fn test_stdin_request_event_ask_defaults_to_none() -> Result<()> {
     // Senders that predate the ask field omit it; it decodes as None so older
     // clients and prompts keep working.

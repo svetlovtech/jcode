@@ -554,7 +554,13 @@ async fn apply_terminal_event(
         Some(Ok(Event::Paste(text))) => {
             input_attribution.event = Some(format!("paste:{}", text.len()));
             app.note_client_interaction();
-            app.handle_paste(text);
+            // Fork: while the ask modal is open the paste IS the answer draft;
+            // routing it to the composer behind the modal looked like a hang.
+            if app.fork_ask.modal().is_some() {
+                app.fork_ask.modal_paste(&text);
+            } else {
+                app.handle_paste(text);
+            }
             needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
