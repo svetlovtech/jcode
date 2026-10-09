@@ -9,12 +9,12 @@ impl AskModal {
     pub fn key(
         &mut self,
         code: ratatui::crossterm::event::KeyCode,
-        _modifiers: ratatui::crossterm::event::KeyModifiers,
+        modifiers: ratatui::crossterm::event::KeyModifiers,
     ) -> AskModalAction {
         use ratatui::crossterm::event::KeyCode;
 
         if self.custom_mode {
-            return self.custom_mode_key(code);
+            return self.custom_mode_key(code, modifiers);
         }
 
         match code {
@@ -30,13 +30,30 @@ impl AskModal {
             KeyCode::Enter => self.enter_action(),
             KeyCode::Char(' ') => self.space_action(),
             KeyCode::Char(d @ '1'..='9') => self.digit_action(d),
+            KeyCode::Char(_) => {
+                // Fork fix: typing any printable character while the option
+                // list is on screen immediately opens the own-answer editor
+                // seeded with that character. Previously every letter was
+                // silently swallowed by the modal, so composing a free-form
+                // answer felt impossible (the "Свой вариант…" row required
+                // undiscoverable arrows+Enter navigation).
+                if let Some(text) = super::super::input::text_input_for_key(code, modifiers) {
+                    self.custom_mode = true;
+                    self.custom_draft.push_str(&text);
+                }
+                AskModalAction::None
+            }
             _ => AskModalAction::None,
         }
     }
 
     /// Keys while composing a free-form answer.
-    fn custom_mode_key(&mut self, code: ratatui::crossterm::event::KeyCode) -> AskModalAction {
-        use ratatui::crossterm::event::KeyCode;
+    fn custom_mode_key(
+        &mut self,
+        code: ratatui::crossterm::event::KeyCode,
+        modifiers: ratatui::crossterm::event::KeyModifiers,
+    ) -> AskModalAction {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
         match code {
             KeyCode::Esc => {
@@ -56,8 +73,18 @@ impl AskModal {
                 self.custom_draft.pop();
                 AskModalAction::None
             }
-            KeyCode::Char(ch) => {
-                self.custom_draft.push(ch);
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                // Readline muscle memory: clear the whole draft line.
+                self.custom_draft.clear();
+                AskModalAction::None
+            }
+            KeyCode::Char(_) => {
+                // Same printable-text normalization as the main composer, so
+                // Shift+letter yields uppercase and Ctrl chords insert
+                // nothing instead of stray control characters.
+                if let Some(text) = super::super::input::text_input_for_key(code, modifiers) {
+                    self.custom_draft.push_str(&text);
+                }
                 AskModalAction::None
             }
             _ => AskModalAction::None,

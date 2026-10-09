@@ -190,7 +190,8 @@ impl ForkAskOps<'_> {
 }
 
 /// Shared send path for staged and typed answers. On a send failure the
-/// pending request is restored so the user can retry.
+/// pending request stays armed and the answer is restored into the composer,
+/// so the user can retry with a single Enter instead of retyping it.
 async fn send_answer_for(
     app: &mut App,
     remote: &mut RemoteConnection,
@@ -206,7 +207,16 @@ async fn send_answer_for(
             )));
         }
         Err(err) => {
-            app.set_status_notice(format!("Не удалось отправить ответ: {err}"));
+            // Fork fix: the pending request stays armed (pending_stdin kept);
+            // restore the answer into the composer so the next Enter retries
+            // via the typed-answer path instead of losing it.
+            if app.input.trim().is_empty() && !answer.is_empty() {
+                app.input = answer.clone();
+                app.cursor_pos = app.input.len();
+            }
+            app.set_status_notice(format!(
+                "Не удалось отправить ответ: {err} — Enter для повтора"
+            ));
         }
     }
 }

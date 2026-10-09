@@ -1228,8 +1228,18 @@ pub(super) async fn handle_stdin_response(
     stdin_responses: &Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if let Some(tx) = stdin_responses.lock().await.remove(&request_id) {
-        let _ = tx.send(input);
+    // Fork fix: an unknown/expired request_id used to be swallowed silently,
+    // which looked like the answer never left the client (hang). Log it so a
+    // stale modal after a timeout is diagnosable from the server log.
+    match stdin_responses.lock().await.remove(&request_id) {
+        Some(tx) => {
+            let _ = tx.send(input);
+        }
+        None => {
+            crate::logging::warn(&format!(
+                "StdinResponse for unknown request_id={request_id} (already answered or timed out); ignoring"
+            ));
+        }
     }
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }

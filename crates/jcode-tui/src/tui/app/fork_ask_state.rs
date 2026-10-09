@@ -328,6 +328,74 @@ mod tests {
     }
 
     #[test]
+    fn typing_a_letter_on_the_list_opens_custom_mode_seeded_with_it() {
+        // Fork fix regression: previously letters were swallowed by the option
+        // list, so free-form answers felt impossible to type.
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        assert_eq!(
+            modal.key(KeyCode::Char('д'), KeyModifiers::NONE),
+            AskModalAction::None
+        );
+        assert!(modal.custom_mode, "letter must open the own-answer editor");
+        assert_eq!(modal.custom_draft, "д");
+        for ch in "а".chars() {
+            let _ = modal.key(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        assert_eq!(modal.custom_draft, "да");
+        assert_eq!(
+            modal.key(KeyCode::Enter, KeyModifiers::NONE),
+            AskModalAction::Submit("да".into())
+        );
+    }
+
+    #[test]
+    fn shift_letter_on_the_list_uppercases_the_seed() {
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        let _ = modal.key(KeyCode::Char('a'), KeyModifiers::SHIFT);
+        assert!(modal.custom_mode);
+        assert_eq!(modal.custom_draft, "A");
+    }
+
+    #[test]
+    fn ctrl_chord_on_the_list_does_not_open_custom_mode() {
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        let _ = modal.key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!modal.custom_mode, "Ctrl chords must not type into the draft");
+        assert!(modal.custom_draft.is_empty());
+    }
+
+    #[test]
+    fn space_on_single_select_list_still_toggles_nothing_and_digits_still_submit() {
+        // Digits keep instant-submit semantics; the new letter branch must not
+        // intercept them.
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        assert_eq!(
+            modal.key(KeyCode::Char('2'), KeyModifiers::NONE),
+            AskModalAction::Submit("Нет".into())
+        );
+    }
+
+    #[test]
+    fn custom_mode_ctrl_u_clears_the_draft() {
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        modal.custom_mode = true;
+        modal.custom_draft = "лишнее".into();
+        assert_eq!(
+            modal.key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            AskModalAction::None
+        );
+        assert_eq!(modal.custom_draft, "");
+    }
+
+    #[test]
+    fn custom_mode_ctrl_chord_does_not_insert_control_chars() {
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        modal.custom_mode = true;
+        let _ = modal.key(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(modal.custom_draft, "", "Ctrl+X must not insert 'x'");
+    }
+
+    #[test]
     fn custom_mode_esc_returns_to_list_without_closing() {
         let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
         modal.custom_mode = true;
@@ -505,6 +573,37 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("Esc к списку")),
             "custom mode hint should be rendered:\n{}",
+            lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn render_long_custom_draft_shows_its_tail() {
+        // Fork fix regression: long drafts used to show their truncated HEAD,
+        // hiding what the user was typing right now.
+        let mut modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        modal.cursor = modal.custom_row();
+        modal.custom_mode = true;
+        modal.custom_draft = "начало-черновика-который-точно-не-влезает хвост".into();
+        let lines = render_lines(&modal, 40, 20);
+        let text = lines.join("\n");
+        assert!(
+            text.contains("хвост"),
+            "draft tail must stay visible while typing:\n{text}"
+        );
+        assert!(
+            !text.contains("начало-черновика"),
+            "truncated head must give way to the tail:\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_list_hint_mentions_typing_own_text() {
+        let modal = AskModal::new("r1".into(), no_timeout(single_spec()));
+        let lines = render_lines(&modal, 100, 20);
+        assert!(
+            lines.iter().any(|l| l.contains("начните печатать")),
+            "list hint must tell the user free-form typing works:\n{}",
             lines.join("\n")
         );
     }

@@ -102,13 +102,14 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
     }
 
     if modal.custom_mode {
-        // One-line free-form input with cursor block.
+        // One-line free-form input with cursor block. Long drafts show their
+        // TAIL (what is being typed) instead of the head, mirroring terminal
+        // line-editing behavior; a leading ellipsis marks the truncated start.
+        let draft_width = inner_width.saturating_sub(4);
+        let draft_shown = tail_display(&modal.custom_draft, draft_width);
         lines.push(Line::from(vec![
             Span::styled("> ", Style::default().fg(accent)),
-            Span::raw(truncate_display(
-                &modal.custom_draft,
-                inner_width.saturating_sub(4),
-            )),
+            Span::raw(draft_shown),
             Span::styled("▏", Style::default().fg(accent)),
         ]));
         lines.push(Line::from(Span::styled(
@@ -197,9 +198,9 @@ pub fn draw_ask_modal(frame: &mut ratatui::Frame, modal: &AskModal) {
     let hint = if modal.custom_mode {
         "Enter отправить · Esc к списку"
     } else if spec.multiple {
-        "↑/↓ · Space/цифра отметить · Enter отправить · Esc без ответа"
+        "Space/цифра отметить · Enter · Esc · или начните печатать"
     } else {
-        "↑/↓ · цифра — быстрый выбор · Enter · Esc без ответа"
+        "↑/↓ или цифра · Enter · Esc · или начните печатать"
     };
     lines.push(Line::from(Span::styled(
         truncate_display(hint, inner_width),
@@ -245,6 +246,29 @@ pub(crate) fn truncate_display(text: &str, max_width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// Like [`truncate_display`], but keeps the tail of the text (what the user is
+/// currently typing) and marks the truncated start with a leading ellipsis.
+fn tail_display(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if unicode_width::UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    // Walk backwards until the kept tail (plus the leading ellipsis) fits.
+    let mut kept = String::new();
+    let mut used = 1usize; // the ellipsis
+    for ch in text.chars().rev() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > max_width {
+            break;
+        }
+        used += ch_width;
+        kept.insert(0, ch);
+    }
+    format!("…{kept}")
 }
 
 /// Word-wrap `text` into lines of at most `max_width` display columns.
