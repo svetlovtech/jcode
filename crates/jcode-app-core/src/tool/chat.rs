@@ -391,12 +391,12 @@ impl Tool for AskUserTool {
                     question_index: index + 1,
                     question_total: total,
                 };
-                let _ = stdin_tx.send(super::StdinInputRequest {
+                let _ = stdin_tx.send(crate::tool::StdinInputRequest {
                     request_id: request_id.clone(),
                     prompt: prompt_text,
                     is_password: false,
                     response_tx: answer_tx,
-                    source: super::StdinRequestSource::AskUser,
+                    source: crate::tool::StdinRequestSource::AskUser,
                     // Fork: carry structured ask spec.
                     ask: Some(ask_spec),
                 });
@@ -736,5 +736,234 @@ mod tests {
         };
         let err = tool.execute(input, ctx).await;
         assert!(err.is_err());
+    }
+
+    // ── Acceptance-path tests (fork) ─────────────────────────────────────────
+    // These drive the REAL AskUserTool::execute through the same dual-surface
+    // flow the daemon uses (stdin channel + chat service), with only the
+    // external AABEE HTTP endpoint stubbed on a real TCP socket. That stub is
+    // the honest external constraint: the production chat service is not
+    // reachable from tests.
+    //
+    // What is real here: AskUserTool::execute (spec building, ASK_USER_LOCK,
+    // request_id generation, dual-surface select!, losing-surface handling),
+    // the unbounded stdin channel + StdinInputRequest + oneshot reply (the
+    // exact wire the daemon forwards to TUI clients), the reqwest HTTP client
+    // and QuestionResponse parsing, and the wire AskSpec shape the TUI modal
+    // renders. Not covered by these tests: the daemon's socket framing and
+    // the TUI render loop (covered by handle_client socket tests and
+    // fork_ask_state seam tests respectively).
+
+    /// Serve /api/chat-service/* on a real TCP socket. For "question",
+    /// replies `{"answer":"<tg answer>"}`; records every request line.
+    /// For other endpoints replies 200 `{"stopped":true}`.
+    async fn chat_service_stub()
+    -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_task = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let seen = seen_task.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16384];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                    seen.lock().unwrap().push(request.clone());
+                    let first_line = request.lines().next().unwrap_or("").to_string();
+                    let body = if first_line.contains("/question/") {
+                        // stop endpoint
+                        "{\"stopped\":true}".to_string()
+                    } else if first_line.contains("POST /api/chat-service/question") {
+                        "{\"answer\":\"из Telegram\"}".to_string()
+                    } else {
+                        "{}".to_string()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    struct ChatEnvGuard {
+        prev_home: Option<std::ffi::OsString>,
+        /// Keeps the temp JCODE_HOME alive until drop; the path itself is read
+        // only during construction.
+        #[allow(dead_code)]
+        home: Option<tempfile::TempDir>,
+    }
+    impl ChatEnvGuard {
+        fn new(chat_url: &str) -> Self {
+            let prev_home = std::env::var_os("JCODE_HOME");
+            let home = tempfile::TempDir::new().expect("temp home");
+            std::fs::write(
+                home.path().join("config.toml"),
+                format!("[chat]\nurl = \"{chat_url}\"\ntoken = \"test-token\"\n"),
+            )
+            .expect("write config");
+            crate::env::set_var("JCODE_HOME", home.path());
+            // jcode-base is compiled without cfg(test) here; force the config
+            // cache to reload so [chat] pointing at the stub is visible now.
+            crate::config::invalidate_config_cache();
+            Self {
+                prev_home,
+                home: Some(home),
+            }
+        }
+    }
+    impl Drop for ChatEnvGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = self.prev_home.take() {
+                crate::env::set_var("JCODE_HOME", prev);
+            } else {
+                crate::env::remove_var("JCODE_HOME");
+            }
+            crate::config::invalidate_config_cache();
+        }
+    }
+
+    fn ask_ctx(
+        stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::tool::StdinInputRequest>>,
+    ) -> ToolContext {
+        ToolContext {
+            session_id: "session_ask_acceptance".into(),
+            message_id: "m".into(),
+            tool_call_id: "t".into(),
+            working_dir: None,
+            stdin_request_tx: stdin_tx,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::AgentTurn,
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_tui_answer_wins_and_closes_the_telegram_card() {
+        let _env_lock = crate::storage::lock_test_env();
+        let (url, seen) = chat_service_stub().await;
+        let _guard = ChatEnvGuard::new(&url);
+
+        // Real daemon wiring: tool -> unbounded channel -> (here) the test
+        // plays the TUI client: receive the StdinInputRequest, verify the wire
+        // ask spec, and reply through the oneshot exactly like
+        // Request::StdinResponse would after handle_stdin_response.
+        let (stdin_tx, mut stdin_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::tool::StdinInputRequest>();
+        let tool = AskUserTool::new();
+        let input = json!({
+            "question": "Какой вариант部署?",
+            "header": "Deploy",
+            "options": [
+                {"label": "Staging", "description": "test"},
+                {"label": "Production"}
+            ],
+            "timeout_seconds": 60
+        });
+
+        let tool_handle = tokio::spawn(async move { tool.execute(input, ask_ctx(Some(stdin_tx))).await });
+
+        let req = tokio::time::timeout(std::time::Duration::from_secs(10), stdin_rx.recv())
+            .await
+            .expect("stdin request must arrive (TUI surface armed)")
+            .expect("stdin channel closed");
+        assert_eq!(req.source, crate::tool::StdinRequestSource::AskUser);
+        assert!(!req.is_password);
+        assert!(req.request_id.starts_with("ask-"), "id was {}", req.request_id);
+        let spec = req.ask.expect("structured ask spec must accompany the request");
+        assert_eq!(spec.question, "Какой вариант部署?");
+        assert_eq!(spec.options.len(), 2);
+        assert_eq!(spec.options[0].label, "Staging");
+        assert_eq!(spec.timeout_secs, 60);
+        assert_eq!(spec.question_total, 1);
+
+        // The user types a free-form answer in the TUI modal.
+        req.response_tx
+            .send("свой вариант".to_string())
+            .expect("oneshot reply");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), tool_handle)
+            .await
+            .expect("tool timed out")
+            .expect("tool panicked")
+            .expect("tool errored");
+        assert!(
+            result.output.contains("свой вариант"),
+            "tool output must carry the typed answer: {}",
+            result.output
+        );
+
+        // Losing surface: the Telegram card must be closed (stop_question hit).
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let requests = seen.lock().unwrap().clone();
+        assert!(
+            requests.iter().any(|r| r.contains("/question/stop")),
+            "TUI win must close the Telegram card; requests seen: {requests:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_user_telegram_answer_wins_and_resolves_the_bus() {
+        let _env_lock = crate::storage::lock_test_env();
+        let (url, _seen) = chat_service_stub().await;
+        let _guard = ChatEnvGuard::new(&url);
+
+        let mut bus_rx = crate::bus::Bus::global().subscribe();
+        let (stdin_tx, mut stdin_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::tool::StdinInputRequest>();
+        let tool = AskUserTool::new();
+        let input = json!({
+            "question": "Продолжить?",
+            "options": [{"label": "Да"}, {"label": "Нет"}],
+            "timeout_seconds": 60
+        });
+
+        let tool_handle =
+            tokio::spawn(async move { tool.execute(input, ask_ctx(Some(stdin_tx))).await });
+
+        // The TUI surface is armed but never answers.
+        let req = tokio::time::timeout(std::time::Duration::from_secs(10), stdin_rx.recv())
+            .await
+            .expect("stdin request must arrive")
+            .expect("stdin channel closed");
+        assert_eq!(req.source, crate::tool::StdinRequestSource::AskUser);
+
+        // Telegram answers immediately (stub returns "из Telegram").
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), tool_handle)
+            .await
+            .expect("tool timed out")
+            .expect("tool panicked")
+            .expect("tool errored");
+        assert!(
+            result.output.contains("из Telegram"),
+            "Telegram answer must win the race: {}",
+            result.output
+        );
+
+        // The daemon path then publishes AskQuestionResolved so wire clients
+        // close their modal (fork fix ad8498c5c). Verify the bus event fires
+        // with the winning answer and the TUI request id.
+        let resolved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match bus_rx.recv().await {
+                    Ok(crate::bus::BusEvent::AskQuestionResolved { request_id, answer }) => {
+                        return (request_id, answer)
+                    }
+                    Ok(_) => continue,
+                    Err(e) => panic!("bus error: {e}"),
+                }
+            }
+        })
+        .await
+        .expect("AskQuestionResolved must be published when Telegram wins");
+        assert_eq!(resolved.0, req.request_id);
+        assert_eq!(resolved.1, "из Telegram");
     }
 }
