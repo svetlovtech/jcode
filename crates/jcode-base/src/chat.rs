@@ -240,10 +240,20 @@ pub struct InboxFileInfo {
 pub struct InboxListInfo {
     #[serde(default, rename = "files_count")]
     pub count: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_files")]
     pub files: Vec<InboxFileInfo>,
     #[serde(default)]
     pub expires_at: Option<String>,
+}
+
+/// The service serializes an empty inbox as `"files": null`; accept null as
+/// an empty list so empty listings parse instead of failing as malformed.
+fn deserialize_nullable_files<'de, D>(deserializer: D) -> Result<Vec<InboxFileInfo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let files: Option<Vec<InboxFileInfo>> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(files.unwrap_or_default())
 }
 
 /// Downloaded inbox file: raw bytes plus the server-provided metadata.
@@ -435,5 +445,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answer, "Deny");
+    }
+
+    #[test]
+    fn inbox_listing_accepts_null_files_as_empty() {
+        let info: InboxListInfo =
+            serde_json::from_str(r#"{"status":"empty","inbox_id":"","files_count":0,"files":null}"#)
+                .unwrap();
+        assert_eq!(info.count, 0);
+        assert!(info.files.is_empty());
     }
 }
