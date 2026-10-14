@@ -1,16 +1,13 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::companion_client::{CompanionError, CompanionRequest};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
-#[cfg(all(unix, not(target_os = "macos")))]
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
-const OPEN_GRACE_PERIOD_MS: u64 = 800;
+const COMPANION_TIMEOUT: Duration = Duration::from_secs(10);
 const URL_SCHEMES: &[&str] = &["http", "https", "mailto", "file"];
 
 pub struct OpenTool;
@@ -248,21 +245,55 @@ fn expand_home(path: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-async fn perform_open(target: &ResolvedTarget) -> Result<OpenOutcome> {
-    // On Wayland compositors that prevent focus stealing (e.g. niri), launching
-    // a URL via the system opener forwards it to the default browser, but the
-    // existing browser window is not raised. Snapshot the browser windows before
-    // opening so we can detect/raise the right one afterwards.
-    let is_url = matches!(target, ResolvedTarget::Url(_));
-    let focus_ctx = if is_url {
-        capture_browser_windows_before_open()
-    } else {
-        None
-    };
-    let backend = open_target(target).await?;
-    if is_url {
-        focus_browser_window_after_open(focus_ctx).await;
+/// Ask `jcode companion` (the user's desktop session) to do it, else fall back
+/// to the desktop of the machine this server runs on. The fallback keeps a
+/// standalone local `jcode` working without a companion. Returns the backend.
+async fn dispatch(
+    request: CompanionRequest,
+    local: impl std::future::Future<Output = Result<String>>,
+) -> Result<String> {
+    // Never open real windows from test binaries, and honor
+    // NO_BROWSER/JCODE_NO_BROWSER. Without this, agent-loop tests that
+    // exercise the open tool pop browsers/viewers on the developer's desktop.
+    if crate::auth::browser_suppressed(false) {
+        anyhow::bail!(
+            "opening files/URLs is suppressed (NO_BROWSER/JCODE_NO_BROWSER or test harness)"
+        );
     }
+    match crate::companion_client::request_async(request, COMPANION_TIMEOUT).await {
+        Ok(response) => Ok(format!("jcode companion ({})", response.message)),
+        Err(CompanionError::Unavailable) => local.await,
+        Err(error) => Err(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+fn desktop_target(target: &ResolvedTarget) -> jcode_desktop_open::Target {
+    match target {
+        ResolvedTarget::Url(url) => jcode_desktop_open::Target::Url(url.clone()),
+        ResolvedTarget::Local { path, kind } => jcode_desktop_open::Target::Local {
+            path: path.clone(),
+            kind: desktop_kind(*kind),
+        },
+    }
+}
+
+fn desktop_kind(kind: LocalTargetKind) -> jcode_desktop_open::LocalTargetKind {
+    match kind {
+        LocalTargetKind::File => jcode_desktop_open::LocalTargetKind::File,
+        LocalTargetKind::Directory => jcode_desktop_open::LocalTargetKind::Directory,
+    }
+}
+
+async fn perform_open(target: &ResolvedTarget) -> Result<OpenOutcome> {
+    let raw = match target {
+        ResolvedTarget::Url(url) => url.clone(),
+        ResolvedTarget::Local { path, .. } => path.to_string_lossy().into_owned(),
+    };
+    let local = desktop_target(target);
+    let backend = dispatch(CompanionRequest::Open { target: raw }, async move {
+        jcode_desktop_open::open_target(&local).await
+    })
+    .await?;
     let (message, metadata) = match target {
         ResolvedTarget::Url(url) => (
             format!("Opened {} in the default browser via {}.", url, backend),
@@ -307,7 +338,21 @@ async fn perform_reveal(target: &ResolvedTarget) -> Result<OpenOutcome> {
         anyhow::bail!("The reveal action only supports local filesystem paths");
     };
 
-    let (backend, selection_supported) = reveal_target(path, *kind).await?;
+    let local_path = path.clone();
+    let local_kind = desktop_kind(*kind);
+    let selection = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let selection_out = selection.clone();
+    let backend = dispatch(
+        CompanionRequest::Reveal { path: path.clone() },
+        async move {
+            let (backend, selected) =
+                jcode_desktop_open::reveal_target(&local_path, local_kind).await?;
+            selection_out.store(selected, std::sync::atomic::Ordering::Relaxed);
+            Ok(backend)
+        },
+    )
+    .await?;
+    let selection_supported = selection.load(std::sync::atomic::Ordering::Relaxed);
     let message = if *kind == LocalTargetKind::Directory {
         format!(
             "Opened folder {} in the file manager via {}.",
@@ -322,7 +367,7 @@ async fn perform_reveal(target: &ResolvedTarget) -> Result<OpenOutcome> {
         )
     } else {
         format!(
-            "Opened the containing folder for {} via {}. File selection is not supported on this platform.",
+            "Showed {} in the file manager via {}.",
             path.display(),
             backend,
         )

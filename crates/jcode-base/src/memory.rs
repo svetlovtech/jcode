@@ -983,7 +983,9 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
 
-        let sidecar = Sidecar::new();
+        let sidecar = crate::session::Session::load_startup_stub(session_id)
+            .map(|session| Sidecar::for_session(&session))
+            .unwrap_or_else(|_| Sidecar::new());
         let extracted = sidecar.extract_memories(transcript).await?;
 
         let mut ids = Vec::new();
@@ -1125,9 +1127,22 @@ impl MemoryManager {
         });
     }
 
-    /// Jev-only automatic recall. Storage and per-session dedup remain local;
-    /// there is no embedding, conventional LLM, or unjudged fallback path.
+    /// Automatic recall is globally disabled. Explicit recall remains available.
     pub async fn get_relevant_parallel(
+        &self,
+        session_id: &str,
+        _messages: &[crate::message::Message],
+        _event_tx: Option<MemoryEventSink>,
+    ) -> Result<MemoryRelevanceResult> {
+        // Automatic recall is disabled for everyone, including existing configs.
+        // Explicit memory-tool recall still uses memory_jev::recall directly.
+        clear_pending_memory(session_id);
+        Ok(MemoryRelevanceResult::default())
+    }
+
+    /// Retained Jev relevance pipeline for potential future opt-in recall.
+    #[allow(dead_code)]
+    pub(crate) async fn get_relevant_parallel_enabled(
         &self,
         session_id: &str,
         messages: &[crate::message::Message],

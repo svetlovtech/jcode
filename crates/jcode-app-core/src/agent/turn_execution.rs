@@ -2,6 +2,36 @@ use super::*;
 use crate::{terminal_eprintln as eprintln, terminal_println as println};
 
 impl Agent {
+    /// Refuse to run a model turn when this session moved to another machine
+    /// or this in-memory copy is older than the transcript on disk.
+    pub(crate) fn ensure_session_lease(&self) -> Result<()> {
+        let account_route = self
+            .session
+            .route_api_method
+            .as_deref()
+            .or(self.session.provider_key.as_deref());
+        if let Some(expected) = account_route.and_then(jcode_provider_core::oauth_account_label)
+            && self.provider.oauth_account_label().as_deref() != Some(expected)
+        {
+            anyhow::bail!(
+                "Saved account '{}' could not be restored for this session. Select an available account using /model or /login before sending a request.",
+                expected
+            );
+        }
+        match self.session.migration_lease_block() {
+            Some(block) => Err(anyhow::anyhow!("Session is not runnable here: {block}")),
+            None => Ok(()),
+        }
+    }
+
+    /// True when a newer migrated transcript replaced this copy on disk.
+    pub(crate) fn session_copy_is_stale(&self) -> bool {
+        matches!(
+            self.session.migration_lease_block(),
+            Some(crate::storage::SessionLeaseBlock::StaleCopy { .. })
+        )
+    }
+
     /// Run a single turn with the given user message
     pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
         self.announce_late_mcp_tools().await;
@@ -19,8 +49,14 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        let _ = self.run_turn(true).await?;
-        Ok(())
+        let turn_started_at = Instant::now();
+        let start_message_index = self.message_count();
+        self.fire_turn_start_hook("run");
+        let result = self.run_turn(true).await.map(|_| ());
+        // `jcode run` uses this path, so headless turns fire the same
+        // lifecycle hooks as streaming turns (docs/HOOKS.md).
+        self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
+        result
     }
 
     pub async fn run_once_capture(&mut self, user_message: &str) -> Result<String> {
@@ -95,11 +131,34 @@ impl Agent {
             );
         }
 
-        self.current_turn_system_reminder =
-            system_reminder.filter(|value| !value.trim().is_empty());
+        let system_reminder = system_reminder.filter(|value| !value.trim().is_empty());
+        // A reminder-only turn (e.g. reload recovery) used to persist an empty
+        // user message, so the model saw a blank prompt and asked about it.
+        // Carry the reminder as the turn's message instead.
+        let (user_message, system_reminder, display_role, continues_turn) = match system_reminder {
+            Some(reminder) if user_message.trim().is_empty() && images.is_empty() => (
+                std::borrow::Cow::Owned(format!("[auto] {}", reminder.trim())),
+                None,
+                display_role.or(Some(crate::session::StoredDisplayRole::System)),
+                true,
+            ),
+            reminder => (
+                std::borrow::Cow::Borrowed(user_message),
+                reminder,
+                display_role,
+                false,
+            ),
+        };
+        self.current_turn_system_reminder = system_reminder;
 
         self.announce_late_mcp_tools().await;
-        self.append_user_context_message_with_display_role(user_message, images, display_role)?;
+        self.announce_late_skills();
+        self.append_user_context_message_with_display_role(
+            &user_message,
+            images,
+            display_role,
+            continues_turn,
+        )?;
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
@@ -116,7 +175,7 @@ impl Agent {
         user_message: &str,
         images: Vec<(String, String)>,
     ) -> Result<()> {
-        self.append_user_context_message_with_display_role(user_message, images, None)
+        self.append_user_context_message_with_display_role(user_message, images, None, false)
     }
 
     fn append_user_context_message_with_display_role(
@@ -124,6 +183,9 @@ impl Agent {
         user_message: &str,
         images: Vec<(String, String)>,
         display_role: Option<crate::session::StoredDisplayRole>,
+        // A synthetic continuation (reload recovery) resumes the previous
+        // turn, so it must not start a new model-usage turn.
+        continues_turn: bool,
     ) -> Result<()> {
         let mut blocks: Vec<ContentBlock> = images
             .into_iter()
@@ -141,7 +203,7 @@ impl Agent {
             ));
         }
 
-        let starts_turn = blocks.len() > 1 || !user_message.trim().is_empty();
+        let starts_turn = !continues_turn && (blocks.len() > 1 || !user_message.trim().is_empty());
         let input_id = self.add_message_with_display_role(Role::User, blocks, display_role);
         if starts_turn {
             self.begin_model_usage_turn(&input_id);
@@ -193,6 +255,20 @@ impl Agent {
             const LAST_TEXT_LIMIT: usize = 4000;
             let snippet: String = text.chars().take(LAST_TEXT_LIMIT).collect();
             event = event.field("LAST_ASSISTANT_TEXT", snippet);
+        }
+        if let Some(usage) = turn_token_usage_after(&self.session.messages, start_message_index) {
+            if let Some(value) = usage.prompt_tokens {
+                event = event.field("PROMPT_TOKENS", value.to_string());
+            }
+            event = event
+                .field("INPUT_TOKENS", usage.input_tokens.to_string())
+                .field("OUTPUT_TOKENS", usage.output_tokens.to_string());
+            if let Some(value) = usage.cache_read_input_tokens {
+                event = event.field("CACHE_READ_TOKENS", value.to_string());
+            }
+            if let Some(value) = usage.cache_creation_input_tokens {
+                event = event.field("CACHE_WRITE_TOKENS", value.to_string());
+            }
         }
         if let Err(error) = result {
             const ERROR_LIMIT: usize = 1000;
@@ -822,6 +898,82 @@ impl Agent {
         self.announced_mcp_scan_index = self.session.messages.len();
     }
 
+    /// Announce skills installed after the session's system prompt was built.
+    ///
+    /// The "Available Skills" section is frozen per session (see
+    /// `prompt_skills_snapshot`) because rewriting the system prompt forces a
+    /// KV cache miss on the whole conversation. New skills are instead
+    /// described once, in a note appended before the next user message.
+    pub(crate) fn announce_late_skills(&mut self) {
+        if self.session.system_prompt.is_some() {
+            return;
+        }
+        self.seed_announced_skills_from_transcript();
+        let fresh: Vec<crate::prompt::SkillInfo> = self
+            .current_prompt_skill_infos()
+            .into_iter()
+            .filter(|skill| !self.announced_skills.contains(&skill.name))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        let mut text = format!("<system-reminder>\n{LATE_SKILL_ANNOUNCEMENT_MARKER} ");
+        text.push_str(
+            "They are not in the Available Skills list above but can be invoked with `/skillname` \
+             the same way:\n",
+        );
+        for skill in &fresh {
+            let description = skill
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            text.push_str(&format!("- `/{} ` - {}\n", skill.name, description));
+        }
+        text.push_str("</system-reminder>");
+        for skill in &fresh {
+            self.announced_skills.insert(skill.name.clone());
+        }
+        logging::info(&format!(
+            "Announcing {} late skill(s) in the transcript (system prompt stays cache-stable)",
+            fresh.len()
+        ));
+        self.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text,
+                cache_control: None,
+            }],
+        );
+        self.announced_skills_scan_index = self.session.messages.len();
+    }
+
+    /// Mark skills named in earlier announcements as announced, so a
+    /// restored session does not describe them again.
+    fn seed_announced_skills_from_transcript(&mut self) {
+        let start = self
+            .announced_skills_scan_index
+            .min(self.session.messages.len());
+        for message in &self.session.messages[start..] {
+            for block in &message.content {
+                if let ContentBlock::Text { text, .. } = block
+                    && text.contains(LATE_SKILL_ANNOUNCEMENT_MARKER)
+                {
+                    for line in text.lines() {
+                        if let Some(name) = line
+                            .strip_prefix("- `/")
+                            .and_then(|rest| rest.split(' ').next())
+                            .filter(|name| !name.is_empty())
+                        {
+                            self.announced_skills.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        self.announced_skills_scan_index = self.session.messages.len();
+    }
+
     /// Returns true if the registry contains `mcp__*` tools (subject to the
     /// session's `allowed_tools` filter) that are not present in the currently
     /// locked snapshot. Used to detect the async MCP-registration race (#206).
@@ -845,12 +997,70 @@ impl Agent {
         self.kv_cache_monitor.reset();
     }
 
+    pub(crate) async fn set_desktop_response_capability(&mut self, enabled: bool) {
+        let was_enabled = self
+            .registry
+            .tool_names()
+            .await
+            .iter()
+            .any(|n| n == "user_response");
+        if was_enabled != enabled {
+            self.registry.set_user_response_enabled(enabled).await;
+            self.invalidate_sdk_tools();
+        }
+    }
+
     pub async fn tool_names(&self) -> Vec<String> {
         self.tool_definitions_for_debug()
             .await
             .into_iter()
             .map(|tool| tool.name)
             .collect()
+    }
+
+    /// Per-server MCP tool names the session can see, for the client header's
+    /// `mcp:` inventory.
+    ///
+    /// Equivalent to filtering [`Self::tool_names`] for `mcp__*`, but reads only
+    /// registry keys: building full definitions (every schema, sorted, SDK
+    /// overlay applied) just to count names took up to ~40ms on the bootstrap
+    /// History path that gates the client's first settled frame.
+    pub async fn visible_mcp_tool_names(&self) -> Vec<String> {
+        // Mirrors `apply_mcp_tool_exposure`: on the fixed `mcp_search` /
+        // `mcp_call` surface per-server definitions are not exposed.
+        if !self.native_deferred_mcp()
+            && !matches!(self.mcp_tools_mode, crate::config::McpToolsMode::Eager)
+        {
+            return Vec::new();
+        }
+        let sdk = crate::tool::sdk::config(&self.session.id);
+        let enabled: Option<HashSet<String>> = sdk
+            .as_ref()
+            .and_then(|c| c.enabled.as_ref())
+            .map(|names| names.iter().cloned().collect());
+        let allowed = enabled.as_ref().or(self.allowed_tools.as_ref());
+        let sdk_disabled: HashSet<String> = sdk
+            .as_ref()
+            .map(|c| c.disabled.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut names: Vec<String> = self
+            .registry
+            .tool_names()
+            .await
+            .into_iter()
+            .filter(|name| name.starts_with("mcp__"))
+            .filter(|name| allowed.is_none_or(|set| self.registry.tool_is_allowed(set, name)))
+            .filter(|name| {
+                enabled.is_some()
+                    || self.disabled_tools.is_empty()
+                    || !self.registry.tool_is_disabled(&self.disabled_tools, name)
+            })
+            .filter(|name| {
+                sdk_disabled.is_empty() || !self.registry.tool_is_disabled(&sdk_disabled, name)
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     /// Get full tool definitions for debug introspection (bypasses lock)
@@ -1041,26 +1251,7 @@ impl Agent {
         let reset_ms = reset_start.elapsed().as_millis();
 
         let model_start = Instant::now();
-        if let Some(model) = self.session.model.clone() {
-            let model_request =
-                crate::provider::MultiProvider::model_switch_request_for_session_route(
-                    &model,
-                    self.session.provider_key.as_deref(),
-                    self.session.route_api_method.as_deref(),
-                );
-            if let Err(e) =
-                crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), &model_request)
-            {
-                logging::error(&format!(
-                    "Failed to restore session model '{}' via '{}': {}",
-                    model, model_request, e
-                ));
-            } else {
-                self.reconcile_explicit_provider_pin_route();
-            }
-        } else {
-            self.session.model = Some(self.provider_model());
-        }
+        self.restore_session_model_from_session();
         self.restore_reasoning_effort_from_session();
         let model_ms = model_start.elapsed().as_millis();
 
@@ -1341,7 +1532,7 @@ impl Agent {
         }
 
         // Extract using sidecar
-        let sidecar = crate::sidecar::Sidecar::new();
+        let sidecar = crate::sidecar::Sidecar::for_session(&self.session);
         match sidecar.extract_memories(&transcript).await {
             Ok(extracted) if !extracted.is_empty() => {
                 let manager = self
@@ -1384,6 +1575,60 @@ impl Agent {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TurnTokenUsage {
+    prompt_tokens: Option<u64>,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+}
+
+fn turn_token_usage_after(
+    messages: &[crate::session::StoredMessage],
+    start_message_index: usize,
+) -> Option<TurnTokenUsage> {
+    let mut usage = TurnTokenUsage {
+        prompt_tokens: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+    };
+    let mut saw_usage = false;
+
+    for message in messages.iter().skip(start_message_index) {
+        if !matches!(&message.role, Role::Assistant) {
+            continue;
+        }
+        let Some(message_usage) = message.token_usage.as_ref() else {
+            continue;
+        };
+
+        saw_usage = true;
+        let add = |acc: Option<u64>, v: Option<u64>| {
+            v.map(|v| acc.unwrap_or(0).saturating_add(v)).or(acc)
+        };
+        usage.prompt_tokens = add(usage.prompt_tokens, message_usage.prompt_tokens);
+        usage.input_tokens = usage
+            .input_tokens
+            .saturating_add(message_usage.input_tokens);
+        usage.output_tokens = usage
+            .output_tokens
+            .saturating_add(message_usage.output_tokens);
+        usage.cache_read_input_tokens = add(
+            usage.cache_read_input_tokens,
+            message_usage.cache_read_input_tokens,
+        );
+        usage.cache_creation_input_tokens = add(
+            usage.cache_creation_input_tokens,
+            message_usage.cache_creation_input_tokens,
+        );
+    }
+
+    saw_usage.then_some(usage)
+}
+
 /// Cap on tools listed in one late-MCP transcript announcement.
 const MAX_ANNOUNCED_MCP_TOOLS: usize = 32;
 
@@ -1398,3 +1643,11 @@ fn split_mcp_dispatch_name(name: &str) -> (&str, &str) {
 /// Stable header of the late-MCP transcript announcement; used to recognize
 /// earlier announcements when a session is restored.
 const LATE_MCP_ANNOUNCEMENT_MARKER: &str = "New MCP tools are available.";
+
+/// Stable header of the late-skill transcript announcement; used to recognize
+/// earlier announcements when a session is restored.
+const LATE_SKILL_ANNOUNCEMENT_MARKER: &str = "New skills were installed.";
+
+#[cfg(test)]
+#[path = "turn_token_usage_tests.rs"]
+mod turn_token_usage_tests;

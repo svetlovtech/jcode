@@ -767,6 +767,7 @@ impl AcpRuntime {
             .send(&Request::Subscribe {
                 system_prompt: None,
                 supports_pdf_panels: false,
+                supports_user_response: false,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: subscribe_id,
@@ -822,6 +823,7 @@ impl AcpRuntime {
             .send(&Request::Subscribe {
                 system_prompt: None,
                 supports_pdf_panels: false,
+                supports_user_response: false,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: resume_id,
@@ -1485,6 +1487,11 @@ impl EventMapper {
         match event {
             ServerEvent::TextDelta { text } => vec![agent_message_chunk(text)],
             ServerEvent::TextReplace { text } => vec![agent_message_chunk(text)],
+            // ACP chunks cannot retract prior output. Surface the corrected
+            // source links rather than silently discarding provider metadata.
+            ServerEvent::TextSuffixReplace { new_text, .. } => {
+                vec![agent_message_chunk(format!("\n{new_text}"))]
+            }
             ServerEvent::ToolStart { id, name } => {
                 self.current_tool_id = Some(id.clone());
                 self.tool_inputs.entry(id.clone()).or_default();

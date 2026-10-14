@@ -382,6 +382,7 @@ pub struct ToggleKeys {
     pub diagram_pane: ToggleBinding,
     pub typing_scroll_lock: ToggleBinding,
     pub diff_mode_cycle: ToggleBinding,
+    pub commit_log: ToggleBinding,
     pub info_widget: ToggleBinding,
     pub todo_card: ToggleBinding,
     pub swarm_panel_focus: ToggleBinding,
@@ -404,6 +405,7 @@ pub fn load_toggle_keys() -> ToggleKeys {
         diagram_pane: ToggleBinding::load(&cfg.keybindings.diagram_pane_toggle, 't'),
         typing_scroll_lock: ToggleBinding::load(&cfg.keybindings.typing_scroll_lock_toggle, 's'),
         diff_mode_cycle: ToggleBinding::load(&cfg.keybindings.diff_mode_cycle, 'g'),
+        commit_log: ToggleBinding::load(&cfg.keybindings.commit_log, 'g'),
         info_widget: ToggleBinding::load(&cfg.keybindings.info_widget_toggle, 'i'),
         todo_card: ToggleBinding::load(&cfg.keybindings.todo_card_toggle, 'x'),
         swarm_panel_focus: ToggleBinding::load_with_default(

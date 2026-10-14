@@ -3,6 +3,37 @@ use crate::logging;
 use crate::message::{Message, ToolDefinition};
 
 impl Agent {
+    pub(crate) fn runtime_skills_snapshot(&self) -> serde_json::Value {
+        let registry = self.current_skills_snapshot();
+        let mut loaded = registry.list();
+        loaded.sort_by(|a, b| a.name.cmp(&b.name));
+        let skills: Vec<_> = loaded
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "name": skill.name, "description": skill.description,
+                    "path": skill.path, "allowed_tools": skill.allowed_tools,
+                })
+            })
+            .collect();
+        let endorsed: Vec<_> = crate::skill::endorsed_skills().iter().map(|skill| serde_json::json!({
+            "name": skill.name, "description": skill.description, "category": skill.category,
+            "source": skill.source, "install": skill.install, "installed": registry.contains(skill.name),
+        })).collect();
+        serde_json::json!({"skills": skills, "endorsed": endorsed, "active_skill": self.active_skill})
+    }
+
+    pub(crate) fn runtime_agent_model_overrides(&self) -> serde_json::Value {
+        serde_json::json!(self.session.agent_model_overrides)
+    }
+
+    pub(crate) async fn runtime_context_snapshot(&self) -> serde_json::Value {
+        let mut context = self.debug_context().await;
+        context["messages"] = serde_json::json!(self.session.visible_conversation_messages());
+        context["context_window"] = serde_json::json!(self.provider_context_window());
+        context
+    }
+
     /// Explicitly prepare/freeze the same tool surface used by provider turns.
     /// Unlike `debug_context`, this may update the tool cache. It never calls a provider.
     pub async fn prepare_debug_context(&mut self) -> serde_json::Value {
@@ -133,15 +164,10 @@ impl Agent {
             .as_ref()
             .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
 
-        let available_skills: Vec<crate::prompt::SkillInfo> = self
-            .current_skills_snapshot()
-            .list()
-            .iter()
-            .map(|skill| crate::prompt::SkillInfo {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-            })
-            .collect();
+        // Frozen per session so skill installs never rewrite the cached
+        // system-prompt prefix; later installs are announced in the
+        // transcript instead (see `announce_late_skills`).
+        let available_skills = &self.prompt_skills_snapshot;
 
         let working_dir = self
             .session

@@ -117,6 +117,11 @@ pub struct DisplayConfig {
     /// sessions (issue #674).
     #[serde(default = "default_true")]
     pub external_sessions: bool,
+    /// Open `/resume` filtered to sessions from the current project (same dir,
+    /// subdirectories, sibling git worktrees) when it has any (default: false).
+    /// Resume is intentionally global by default; `s` cycles filters either way.
+    #[serde(default)]
+    pub resume_project_scope: bool,
     /// Usage percentage wording: "left" (default) or "used".
     pub usage_display: String,
     /// Style of the overscroll status footer: "classic" (default) or "pi"
@@ -171,6 +176,7 @@ impl Default for DisplayConfig {
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             external_sessions: true,
+            resume_project_scope: false,
             usage_display: "left".to_string(),
             footer_style: "classic".to_string(),
             timestamp_tz: String::new(),

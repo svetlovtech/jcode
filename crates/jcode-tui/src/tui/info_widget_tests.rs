@@ -1267,6 +1267,57 @@ fn swarm_widget_dock_mode_lists_managed_agents() {
     assert_eq!(h, 4, "compact height should be 2 content + 2 border: {h}");
 }
 
+#[test]
+fn swarm_dock_shows_current_todo_and_fills_width() {
+    let mut worker = managed_member("blowfish", "running", None);
+    worker.detail = Some("You work across the toolchain".to_string());
+    worker.todo_items = vec![
+        crate::protocol::SwarmTodoItem {
+            content: "Measure baseline".to_string(),
+            status: "completed".to_string(),
+            tool_intents: Vec::new(),
+        },
+        crate::protocol::SwarmTodoItem {
+            content: "Build the per-step ranking script for rustc passes".to_string(),
+            status: "in_progress".to_string(),
+            tool_intents: Vec::new(),
+        },
+    ];
+    let data = InfoWidgetData {
+        swarm_info: Some(SwarmInfo {
+            managed_members: vec![worker],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let width = 40u16;
+    let framed = super::render_swarm_widget(&data, Rect::new(0, 0, width, 10));
+    let title = lines_text_concat(framed.title.as_slice());
+    assert!(title.starts_with("🐝 1/1 active"), "icon only: {title}");
+    assert!(!title.contains("Swarm"), "no spelled-out label: {title}");
+    let row: String = framed.lines[0]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        row.contains(crate::id::session_icon("blowfish")),
+        "agent icon: {row}"
+    );
+    assert!(
+        !row.contains("blowfish"),
+        "no spelled-out agent name: {row}"
+    );
+    assert!(row.contains("Build the per-step"), "current todo: {row}");
+    assert!(!row.contains("..."), "single-char ellipsis: {row}");
+    // Truncated text fills the row instead of backing off to a word boundary.
+    assert_eq!(
+        unicode_width::UnicodeWidthStr::width(row.as_str()),
+        usize::from(width),
+        "{row}"
+    );
+}
+
 /// Without managed members the legacy session-list rendering is preserved and
 /// the widget stays out of layout (has_data_for is false).
 #[test]
@@ -1440,7 +1491,7 @@ fn background_widget_handles_empty_and_large_task_lists() {
         running_tasks: vec!["stale".to_string()],
         ..Default::default()
     };
-    assert!(super::render_background_compact(&info).is_empty());
+    assert!(super::render_background_compact(&info, 40).is_empty());
 
     // Large task list: summary + 3 rows + overflow line, no panic at tiny width.
     let info = BackgroundInfo {
@@ -1454,12 +1505,128 @@ fn background_widget_handles_empty_and_large_task_lists() {
         ..Default::default()
     };
     let lines = super::render_background_widget(&data, Rect::new(0, 0, 40, 8));
-    assert_eq!(lines.len(), 5, "summary + 3 tasks + overflow");
     let text = lines_text(&lines);
     assert!(text.contains("200 running"), "got: {text}");
-    assert!(text.contains("+197 more"), "got: {text}");
+    assert!(text.contains("+194 more"), "got: {text}");
     // Zero-size rect must not panic (row width clamps to a minimum).
     let _ = super::render_background_widget(&data, Rect::new(0, 0, 0, 0));
+}
+
+#[test]
+fn background_widget_renders_session_task_rows_with_progress() {
+    use crate::tui::{BackgroundTaskRow, BackgroundTaskRowStatus};
+    let row = |id: &str, label: &str, percent: Option<f32>, status| BackgroundTaskRow {
+        task_id: id.to_string(),
+        label: label.to_string(),
+        percent,
+        status,
+        completed_at: None,
+    };
+    let info = BackgroundInfo {
+        rows: vec![
+            row(
+                "a",
+                "integration tests",
+                Some(30.0),
+                BackgroundTaskRowStatus::Failed,
+            ),
+            row(
+                "b",
+                "release build",
+                Some(100.0),
+                BackgroundTaskRowStatus::Completed,
+            ),
+            row(
+                "c",
+                "cargo test",
+                Some(50.0),
+                BackgroundTaskRowStatus::Running,
+            ),
+        ],
+        ..Default::default()
+    };
+    let data = InfoWidgetData {
+        background_info: Some(info.clone()),
+        ..Default::default()
+    };
+    assert!(data.has_data_for(WidgetKind::BackgroundTasks));
+
+    let framed = super::render_background_widget(&data, Rect::new(0, 0, 40, 8));
+    let rows: Vec<String> = framed
+        .lines
+        .iter()
+        .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            "◌ cargo test  ━━━╺── 50%",
+            "✓ release build  ━━━━━━ 100%",
+            "× integration tests  ━━──── failed",
+        ]
+    );
+    let title = lines_text(framed.title.as_slice());
+    assert!(title.contains("Background · 1 running"), "got: {title}");
+
+    // Height-limited: newest rows first, the rest collapse into the footer.
+    let framed = super::render_background_widget(&data, Rect::new(0, 0, 40, 1));
+    assert_eq!(framed.lines.len(), 1);
+    assert!(lines_text(&framed.all_lines()).contains("+2 more"));
+
+    // Only finished tasks: still renders, without a running count.
+    let finished = InfoWidgetData {
+        background_info: Some(BackgroundInfo {
+            rows: vec![row(
+                "b",
+                "release build",
+                None,
+                BackgroundTaskRowStatus::Completed,
+            )],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let framed = super::render_background_widget(&finished, Rect::new(0, 0, 40, 4));
+    assert_eq!(lines_text(framed.title.as_slice()), "⏳ \nBackground");
+
+    // Compact (overview) form mirrors its computed height.
+    let compact = super::render_background_compact(&info, 40);
+    assert_eq!(compact.len(), 4);
+}
+
+#[test]
+fn running_background_task_outranks_passive_stat_widgets() {
+    use crate::tui::{BackgroundTaskRow, BackgroundTaskRowStatus};
+    let row = |status| BackgroundTaskRow {
+        task_id: "t".to_string(),
+        label: "cargo test".to_string(),
+        percent: Some(10.0),
+        status,
+        completed_at: None,
+    };
+    let with = |status| InfoWidgetData {
+        background_info: Some(BackgroundInfo {
+            rows: vec![row(status)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    for status in [
+        BackgroundTaskRowStatus::Running,
+        BackgroundTaskRowStatus::Failed,
+    ] {
+        let data = with(status);
+        let bg = data.effective_priority(WidgetKind::BackgroundTasks);
+        assert!(bg < data.effective_priority(WidgetKind::KvCache));
+        assert!(bg < data.effective_priority(WidgetKind::ModelInfo));
+        assert!(bg < data.effective_priority(WidgetKind::UsageLimits));
+        assert!(bg > data.effective_priority(WidgetKind::Todos));
+    }
+    let done = with(BackgroundTaskRowStatus::Completed);
+    assert_eq!(
+        done.effective_priority(WidgetKind::BackgroundTasks),
+        WidgetKind::BackgroundTasks.priority()
+    );
 }
 
 #[test]
@@ -1476,6 +1643,7 @@ fn background_widget_and_compact_share_summary_format() {
         progress_detail: Some("[#####-------] 42% · Building (parsed)".to_string()),
         memory_agent_active: false,
         memory_agent_turns: 0,
+        rows: Vec::new(),
     };
     let data = InfoWidgetData {
         background_info: Some(info.clone()),
@@ -1486,17 +1654,17 @@ fn background_widget_and_compact_share_summary_format() {
         &data,
         Rect::new(0, 0, 40, 1),
     ));
-    let compact_text = lines_text(&super::render_background_compact(&info));
+    let compact = super::render_background_compact(&info, 40);
+    let compact_text = lines_text(&compact);
 
     assert_eq!(widget_text, compact_text);
     assert!(widget_text.contains("Background"), "got: {widget_text}");
     assert!(widget_text.contains("4"), "got: {widget_text}");
     assert!(!widget_text.contains("mem:"), "got: {widget_text}");
     assert!(widget_text.contains("selfdev build"), "got: {widget_text}");
-    assert!(widget_text.contains("train.py"), "got: {widget_text}");
-    assert!(widget_text.contains("cargo test"), "got: {widget_text}");
-    assert!(widget_text.contains("+1 more"), "got: {widget_text}");
     assert!(widget_text.contains("[#####-------]"), "got: {widget_text}");
+    assert!(compact_text.contains("train.py"), "got: {compact_text}");
+    assert!(compact_text.contains("cargo test"), "got: {compact_text}");
 }
 
 #[test]
@@ -1725,4 +1893,372 @@ fn compact_page_height_matches_for_cost_based_usage() {
 
     let lines = super::render_page(InfoPageKind::CompactOnly, &data, inner);
     assert_eq!(lines.len() as u16, layout.pages[0].height);
+}
+
+/// Visual gallery: draws every text widget through the real
+/// `render_single_widget` path. Run with
+/// `cargo test -p jcode-tui --lib widget_gallery -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn widget_gallery() {
+    use super::{
+        AmbientWidgetData, CompactionInfo, DirtyFile, GitInfo, Side, WidgetPlacement,
+        render_single_widget,
+    };
+    let now = Instant::now();
+    let mut todos = vec![
+        todo_item("a", "wire Framed into render path", "completed", None),
+        todo_item("b", "convert every widget", "completed", None),
+        todo_item("c", "fix tests after refactor", "in_progress", None),
+        todo_item("d", "build and reload", "pending", None),
+        todo_item("e", "show gallery", "pending", None),
+        todo_item("f", "commit", "pending", None),
+        todo_item("g", "celebrate", "pending", None),
+    ];
+    todos[0].completion_confidence = Some(crate::todo::ConfidenceState::from_legacy_score(95));
+    let agent_file = std::path::PathBuf::from("/repo/src/tui/info_widget.rs");
+    let data = InfoWidgetData {
+        todos,
+        memory_info: Some(MemoryInfo {
+            total_count: 42,
+            project_count: 30,
+            global_count: 12,
+            activity: Some(MemoryActivity {
+                state: MemoryState::Idle,
+                state_since: now - Duration::from_secs(40),
+                pipeline: None,
+                recent_events: vec![MemoryEvent {
+                    kind: MemoryEventKind::MemoryInjected {
+                        count: 2,
+                        prompt_chars: 318,
+                        age_ms: 44,
+                        preview: "prefers terse answers".to_string(),
+                        items: Vec::new(),
+                    },
+                    timestamp: now - Duration::from_secs(30),
+                    detail: None,
+                }],
+            }),
+            ..Default::default()
+        }),
+        swarm_info: Some(SwarmInfo {
+            managed_members: {
+                let m = |id: &str, status: &str, role, detail: Option<&str>, todo, age| {
+                    let mut s = managed_member(id, status, role);
+                    s.detail = detail.map(str::to_string);
+                    s.output_tail = None;
+                    s.todo_progress = todo;
+                    s.status_age_secs = Some(age);
+                    s
+                };
+                vec![
+                    m(
+                        "lead",
+                        "running",
+                        Some("coordinator"),
+                        Some("waiting on reviewer"),
+                        Some((1, 3)),
+                        4,
+                    ),
+                    m(
+                        "builder",
+                        "running",
+                        None,
+                        Some("wiring commits widget"),
+                        Some((2, 5)),
+                        2,
+                    ),
+                    m(
+                        "reviewer",
+                        "failed",
+                        None,
+                        Some("cargo test failed: 3 tests"),
+                        None,
+                        40,
+                    ),
+                    m(
+                        "research",
+                        "completed",
+                        None,
+                        Some("mapped the swarm code"),
+                        None,
+                        300,
+                    ),
+                    m("docs", "ready", None, None, None, 90),
+                    m("lint", "completed", None, Some("clippy clean"), None, 600),
+                    m(
+                        "bench",
+                        "completed",
+                        None,
+                        Some("no regressions"),
+                        None,
+                        900,
+                    ),
+                ]
+            },
+            plan_progress: Some((4, 2, 9)),
+            ..Default::default()
+        }),
+        background_info: Some(BackgroundInfo {
+            running_count: 5,
+            running_tasks: vec![
+                "selfdev build".into(),
+                "cargo test -p jcode-tui".into(),
+                "train.py".into(),
+                "download weights".into(),
+                "lint".into(),
+            ],
+            progress_summary: Some("selfdev build".into()),
+            progress_detail: Some("[#####-------] 42% · Building".into()),
+            ..Default::default()
+        }),
+        compaction_info: Some(CompactionInfo {
+            is_compacting: false,
+            compacted_messages: 184,
+            active_messages: 36,
+            summary_chars: 9_800,
+            mode: "semantic".into(),
+        }),
+        ambient_info: Some(AmbientWidgetData {
+            show_widget: true,
+            status: crate::ambient::AmbientStatus::Running {
+                detail: "triaging issues".into(),
+            },
+            queue_count: 3,
+            next_queue_preview: Some("check CI on master".into()),
+            last_run_ago: Some("12m ago".into()),
+            next_wake: Some("in 18m".into()),
+            budget_percent: Some(0.62),
+            reminder_count: 0,
+            next_reminder_preview: None,
+            last_summary: None,
+            next_reminder_wake: None,
+        }),
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::Anthropic,
+            primary_limit_label: Some("5h".into()),
+            secondary_limit_label: Some("7d".into()),
+            five_hour: 0.34,
+            five_hour_resets_at: Some("2h 10m".into()),
+            seven_day: 0.61,
+            seven_day_resets_at: Some("3d".into()),
+            available: true,
+            ..Default::default()
+        }),
+        cache_hit_info: Some(CacheHitInfo {
+            reported_input_tokens: 20_000,
+            prompt_tokens: Some(38_000),
+            last_prompt_tokens: Some(10_000),
+            read_tokens: 15_000,
+            creation_tokens: 3_000,
+            optimal_input_tokens: 16_667,
+            last_reported_input_tokens: Some(10_000),
+            last_read_tokens: Some(9_400),
+            last_creation_tokens: Some(0),
+            last_optimal_input_tokens: Some(9_895),
+            miss_attributions: vec![
+                CacheMissAttribution {
+                    turn_number: 20,
+                    call_index: 1,
+                    missed_tokens: 69_000,
+                    reason: "provider switch".into(),
+                },
+                CacheMissAttribution {
+                    turn_number: 27,
+                    call_index: 2,
+                    missed_tokens: 12_000,
+                    reason: "system prompt changed".into(),
+                },
+            ],
+        }),
+        provider_name: Some("openai".into()),
+        service_tier: Some("priority".into()),
+        connection_type: Some("websocket".into()),
+        tokens_per_second: Some(61.7),
+        upstream_provider: Some("fireworks".into()),
+        session_name: Some("sunflower".into()),
+        session_count: Some(3),
+        git_info: Some(GitInfo {
+            branch: "master".into(),
+            modified: 9,
+            dirty_files: [
+                ('M', "src/tui/info_widget.rs", 240, 180),
+                ('A', "src/tui/info_widget_frame.rs", 274, 0),
+                ('M', "src/tui/info_widget_todos.rs", 40, 23),
+                ('M', "src/tui/info_widget_git.rs", 120, 46),
+                ('D', "src/tui/old_widget.rs", 0, 88),
+                ('M', "src/tui/info_widget_usage.rs", 30, 16),
+                ('M', "src/tui/info_widget_model.rs", 20, 12),
+            ]
+            .into_iter()
+            .map(|(status, path, a, r)| DirtyFile {
+                status,
+                path: path.into(),
+                added: Some(a),
+                removed: Some(r),
+                ..Default::default()
+            })
+            .collect(),
+            dirty_total: 9,
+            added_total: 760,
+            removed_total: 380,
+            repo_root: Some("/repo".into()),
+            ahead: 2,
+            recent_commits: {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                [
+                    (
+                        "e4b4d3a",
+                        "tui: swarm dock lists each agent",
+                        120,
+                        true,
+                        363,
+                        35,
+                    ),
+                    (
+                        "fdad464",
+                        "tui: add info widget gallery test",
+                        480,
+                        true,
+                        209,
+                        0,
+                    ),
+                    (
+                        "e205d0f",
+                        "tui: widgets put headers on borders",
+                        900,
+                        false,
+                        906,
+                        503,
+                    ),
+                    (
+                        "4f6bf8e",
+                        "replay reasoning before its text",
+                        4200,
+                        false,
+                        40,
+                        12,
+                    ),
+                    ("a526dd5", "tui: drop dot separators", 9000, false, 6, 9),
+                    ("e34070a", "Revert diagram pane cycle", 12000, false, 30, 44),
+                ]
+                .into_iter()
+                .map(|(hash, subject, ago, unpushed, a, r)| super::RecentCommit {
+                    hash: hash.into(),
+                    subject: subject.into(),
+                    timestamp: now - ago,
+                    unpushed,
+                    added: Some(a),
+                    removed: Some(r),
+                })
+                .collect()
+            },
+            ..Default::default()
+        }),
+        agent_edited: std::sync::Arc::new([agent_file].into_iter().collect()),
+        ..Default::default()
+    };
+
+    let kinds = [
+        WidgetKind::Todos,
+        WidgetKind::MemoryActivity,
+        WidgetKind::SwarmStatus,
+        WidgetKind::BackgroundTasks,
+        WidgetKind::Compaction,
+        WidgetKind::AmbientMode,
+        WidgetKind::UsageLimits,
+        WidgetKind::KvCache,
+        WidgetKind::ModelInfo,
+        WidgetKind::Tips,
+        WidgetKind::GitStatus,
+        WidgetKind::Commits,
+        WidgetKind::Overview,
+    ];
+    let width = 44u16;
+    for kind in kinds {
+        let cap = if kind == WidgetKind::Overview { 40 } else { 12 };
+        let mut h = calculate_widget_height(kind, &data, width, cap);
+        if h <= 2 {
+            // Ambient/Tips are gated off in layout; draw them anyway.
+            h = 8;
+        }
+        let backend = ratatui::backend::TestBackend::new(width, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let placement = WidgetPlacement {
+                    kind,
+                    rect: f.area(),
+                    side: Side::Left,
+                };
+                render_single_widget(f, &placement, &data);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        println!("{kind:?}");
+        for y in 0..h {
+            let row: String = (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            println!("{}", row.trim_end());
+        }
+        println!();
+    }
+}
+
+#[test]
+fn narrow_overview_background_row_keeps_progress_visible() {
+    use crate::tui::{BackgroundTaskRow, BackgroundTaskRowStatus};
+    use ratatui::{Terminal, backend::TestBackend};
+    let data = InfoWidgetData {
+        model: Some("claude-opus-5-5".into()),
+        background_info: Some(BackgroundInfo {
+            rows: vec![BackgroundTaskRow {
+                task_id: "t".into(),
+                label: "Live verification task".into(),
+                percent: Some(20.0),
+                status: BackgroundTaskRowStatus::Running,
+                completed_at: None,
+            }],
+            ..Default::default()
+        }),
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::Anthropic,
+            five_hour: 0.3,
+            seven_day: 0.5,
+            available: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (w, h) = (24u16, 9u16);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| {
+        super::render_all(
+            f,
+            &[super::WidgetPlacement {
+                kind: WidgetKind::Overview,
+                rect: Rect::new(0, 0, w, h),
+                side: super::Side::Right,
+            }],
+            &data,
+        )
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut out = String::new();
+    for y in 0..h {
+        for x in 0..w {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+    assert!(out.contains("◌ Live"), "{out}");
+    assert!(
+        out.contains("20%"),
+        "progress must fit at overview width:\n{out}"
+    );
 }

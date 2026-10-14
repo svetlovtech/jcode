@@ -1,3 +1,4 @@
+use super::response_recovery::{MalformedToolCallInfo, TextToolRecovery};
 use super::*;
 
 /// Largest byte index `<= index` that is a UTF-8 char boundary in `text`.
@@ -40,6 +41,35 @@ fn find_wrap_marker_incremental(accumulated: &str, appended_len: usize) -> Optio
         .filter_map(|marker| window.find(marker))
         .min()
         .map(|rel_idx| scan_start + rel_idx)
+}
+
+/// Report whatever usage a provider stream reported before it failed.
+///
+/// The normal `usage_report` is emitted after the stream completes. A stream
+/// that errors (or is retried after compaction) still consumed the tokens the
+/// provider already reported, so count them. `[input, output, cache_read,
+/// cache_creation]`; a no-op when nothing was reported.
+fn record_partial_stream_usage(
+    session_id: &str,
+    provider: &str,
+    model: &str,
+    [input, output, cache_read, cache_creation]: [Option<u64>; 4],
+) {
+    if input.is_none() && output.is_none() && cache_read.is_none() && cache_creation.is_none() {
+        return;
+    }
+    crate::telemetry::record_provider_usage(
+        Some(session_id),
+        provider,
+        model,
+        crate::telemetry::UsageSource::Agent,
+        crate::telemetry::ProviderUsage {
+            input_tokens: input.unwrap_or(0),
+            output_tokens: output.unwrap_or(0),
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+        },
+    );
 }
 
 fn reload_interrupted_tool_result(tc: &ToolCall, elapsed_secs: f64) -> (String, bool) {
@@ -116,6 +146,8 @@ impl Agent {
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
         let mut fable_guardrail_reconsiderations = 0u32;
+        let mut consecutive_malformed_tool_rounds = 0u32;
+        let mut unparsed_tool_markup_nudges = 0u32;
 
         loop {
             // Never open a new provider request after a cancel. Several paths
@@ -267,6 +299,9 @@ impl Agent {
             // model. Compare against this after the stream so we can emit a
             // `ModelChanged` and resync the UI/context-limit.
             let model_at_request_start = provider.model().to_string();
+            let credential_at_request_start = provider.active_resolved_credential();
+            let oauth_email_at_request_start =
+                crate::server::provider_oauth_email(provider.as_ref());
             let resume_session_id = self.provider_session_id.clone();
             self.last_status_detail = None;
             let kv_request = kv_cache_request_event(
@@ -303,9 +338,11 @@ impl Agent {
                             return Ok(());
                         }
                         result = &mut complete_future => {
+                            self.sync_bound_account_route();
                             match result {
                                 Ok(stream) => break stream,
                                 Err(e) => {
+                                    self.record_failed_account_route(&e.to_string());
                                     if self.try_auto_compact_after_context_limit(&e.to_string()) {
                                         context_limit_retries += 1;
                                         if context_limit_retries > Self::MAX_CONTEXT_LIMIT_RETRIES {
@@ -464,6 +501,18 @@ impl Agent {
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
+                        self.record_failed_account_route(&e.to_string());
+                        record_partial_stream_usage(
+                            &self.session.id,
+                            provider.name(),
+                            &model_at_request_start,
+                            [
+                                usage_input,
+                                usage_output,
+                                usage_cache_read,
+                                usage_cache_creation,
+                            ],
+                        );
                         let err_str = e.to_string();
                         if self.try_auto_compact_after_context_limit(&err_str) {
                             log_agent_provider_stream_lifecycle(
@@ -578,6 +627,87 @@ impl Agent {
                     }
                     StreamEvent::TextDone => {
                         let _ = event_tx.send(ServerEvent::TextDone);
+                    }
+                    StreamEvent::TextSuffixReplace { old_text, new_text } => {
+                        if provider_native_items.replace_text_suffix(
+                            &mut text_content,
+                            &old_text,
+                            &new_text,
+                        ) {
+                            if inline_output_tap {
+                                self.inline_tail.set_live(&text_content);
+                                self.publish_inline_tail();
+                            }
+                            let _ = event_tx
+                                .send(ServerEvent::TextSuffixReplace { old_text, new_text });
+                        }
+                    }
+                    StreamEvent::ProviderNative { provider, item } => {
+                        if reasoning_open {
+                            reasoning_open = false;
+                            let _ = event_tx.send(ServerEvent::ReasoningDone {
+                                duration_secs: None,
+                            });
+                        }
+                        // Render as a regular tool row: start, input, exec, done.
+                        use jcode_message_types::provider_native::ProviderNativeToolEvent;
+                        let already_open =
+                            jcode_message_types::provider_native::provider_native_display(
+                                &provider, &item,
+                            )
+                            .is_some_and(|display| provider_native_tracker.is_started(&display.id));
+                        match provider_native_tracker.observe(&provider, &item) {
+                            Some(ProviderNativeToolEvent::Started { id, name, input }) => {
+                                let _ = event_tx.send(ServerEvent::ToolStart {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                });
+                                let _ = event_tx.send(ServerEvent::ToolInput {
+                                    id: Some(id.clone()),
+                                    delta: input.to_string(),
+                                });
+                                let _ = event_tx.send(ServerEvent::ToolExec { id, name });
+                            }
+                            Some(ProviderNativeToolEvent::Completed {
+                                id,
+                                name,
+                                input,
+                                output,
+                                is_error,
+                            }) => {
+                                if !already_open {
+                                    // Result without a start (e.g. OpenAI items
+                                    // arrive whole): open the row first.
+                                    let _ = event_tx.send(ServerEvent::ToolStart {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                    });
+                                    let _ = event_tx.send(ServerEvent::ToolInput {
+                                        id: Some(id.clone()),
+                                        delta: input.to_string(),
+                                    });
+                                    let _ = event_tx.send(ServerEvent::ToolExec {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                    });
+                                }
+                                let _ = event_tx.send(ServerEvent::ToolDone {
+                                    id,
+                                    name,
+                                    output,
+                                    error: is_error.then(|| "Provider tool error".to_string()),
+                                });
+                            }
+                            None => {}
+                        }
+                        if let Some(display) =
+                            jcode_message_types::provider_native::provider_native_display(
+                                &provider, &item,
+                            )
+                        {
+                            tool_id_to_name.insert(display.id, display.name);
+                        }
+                        provider_native_items.push(text_content.len(), provider, item);
                     }
                     StreamEvent::TextDelta(text) => {
                         // Close any open reasoning region before real output so the
@@ -1138,7 +1268,6 @@ impl Agent {
             // context budget all reflect the model that actually served.
             let model_after_stream = self.provider.model();
             if model_after_stream != model_at_request_start {
-                let provider_name = self.provider.display_name();
                 logging::warn(&format!(
                     "Provider switched model mid-request: '{}' -> '{}' (resyncing session/UI)",
                     model_at_request_start, model_after_stream
@@ -1150,40 +1279,54 @@ impl Agent {
                     },
                 );
                 self.persist_session_best_effort("model fallback");
+            }
+            // Refresh authoritative credential identity after every upstream
+            // request, including auto credential resolution and OAuth failover.
+            let oauth_email_after_stream =
+                crate::server::provider_oauth_email(self.provider.as_ref());
+            let credential_after_stream = self.provider.active_resolved_credential();
+            if model_after_stream != model_at_request_start
+                || credential_after_stream != credential_at_request_start
+                || oauth_email_after_stream != oauth_email_at_request_start
+            {
                 let _ = event_tx.send(ServerEvent::ModelChanged {
                     id: 0,
                     model: model_after_stream,
-                    provider_name: Some(provider_name),
+                    provider_name: Some(self.provider.display_name()),
                     error: None,
-                    resolved_credential: self.provider.active_resolved_credential(),
+                    resolved_credential: credential_after_stream,
+                    provider_oauth_email: oauth_email_after_stream,
                     reasoning_effort: self.provider.reasoning_effort(),
                 });
             }
 
             let had_tool_calls_before = !tool_calls.is_empty();
-            self.recover_text_wrapped_tool_call(&mut text_content, &mut tool_calls);
+            let text_tool_recovery =
+                self.recover_text_wrapped_tool_call(&mut text_content, &mut tool_calls);
 
-            if !had_tool_calls_before
-                && !tool_calls.is_empty()
-                && let Some(tc) = tool_calls.last()
-                && tc.id.starts_with("fallback_text_call_")
-            {
+            if !had_tool_calls_before && text_tool_recovery == TextToolRecovery::Recovered {
                 let _ = event_tx.send(ServerEvent::TextReplace {
                     text: text_content.clone(),
                 });
-                let _ = event_tx.send(ServerEvent::ToolStart {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                });
-                tool_id_to_name.insert(tc.id.clone(), tc.name.clone());
-                let _ = event_tx.send(ServerEvent::ToolInput {
-                    id: Some(tc.id.clone()),
-                    delta: tc.input.to_string(),
-                });
-                let _ = event_tx.send(ServerEvent::ToolExec {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                });
+                // Markup envelopes can carry several calls, so announce each.
+                for tc in tool_calls
+                    .iter()
+                    .filter(|tc| tc.id.starts_with("fallback_text_call_"))
+                {
+                    let _ = event_tx.send(ServerEvent::ToolStart {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                    });
+                    tool_id_to_name.insert(tc.id.clone(), tc.name.clone());
+                    let _ = event_tx.send(ServerEvent::ToolInput {
+                        id: Some(tc.id.clone()),
+                        delta: tc.input.to_string(),
+                    });
+                    let _ = event_tx.send(ServerEvent::ToolExec {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                    });
+                }
             }
 
             // Add assistant message to history
@@ -1282,6 +1425,26 @@ impl Agent {
             // Injecting before tool_results would break the API requirement that
             // tool_use must be immediately followed by tool_result.
             if tool_calls.is_empty() {
+                // The model printed a tool call as markup we could not parse
+                // (issue #1702): say so visibly and ask it to re-issue the
+                // call natively instead of silently ending the turn.
+                if saw_message_end
+                    && !self.is_graceful_shutdown()
+                    && let Some(notice) = self.maybe_nudge_unparsed_tool_markup(
+                        &text_tool_recovery,
+                        stop_reason.as_deref(),
+                        &mut unparsed_tool_markup_nudges,
+                    )?
+                {
+                    let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
+                        content: notice,
+                        display_role: Some("system".to_string()),
+                        point: "B".to_string(),
+                        tools_skipped: None,
+                        client_ids: Vec::new(),
+                    });
+                    continue;
+                }
                 if saw_message_end
                     && !self.is_graceful_shutdown()
                     && self.maybe_reconsider_fable_guardrail(
@@ -1534,6 +1697,8 @@ impl Agent {
                 let allow_reload_handoff = tc.name == "bash";
                 let tool_result;
                 let mut tool_handle = tool_handle;
+                let running_tool_guard =
+                    crate::running_tool_registry::register(self.session_id(), &tc.id, &tc.name);
                 tokio::select! {
                     biased;
                     res = &mut tool_handle => {
@@ -1566,6 +1731,7 @@ impl Agent {
                         }
                     }
                 };
+                drop(running_tool_guard);
 
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
