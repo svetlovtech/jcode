@@ -634,9 +634,6 @@ pub(in crate::tui::app) fn handle_server_event(
 
     match event {
         ServerEvent::TextDelta { text } => {
-            // The turn continued -> the pending ask_user was answered elsewhere
-            // (e.g. Telegram) or timed out; stop intercepting typed input.
-            app.fork_ask_ops().clear_if_pending();
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
@@ -1129,6 +1126,13 @@ pub(in crate::tui::app) fn handle_server_event(
                 ));
             }
             app.schedule_queued_dispatch_after_interrupt();
+            // Esc redirect: the follow-up may live only in pending soft
+            // interrupts (not counted by has_queued_followups). Arm dispatch
+            // so recovery sends it as the next turn right away.
+            if app.remote_interrupt_ack_deadline.take().is_some() && app.has_pending_user_followup()
+            {
+                app.pending_queued_dispatch = true;
+            }
             app.push_display_message(DisplayMessage::system("Interrupted"));
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
@@ -1234,8 +1238,7 @@ pub(in crate::tui::app) fn handle_server_event(
                             title: None,
                             tool_data: None,
                             timestamp: None,
-                            tool_duration_ms: None,
-                        });
+                            tool_duration_ms: None,                        });
                     }
                     app.push_turn_footer(duration);
                 } else if app.has_streaming_footer_stats() {
@@ -1404,8 +1407,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     title: None,
                     tool_data: None,
                     timestamp: None,
-                    tool_duration_ms: None,
-                });
+                    tool_duration_ms: None,                });
             }
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
@@ -2105,8 +2107,8 @@ pub(in crate::tui::app) fn handle_server_event(
                                 duration_secs: None,
                                 title: None,
                                 tool_data: msg.tool_data,
-                                timestamp: None,
-                                tool_duration_ms: None,
+                                timestamp: msg.timestamp,
+                                tool_duration_ms: msg.tool_duration_ms,
                             })
                             .collect();
                         super::super::remote_notifications::normalize_swarm_delivery_messages(
@@ -2318,8 +2320,8 @@ pub(in crate::tui::app) fn handle_server_event(
                     duration_secs: None,
                     title: None,
                     tool_data: msg.tool_data,
-                    timestamp: None,
-                    tool_duration_ms: None,
+                    timestamp: msg.timestamp,
+                    tool_duration_ms: msg.tool_duration_ms,
                 })
                 .collect();
             app.apply_compacted_history_window(
@@ -2481,6 +2483,7 @@ pub(in crate::tui::app) fn handle_server_event(
             resolved_credential,
             provider_oauth_email,
             reasoning_effort,
+            context_window,
             ..
         } => {
             if app
@@ -2515,7 +2518,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     std::mem::take(&mut app.remote_session_facts_provisional);
                 let model_actually_changed = !had_provisional_facts
                     && app.remote_provider_model.as_deref() != Some(model.as_str());
-                app.update_context_limit_for_model(&model);
+                app.update_context_limit_for_model(&model, context_window);
                 app.remote_provider_model = Some(model.clone());
                 app.clear_remote_startup_phase();
                 if let Some(ref pname) = provider_name {
@@ -2539,7 +2542,9 @@ pub(in crate::tui::app) fn handle_server_event(
                         model
                     )));
                 }
-                app.set_status_notice(format!("Model → {}", model));
+                if model_actually_changed {
+                    app.set_status_notice(format!("Model → {}", model));
+                }
             }
             false
         }
@@ -2643,7 +2648,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 )));
             } else {
                 app.remote_service_tier = service_tier.clone();
-                let enabled = service_tier.as_deref() == Some("priority");
+                let enabled = app_mod::service_tier_is_fast(service_tier.as_deref());
                 let label = service_tier
                     .as_deref()
                     .map(app_mod::service_tier_display_label)
@@ -2653,7 +2658,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     app_mod::fast_mode_success_message(enabled, label, applies_next_request),
                 ));
                 app.set_status_notice(app_mod::fast_mode_status_notice(
-                    enabled,
+                    service_tier.as_deref(),
                     applies_next_request,
                 ));
             }
@@ -2726,9 +2731,8 @@ pub(in crate::tui::app) fn handle_server_event(
                         duration_secs: duration,
                         title: None,
                         tool_data: None,
-                        timestamp: None,
-                        tool_duration_ms: None,
-                    });
+                                timestamp: None,
+                                tool_duration_ms: None,                    });
                 }
                 app.push_turn_footer(duration);
             }
@@ -2766,8 +2770,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     title: None,
                     tool_data: None,
                     timestamp: None,
-                    tool_duration_ms: None,
-                });
+                    tool_duration_ms: None,                });
             }
             if let Some(n) = tools_skipped {
                 app.set_status_notice(format!("⚡ {} tool(s) skipped", n));
@@ -3152,45 +3155,8 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
-        ServerEvent::StdinRequest {
-            request_id,
-            prompt,
-            source,
-            ask,
-            ..
-        } => {
-            // Fork: ask_user surfaces its question in the chat and remembers
-            // the pending request so the user's next typed message is
-            // delivered as the answer (Request::StdinResponse).
-            if jcode_app_core::tool::StdinRequestSource::from_wire(&source)
-                == jcode_app_core::tool::StdinRequestSource::AskUser
-            {
-                // Fork: a structured ask spec opens the interactive modal;
-                // clients/daemons without the spec fall back to the textual
-                // prompt interception.
-                match ask {
-                    Some(spec) => app.fork_ask_ops().on_ask_prompt_with_spec(
-                        request_id.clone(),
-                        prompt.clone(),
-                        spec.into(),
-                    ),
-                    None => {
-                        app.fork_ask_ops()
-                            .on_ask_prompt(request_id.clone(), prompt.clone());
-                    }
-                }
-            } else {
-                // Upstream behavior: a running command wants stdin; do not
-                // intercept typed input for it.
-                app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
-            }
-            false
-        }
-        // Fork: the question was answered on another surface (Telegram won the
-        // race) - close the modal now instead of letting it swallow keys until
-        // its timeout. Mirrors the in-process BusEvent handler.
-        ServerEvent::AskQuestionResolved { answer, .. } => {
-            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
+        ServerEvent::StdinRequest { .. } => {
+            app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
             false
         }
         ServerEvent::PeerUserMessage { content } => {

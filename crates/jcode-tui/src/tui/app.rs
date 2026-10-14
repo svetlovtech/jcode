@@ -1017,6 +1017,9 @@ pub struct App {
     queued_followup_starved_since: Option<Instant>,
     // Reload reconnect is waiting for server history before deciding whether to continue.
     pending_reload_reconnect_status: Option<PendingReloadReconnectStatus>,
+    // While set, a queued Esc-redirect waits for the server's Interrupted event;
+    // on timeout the hold releases so the follow-up is never stranded.
+    remote_interrupt_ack_deadline: Option<Instant>,
     // Current status
     status: ProcessingStatus,
     // Subagent status (shown during Task tool execution)

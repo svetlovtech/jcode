@@ -707,7 +707,7 @@ impl App {
         if let Some(model) = snapshot.provider_model
             && self.remote_provider_model.as_deref() != Some(model.as_str())
         {
-            self.update_context_limit_for_model(&model);
+            self.update_context_limit_for_model(&model, None);
             self.remote_provider_model = Some(model);
             provider_meta_changed = true;
         }
@@ -3772,37 +3772,6 @@ impl App {
                         }
                         let _ = self.session.save();
                     }
-                    // Fork: /mcp picker toggle (connect/disconnect) via the
-                    // local McpManager; report lands through the same pending
-                    // channel as the /mcp slash command.
-                    PickerAction::McpServer { name } => {
-                        self.inline_interactive_state = None;
-                        // Fork: sessions attached to the daemon (wire clients)
-                        // do not own the McpManager - the daemon session does.
-                        // Route the toggle through the agent's own `mcp` tool
-                        // so one Enter still does the job without typing.
-                        if self.is_remote {
-                            let instruction = format!(
-                                "Use the mcp tool: first action \"list\" to check whether server \"{name}\" is connected, then action \"disconnect {name}\" if it is connected, otherwise \"connect {name}\". Report the result in one short sentence."
-                            );
-                            self.input = instruction;
-                            self.cursor_pos = self.input.len();
-                            self.submit_input();
-                            return Ok(());
-                        }
-                        let manager = Arc::clone(&self.mcp_manager);
-                        let registry = self.registry.clone();
-                        let (tx, rx) = std::sync::mpsc::channel::<String>();
-                        self.pending_mcp_command = Some(super::PendingMcpCommand { receiver: rx });
-                        self.set_status_notice("MCP command running...");
-                        tokio::spawn(async move {
-                            let report = super::mcp_command::toggle_server_blocking(
-                                &manager, &name, &registry,
-                            )
-                            .await;
-                            let _ = tx.send(report);
-                        });
-                    }
                     PickerAction::Model => {
                         if !route.available {
                             self.push_display_message(DisplayMessage::error(
@@ -3908,7 +3877,7 @@ impl App {
                                     self.status_detail = None;
                                     self.invalidate_model_picker_cache();
                                     let active_model = self.provider.model();
-                                    self.update_context_limit_for_model(&active_model);
+                                    self.update_context_limit_for_model(&active_model, None);
                                     self.session.provider_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
                                         &spec,
                                         self.provider.name(),
@@ -3965,6 +3934,11 @@ impl App {
                         });
                         // First-run onboarding: a model choice advances the flow.
                         self.onboarding_after_model_select();
+                    }
+                    PickerAction::McpServer { name } => {
+                        self.inline_interactive_state = None;
+                        self.set_status_notice(format!("MCP server: {}", name));
+                        let _ = name;
                     }
                 }
             }

@@ -457,7 +457,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                     }
                 }
             }
-            return copy_to_clipboard_osc52(text);
+            copy_to_clipboard_osc52(text)
         }
 
         // Linux has the same failure class (issue #504, Kali/X11): wl-copy fails
@@ -575,9 +575,36 @@ pub(super) fn effort_bar(index: usize, total: usize) -> String {
     bar
 }
 
+/// Status line for the speed-tier hotkey, e.g. "Speed: Fast ○●○".
+/// `at_end` carries the attempted direction when the tier could not move.
+pub(super) fn speed_tier_notice(
+    tier: &str,
+    index: usize,
+    total: usize,
+    at_end: Option<i8>,
+) -> String {
+    let label = service_tier_display_label(tier);
+    let bar = effort_bar(index, total);
+    match at_end {
+        Some(direction) => format!(
+            "Speed: {} {} (already at {})",
+            label,
+            bar,
+            if direction > 0 { "max" } else { "min" }
+        ),
+        None => format!("Speed: {} {}", label, bar),
+    }
+}
+
+/// True when the active tier is any accelerated tier (Fast or Ultrafast).
+pub(super) fn service_tier_is_fast(service_tier: Option<&str>) -> bool {
+    matches!(service_tier, Some("priority" | "fast" | "ultrafast"))
+}
+
 pub(super) fn service_tier_display_label(service_tier: &str) -> &str {
     match service_tier {
         "priority" | "fast" => "Fast",
+        "ultrafast" => "Ultrafast",
         "flex" => "Flex",
         // Explicit disable values persisted by "/fast default off" (issue
         // #506) and accepted by the OpenAI runtime.
@@ -602,8 +629,15 @@ pub(super) fn fast_mode_success_message(
     }
 }
 
-pub(super) fn fast_mode_status_notice(enabled: bool, applies_next_request: bool) -> String {
-    let status = if enabled { "on" } else { "off" };
+pub(super) fn fast_mode_status_notice(
+    service_tier: Option<&str>,
+    applies_next_request: bool,
+) -> String {
+    let status = match service_tier {
+        Some("ultrafast") => "ultra",
+        tier if service_tier_is_fast(tier) => "on",
+        _ => "off",
+    };
     if applies_next_request {
         format!("Fast: {} (next request)", status)
     } else {
@@ -934,13 +968,13 @@ pub(super) fn clipboard_image() -> Option<(String, String)> {
             .output()
         {
             let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if result == "ok" {
-                if let Ok(data) = std::fs::read(&temp_path) {
-                    let _ = std::fs::remove_file(&temp_path);
-                    if !data.is_empty() {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Some(("image/png".to_string(), b64));
-                    }
+            if result == "ok"
+                && let Ok(data) = std::fs::read(&temp_path)
+            {
+                let _ = std::fs::remove_file(&temp_path);
+                if !data.is_empty() {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    return Some(("image/png".to_string(), b64));
                 }
             }
         }
@@ -1556,7 +1590,12 @@ pub(crate) fn gather_git_info_in(dir: Option<&std::path::Path>) -> Option<GitInf
     let mut line_cache = GIT_LINE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     line_cache.begin_scan();
     for file in &mut all_files {
-        let key = file.path.rsplit(" -> ").next().unwrap_or(&file.path).trim_matches('"');
+        let key = file
+            .path
+            .rsplit(" -> ")
+            .next()
+            .unwrap_or(&file.path)
+            .trim_matches('"');
         let abs = repo_root.as_ref().map(|root| root.join(key));
         let metadata = abs
             .as_deref()
@@ -1612,7 +1651,49 @@ pub(crate) fn gather_git_info_in(dir: Option<&std::path::Path>) -> Option<GitInf
         added_total,
         removed_total,
         repo_root,
+        recent_commits,
     })
+}
+
+/// Parse `git log --shortstat --format=%x1e%h%x1f%ct%x1f%s`. The first
+/// `ahead` commits are the ones not yet on the upstream.
+pub(crate) fn parse_recent_commits(
+    text: &str,
+    ahead: usize,
+) -> Vec<crate::tui::info_widget::RecentCommit> {
+    text.split('\x1e')
+        .filter(|record| !record.trim().is_empty())
+        .enumerate()
+        .filter_map(|(index, record)| {
+            let mut lines = record.lines();
+            let mut fields = lines.next()?.splitn(3, '\x1f');
+            let hash = fields.next()?.trim().to_string();
+            let timestamp = fields.next()?.trim().parse().ok()?;
+            let subject = fields.next().unwrap_or("").trim().to_string();
+            let (mut added, mut removed) = (None, None);
+            // " 3 files changed, 12 insertions(+), 4 deletions(-)"
+            for part in lines.flat_map(|l| l.split(',')) {
+                let part = part.trim();
+                let n = part.split_whitespace().next().and_then(|n| n.parse().ok());
+                if part.contains("insertion") {
+                    added = n;
+                } else if part.contains("deletion") {
+                    removed = n;
+                } else if part.contains("changed") {
+                    added = added.or(Some(0));
+                    removed = removed.or(Some(0));
+                }
+            }
+            Some(crate::tui::info_widget::RecentCommit {
+                hash,
+                subject,
+                timestamp,
+                unpushed: index < ahead,
+                added,
+                removed,
+            })
+        })
+        .collect()
 }
 
 /// Parse `git diff --numstat` into path -> (added, removed). Binary files

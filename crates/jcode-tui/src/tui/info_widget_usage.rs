@@ -1,51 +1,48 @@
+use super::frame::{self, Framed};
 use super::{InfoWidgetData, UsageInfo, UsageProvider};
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+/// Border layout: `Claude limits` top-left with one bar per window in the
+/// body; cost-based providers put the dollar total on the top border.
+pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Framed {
     let Some(info) = &data.usage_info else {
-        return Vec::new();
+        return Framed::default();
     };
     if !info.available {
-        // Upstream: a pending/failed Anthropic refresh shows an explicit
-        // notice instead of silently hiding the widget.
-        if matches!(info.provider, UsageProvider::Anthropic) {
-            return vec![usage_unavailable_line()];
-        }
-        return Vec::new();
+        return if matches!(info.provider, UsageProvider::Anthropic) {
+            Framed::body(vec![usage_unavailable_line()]).title(frame::label("Anthropic limits"))
+        } else {
+            Framed::default()
+        };
     }
 
     match info.provider {
-        UsageProvider::Copilot => {
-            vec![Line::from(vec![Span::styled(
-                format!(
-                    "{} in + {} out",
-                    format_tokens(info.input_tokens),
-                    format_tokens(info.output_tokens)
-                ),
-                Style::default().fg(rgb(140, 140, 150)),
-            )])]
-        }
-        UsageProvider::CostBased => {
-            vec![
-                Line::from(vec![
-                    Span::styled("💰 ", Style::default().fg(rgb(140, 180, 255))),
-                    Span::styled(
-                        format!("${:.4}", info.total_cost),
-                        Style::default().fg(rgb(180, 180, 190)).bold(),
-                    ),
-                ]),
-                Line::from(vec![Span::styled(
-                    format!(
-                        "{} in + {} out",
-                        format_tokens(info.input_tokens),
-                        format_tokens(info.output_tokens)
-                    ),
-                    Style::default().fg(rgb(140, 140, 150)),
-                )]),
-            ]
-        }
+        UsageProvider::Copilot => Framed::body(vec![Line::from(vec![Span::styled(
+            format!(
+                "{} in + {} out",
+                format_tokens(info.input_tokens),
+                format_tokens(info.output_tokens)
+            ),
+            Style::default().fg(rgb(140, 140, 150)),
+        )])])
+        .title(frame::label("Copilot tokens")),
+        UsageProvider::CostBased => Framed::body(vec![Line::from(vec![Span::styled(
+            format!(
+                "{} in + {} out",
+                format_tokens(info.input_tokens),
+                format_tokens(info.output_tokens)
+            ),
+            Style::default().fg(rgb(140, 140, 150)),
+        )])])
+        .title(Line::from(vec![
+            Span::styled("💰 ", Style::default().fg(rgb(140, 180, 255))),
+            Span::styled(
+                format!("${:.4}", info.total_cost),
+                Style::default().fg(rgb(180, 180, 190)).bold(),
+            ),
+        ])),
         _ => {
             let five_hr_used = (info.five_hour * 100.0).round().clamp(0.0, 100.0) as u8;
             let seven_day_used = (info.seven_day * 100.0).round().clamp(0.0, 100.0) as u8;
@@ -63,14 +60,11 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
 
             let mut lines = Vec::new();
             let label = info.provider.label();
-            if !label.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!("{} limits", label),
-                    Style::default()
-                        .fg(rgb(140, 140, 150))
-                        .add_modifier(ratatui::style::Modifier::DIM),
-                )]));
-            }
+            let title = if label.is_empty() {
+                frame::label("Limits")
+            } else {
+                frame::label(format!("{} limits", label))
+            };
             if let Some(primary_label) = info.primary_limit_label.as_deref() {
                 lines.push(render_labeled_bar(
                     primary_label,
@@ -107,7 +101,7 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
                     data.usage_display_used,
                 ));
             }
-            lines
+            Framed::body(lines).title(title)
         }
     }
 }

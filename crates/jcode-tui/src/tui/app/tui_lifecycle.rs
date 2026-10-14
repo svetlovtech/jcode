@@ -492,6 +492,7 @@ impl App {
             remote_resume_activity: None,
             queued_followup_starved_since: None,
             pending_reload_reconnect_status: None,
+            remote_interrupt_ack_deadline: None,
             status: ProcessingStatus::default(),
             subagent_status: None,
             batch_progress: None,
@@ -962,6 +963,7 @@ impl App {
             remote_resume_activity: None,
             queued_followup_starved_since: None,
             pending_reload_reconnect_status: None,
+            remote_interrupt_ack_deadline: None,
             status: ProcessingStatus::default(),
             subagent_status: None,
             batch_progress: None,
@@ -1383,7 +1385,7 @@ impl App {
             .autojudge_enabled
             .unwrap_or(crate::config::config().autojudge.enabled);
         if let Some(model) = self.session.model.clone() {
-            self.update_context_limit_for_model(&model);
+            self.update_context_limit_for_model(&model, None);
         }
         self.follow_chat_bottom();
         crate::logging::info(&format!(

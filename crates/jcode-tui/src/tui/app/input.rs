@@ -1672,6 +1672,23 @@ impl App {
             || !self.hidden_queued_system_messages.is_empty()
     }
 
+    /// True when the user typed a follow-up prompt while this turn ran, and
+    /// it has not reached the model yet. Esc then means "stop this and run my
+    /// new prompt" rather than "stop everything", so the follow-up is kept
+    /// and auto-continuation stays on. Automatic pokes do not count.
+    pub(super) fn has_pending_user_followup(&self) -> bool {
+        self.interleave_message
+            .as_deref()
+            .is_some_and(|message| !message.trim().is_empty())
+            || self
+                .pending_soft_interrupts
+                .iter()
+                .any(|message| !message.trim().is_empty())
+            || self.queued_messages.iter().any(|message| {
+                !message.trim().is_empty() && !super::commands::is_poke_message(message)
+            })
+    }
+
     /// True when a startup submission is staged and ready to auto-send.
     ///
     /// Headed spawns (and reloads with a resume prompt) stage their initial
