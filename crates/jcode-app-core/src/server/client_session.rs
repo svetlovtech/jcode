@@ -1875,6 +1875,7 @@ pub(super) async fn handle_resume_session(
             let (
                 resumed_model,
                 resumed_provider_name,
+                resumed_context_window,
                 resumed_credential,
                 resumed_reasoning_effort,
             ) = {
@@ -1882,6 +1883,7 @@ pub(super) async fn handle_resume_session(
                 (
                     guard.provider_model(),
                     guard.provider_name(),
+                    guard.provider_context_window(),
                     guard.active_resolved_credential(),
                     guard.provider_reasoning_effort(),
                 )
@@ -1929,6 +1931,7 @@ pub(super) async fn handle_resume_session(
                 id,
                 model: resumed_model,
                 provider_name: Some(resumed_provider_name),
+                context_window: Some(resumed_context_window as u64),
                 error: None,
                 resolved_credential: resumed_credential,
                 provider_oauth_email: super::provider_oauth_email(

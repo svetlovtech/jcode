@@ -468,6 +468,8 @@ fn rendered_to_history_message(msg: crate::session::RenderedMessage) -> HistoryM
         } else {
             Some(msg.tool_calls)
         },
+        timestamp: msg.timestamp,
+        tool_duration_ms: msg.tool_duration_ms,
         tool_data: msg.tool_data,
     }
 }

@@ -592,12 +592,27 @@ pub struct RunResult {
     pub rebuild_session: Option<String>,
     /// Session ID to update (download from GitHub releases and reload)
     pub update_session: Option<String>,
+    /// After `/cloud` or `/local`: exec into the session at its new location.
+    pub cloud_handoff: Option<CloudHandoff>,
     /// Session ID to restart (exec into current binary, no build)
     pub restart_session: Option<String>,
     /// Exit code to use (for canary wrapper communication)
     pub exit_code: Option<i32>,
     /// The session ID that was active (for resume hints on exit)
     pub session_id: Option<String>,
+}
+
+/// Where to reattach after a machine move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudHandoff {
+    /// Attach to the session on a cloud host over SSH.
+    Remote {
+        session_id: String,
+        host: String,
+        working_dir: Option<String>,
+    },
+    /// Resume the (returned) session locally.
+    Local { session_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1143,6 +1158,7 @@ pub struct App {
     turn_reasoning_traces: Vec<TurnReasoningTrace>,
     // Hot-reload: if set, exec into new binary with this session ID (no rebuild)
     reload_requested: Option<String>,
+    cloud_handoff_requested: Option<CloudHandoff>,
     // Hot-rebuild: if set, do full git pull + cargo build + tests then exec
     rebuild_requested: Option<String>,
     // Update: if set, check for and download update from GitHub releases then exec

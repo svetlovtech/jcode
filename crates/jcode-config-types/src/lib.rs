@@ -1228,6 +1228,10 @@ pub struct KeybindingsConfig {
     pub effort_increase: String,
     /// Effort decrease key (default: "cmd+left" on macOS, "alt+left" elsewhere)
     pub effort_decrease: String,
+    /// Speed tier increase key, Standard -> Fast -> Ultrafast (default: "alt+up")
+    pub speed_increase: String,
+    /// Speed tier decrease key, Ultrafast -> Fast -> Standard (default: "alt+down")
+    pub speed_decrease: String,
     /// Centered mode toggle key (default: "alt+c")
     pub centered_toggle: String,
     /// Scroll to previous prompt key (default: "ctrl+[")
@@ -1256,6 +1260,8 @@ pub struct KeybindingsConfig {
     pub copy_selection_toggle: String,
     /// Toggle the diagram pane position (default: "alt+t")
     pub diagram_pane_toggle: String,
+    /// Show/hide the diagram pane (default: "alt+shift+m")
+    pub diagram_pane_visibility_toggle: String,
     /// Toggle typing scroll lock (default: "alt+s")
     pub typing_scroll_lock_toggle: String,
     /// Cycle inline diff display mode (default: unbound; use /diff)
@@ -1309,6 +1315,8 @@ impl Default for KeybindingsConfig {
             fallback_switch: get("fallback_switch", "ctrl+y"),
             effort_increase: get("effort_increase", "alt+right"),
             effort_decrease: get("effort_decrease", "alt+left"),
+            speed_increase: get("speed_increase", "alt+up"),
+            speed_decrease: get("speed_decrease", "alt+down"),
             centered_toggle: get("centered_toggle", "alt+c"),
             scroll_prompt_up: get("scroll_prompt_up", "ctrl+["),
             scroll_prompt_down: get("scroll_prompt_down", "ctrl+]"),
@@ -1323,6 +1331,7 @@ impl Default for KeybindingsConfig {
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
             diagram_pane_toggle: get("diagram_pane_toggle", "alt+t"),
+            diagram_pane_visibility_toggle: get("diagram_pane_visibility_toggle", "alt+shift+m"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
             diff_mode_cycle: get("diff_mode_cycle", ""),
             commit_log: get("commit_log", "alt+g"),

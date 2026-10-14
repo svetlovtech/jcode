@@ -353,10 +353,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                             auth::google::GmailAccessTier::ReadOnly
                         }
                     }),
-                    openai_compatible_api_base: api_base,
-                    openai_compatible_api_key: api_key,
-                    openai_compatible_api_key_env: api_key_env,
-                    openai_compatible_default_model: args.model.clone(),
+                    ..Default::default()
+                    
                 },
             )
             .await?;

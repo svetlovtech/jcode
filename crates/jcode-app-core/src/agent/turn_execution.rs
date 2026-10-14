@@ -35,6 +35,7 @@ impl Agent {
     /// Run a single turn with the given user message
     pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
         self.announce_late_mcp_tools().await;
+        self.announce_late_skills();
         let input_id = self.add_message(
             Role::User,
             vec![ContentBlock::Text {
@@ -70,6 +71,7 @@ impl Agent {
         display_role: Option<crate::session::StoredDisplayRole>,
     ) -> Result<String> {
         self.announce_late_mcp_tools().await;
+        self.announce_late_skills();
         let input_id = self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
@@ -507,25 +509,6 @@ impl Agent {
             self.registry.register_selfdev_tools().await;
         }
 
-        // Account sign-in/out and verified entitlement changes must reach the
-        // model even when the tool list is frozen (including deferred MCP).
-        // Only update this definition when its guidance actually changes.
-        if !crate::tool::sdk::custom(&self.session.id, "compile_remote")
-            && self
-                .locked_tools
-                .as_ref()
-                .is_some_and(|tools| tools.iter().any(|tool| tool.name == "compile_remote"))
-            && let Some(fresh) = self.registry.remote_compile_definition().await
-            && let Some(locked) = self.locked_tools.as_mut()
-            && let Some(previous) = locked.iter_mut().find(|tool| tool.name == "compile_remote")
-            && (previous.description != fresh.description
-                || previous.input_schema != fresh.input_schema)
-        {
-            *previous = fresh;
-            self.cache_tracker.reset();
-            self.kv_cache_monitor.reset();
-        }
-
         // Provider-native deferred MCP loading: MCP definitions live outside
         // the cached prefix, so the eager snapshot never changes when servers
         // connect, reconnect, or register late. Refresh the deferred subset
@@ -864,40 +847,6 @@ impl Agent {
         );
     }
 
-    /// Mark MCP tools the transcript already describes as announced: tools
-    /// loaded by a tool reference (`mcp connect` / `mcp_search` results carry
-    /// their schemas) and tools named in earlier announcements (which matters
-    /// after a session restore, when the in-memory set starts empty).
-    fn seed_announced_mcp_tools_from_transcript(&mut self) {
-        let start = self
-            .announced_mcp_scan_index
-            .min(self.session.messages.len());
-        for message in &self.session.messages[start..] {
-            for block in &message.content {
-                match block {
-                    ContentBlock::ToolReference { tool_name, .. } => {
-                        self.announced_mcp_tools.insert(tool_name.clone());
-                    }
-                    ContentBlock::Text { text, .. }
-                        if text.contains(LATE_MCP_ANNOUNCEMENT_MARKER) =>
-                    {
-                        for line in text.lines() {
-                            if let Some(name) = line
-                                .strip_prefix("- ")
-                                .and_then(|rest| rest.split(':').next())
-                                .filter(|name| name.starts_with("mcp__"))
-                            {
-                                self.announced_mcp_tools.insert(name.to_string());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        self.announced_mcp_scan_index = self.session.messages.len();
-    }
-
     /// Announce skills installed after the session's system prompt was built.
     ///
     /// The "Available Skills" section is frozen per session (see
@@ -972,6 +921,40 @@ impl Agent {
             }
         }
         self.announced_skills_scan_index = self.session.messages.len();
+    }
+
+    /// Mark MCP tools the transcript already describes as announced: tools
+    /// loaded by a tool reference (`mcp connect` / `mcp_search` results carry
+    /// their schemas) and tools named in earlier announcements (which matters
+    /// after a session restore, when the in-memory set starts empty).
+    fn seed_announced_mcp_tools_from_transcript(&mut self) {
+        let start = self
+            .announced_mcp_scan_index
+            .min(self.session.messages.len());
+        for message in &self.session.messages[start..] {
+            for block in &message.content {
+                match block {
+                    ContentBlock::ToolReference { tool_name, .. } => {
+                        self.announced_mcp_tools.insert(tool_name.clone());
+                    }
+                    ContentBlock::Text { text, .. }
+                        if text.contains(LATE_MCP_ANNOUNCEMENT_MARKER) =>
+                    {
+                        for line in text.lines() {
+                            if let Some(name) = line
+                                .strip_prefix("- ")
+                                .and_then(|rest| rest.split(':').next())
+                                .filter(|name| name.starts_with("mcp__"))
+                            {
+                                self.announced_mcp_tools.insert(name.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.announced_mcp_scan_index = self.session.messages.len();
     }
 
     /// Returns true if the registry contains `mcp__*` tools (subject to the
@@ -1320,6 +1303,8 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                timestamp: msg.timestamp,
+                tool_duration_ms: msg.tool_duration_ms,
             })
             .collect()
     }
@@ -1340,6 +1325,8 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                timestamp: msg.timestamp,
+                tool_duration_ms: msg.tool_duration_ms,
             })
             .collect();
         (history, images)
@@ -1370,6 +1357,8 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                timestamp: msg.timestamp,
+                tool_duration_ms: msg.tool_duration_ms,
             })
             .collect();
         (history, images, compacted_info)
@@ -1514,7 +1503,8 @@ impl Agent {
                     | ContentBlock::ReasoningTrace { .. }
                     | ContentBlock::AnthropicThinking { .. }
                     | ContentBlock::OpenAIReasoning { .. }
-                    | ContentBlock::ToolReference { .. } => {}
+                    | ContentBlock::ToolReference { .. }
+                    | ContentBlock::ProviderNative { .. } => {}
                     ContentBlock::Image { .. } => {
                         transcript.push_str("[Image]\n");
                     }

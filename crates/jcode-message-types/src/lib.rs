@@ -836,6 +836,14 @@ pub enum StreamEvent {
         tool_name: String,
         input: serde_json::Value,
     },
+    /// A complete provider-native (server-side) tool item, e.g. an Anthropic
+    /// `server_tool_use` or `web_search_tool_result` block. The provider has
+    /// already run the tool; consumers store it verbatim as
+    /// [`ContentBlock::ProviderNative`] for replay and render it for display.
+    ProviderNative {
+        provider: String,
+        item: serde_json::Value,
+    },
 }
 
 /// Apply a provider's late text correction only to an exact trailing match.

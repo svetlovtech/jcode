@@ -766,6 +766,7 @@ impl App {
         self.extract_session_memories().await;
 
         Ok(RunResult {
+            cloud_handoff: self.cloud_handoff_requested.take(),
             reload_session: self.reload_requested.take(),
             rebuild_session: self.rebuild_requested.take(),
             update_session: self.update_requested.take(),
@@ -1007,6 +1008,7 @@ impl App {
         }
 
         Ok(RunResult {
+            cloud_handoff: self.cloud_handoff_requested.take(),
             reload_session: self.reload_requested.take(),
             rebuild_session: self.rebuild_requested.take(),
             update_session: self.update_requested.take(),

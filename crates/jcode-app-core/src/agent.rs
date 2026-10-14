@@ -435,7 +435,7 @@ impl Agent {
             allowed_tools.clone(),
             disabled_tools.clone(),
         );
-        Self {
+        let mut agent = Self {
             provider,
             registry,
             skills,
@@ -478,7 +478,6 @@ impl Agent {
             transcript_telemetry_sent: false,
             concurrency_session: None,
         };
-        let mut agent = agent;
         agent.refresh_prompt_skills_snapshot();
         agent
     }
@@ -1282,7 +1281,7 @@ impl Agent {
                     ContentBlock::OpenAICompaction { .. } => {
                         md.push_str("[OpenAI native compaction]\n\n");
                     }
-                    ContentBlock::ToolReference { .. } => {}
+                    ContentBlock::ToolReference { .. } | ContentBlock::ProviderNative { .. } => {}
                 }
             }
         }

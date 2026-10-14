@@ -1490,11 +1490,6 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
     expand_paste_placeholders_with(&app.pasted_contents, input)
 }
 
-pub(super) fn queue_message(app: &mut App) {
-    let prepared = take_prepared_input(app);
-    app.queued_messages.push(prepared.expanded);
-}
-
 /// True for composer text that runs as a client command rather than a prompt:
 /// a slash command (`/compact`) or an input-line shell command (`!ls`).
 pub(super) fn is_queueable_command_input(input: &str) -> bool {

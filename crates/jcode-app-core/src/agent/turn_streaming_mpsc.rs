@@ -19,30 +19,6 @@ fn floor_char_boundary(text: &str, index: usize) -> usize {
 /// The wrapped-tool-call markers emitted by some models inside plain text.
 const WRAP_TOOL_MARKERS: [&str; 2] = ["to=functions.", "+#+#"];
 
-/// Find the first wrapped-tool-call marker in `accumulated`, scanning only the
-/// newly appended `delta` plus a short overlap from the previous tail (so a
-/// marker straddling the append boundary is still found).
-///
-/// This avoids re-scanning the entire accumulated response on every streamed
-/// delta, which was O(response) per token and O(response^2) over a full answer.
-fn find_wrap_marker_incremental(accumulated: &str, appended_len: usize) -> Option<usize> {
-    let max_marker_len = WRAP_TOOL_MARKERS
-        .iter()
-        .map(|marker| marker.len())
-        .max()
-        .unwrap_or(0);
-    let scan_start = accumulated
-        .len()
-        .saturating_sub(appended_len + max_marker_len.saturating_sub(1));
-    let scan_start = floor_char_boundary(accumulated, scan_start);
-    let window = &accumulated[scan_start..];
-    WRAP_TOOL_MARKERS
-        .iter()
-        .filter_map(|marker| window.find(marker))
-        .min()
-        .map(|rel_idx| scan_start + rel_idx)
-}
-
 /// Report whatever usage a provider stream reported before it failed.
 ///
 /// The normal `usage_report` is emitted after the stream completes. A stream
@@ -70,6 +46,30 @@ fn record_partial_stream_usage(
             cache_creation_input_tokens: cache_creation,
         },
     );
+}
+
+/// Find the first wrapped-tool-call marker in `accumulated`, scanning only the
+/// newly appended `delta` plus a short overlap from the previous tail (so a
+/// marker straddling the append boundary is still found).
+///
+/// This avoids re-scanning the entire accumulated response on every streamed
+/// delta, which was O(response) per token and O(response^2) over a full answer.
+fn find_wrap_marker_incremental(accumulated: &str, appended_len: usize) -> Option<usize> {
+    let max_marker_len = WRAP_TOOL_MARKERS
+        .iter()
+        .map(|marker| marker.len())
+        .max()
+        .unwrap_or(0);
+    let scan_start = accumulated
+        .len()
+        .saturating_sub(appended_len + max_marker_len.saturating_sub(1));
+    let scan_start = floor_char_boundary(accumulated, scan_start);
+    let window = &accumulated[scan_start..];
+    WRAP_TOOL_MARKERS
+        .iter()
+        .filter_map(|marker| window.find(marker))
+        .min()
+        .map(|rel_idx| scan_start + rel_idx)
 }
 
 fn reload_interrupted_tool_result(tc: &ToolCall, elapsed_secs: f64) -> (String, bool) {
@@ -128,6 +128,7 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
+        self.ensure_session_lease()?;
         self.set_log_context();
         let usage_turn_id = self.model_usage_turn_id();
         // Mark this session as actively streaming for presence UIs (e.g. the
@@ -158,6 +159,12 @@ impl Agent {
             // the interrupt was ignored (issue #732, regression of #428).
             if self.is_graceful_shutdown() {
                 logging::info("Cancel observed at turn-loop head - not starting another request");
+                break;
+            }
+            if let Some(block) = self.session.migration_lease_block() {
+                logging::info(&format!(
+                    "Session migrated mid-turn - stopping local turn loop: {block}"
+                ));
                 break;
             }
             let repaired = self.repair_missing_tool_outputs();
@@ -445,6 +452,12 @@ impl Agent {
             // to clients as a keepalive; throttles issue #451 keepalives.
             let mut hidden_activity_last = Instant::now();
             let mut openai_reasoning_items: Vec<ContentBlock> = Vec::new();
+            // Provider-executed tool items (e.g. native web search), stored
+            // verbatim at their position in the response for exact replay.
+            let mut provider_native_items =
+                jcode_message_types::provider_native::ProviderNativeItems::default();
+            let mut provider_native_tracker =
+                jcode_message_types::provider_native::ProviderNativeTracker::default();
             let mut openai_native_compaction: Option<(String, usize, Option<u64>)> = None;
             let mut tool_id_to_name: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
@@ -696,6 +709,7 @@ impl Agent {
                                     name,
                                     output,
                                     error: is_error.then(|| "Provider tool error".to_string()),
+                                    duration_ms: None,
                                 });
                             }
                             None => {}
@@ -987,6 +1001,8 @@ impl Agent {
                         reasoning_signature.clear();
                         reasoning_open = false;
                         openai_reasoning_items.clear();
+                        provider_native_items.clear();
+                        provider_native_tracker.clear();
                         openai_native_compaction = None;
                         saw_message_end = false;
                         stop_reason = None;
@@ -1100,6 +1116,17 @@ impl Agent {
                         message,
                         retry_after_secs,
                     } => {
+                        record_partial_stream_usage(
+                            &self.session.id,
+                            provider.name(),
+                            &model_at_request_start,
+                            [
+                                usage_input,
+                                usage_output,
+                                usage_cache_read,
+                                usage_cache_creation,
+                            ],
+                        );
                         if self.try_auto_compact_after_context_limit(&message) {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
@@ -1218,6 +1245,18 @@ impl Agent {
                     usage_cache_read,
                     usage_cache_creation,
                 );
+                crate::telemetry::record_provider_usage(
+                    Some(&self.session.id),
+                    provider.name(),
+                    &model_at_request_start,
+                    crate::telemetry::UsageSource::Agent,
+                    crate::telemetry::ProviderUsage {
+                        input_tokens: usage_input.unwrap_or(0),
+                        output_tokens: usage_output.unwrap_or(0),
+                        cache_read_input_tokens: usage_cache_read,
+                        cache_creation_input_tokens: usage_cache_creation,
+                    },
+                );
 
                 let input = usage_input.unwrap_or(0);
                 let output = usage_output.unwrap_or(0);
@@ -1293,6 +1332,7 @@ impl Agent {
                     id: 0,
                     model: model_after_stream,
                     provider_name: Some(self.provider.display_name()),
+                    context_window: Some(self.provider.context_window() as u64),
                     error: None,
                     resolved_credential: credential_after_stream,
                     provider_oauth_email: oauth_email_after_stream,
@@ -1331,7 +1371,9 @@ impl Agent {
 
             // Add assistant message to history
             let mut content_blocks = Vec::new();
-            if !text_content.is_empty() {
+            if !provider_native_items.is_empty() {
+                content_blocks.extend(provider_native_items.interleave(&text_content));
+            } else if !text_content.is_empty() {
                 content_blocks.push(ContentBlock::Text {
                     text: text_content.clone(),
                     cache_control: None,
@@ -1561,6 +1603,8 @@ impl Agent {
 
             // Execute tools and add results
             let tool_count = tool_calls.len();
+            let mut malformed_calls: Vec<MalformedToolCallInfo> = Vec::new();
+            let mut executed_valid_call = false;
             let mut tool_results_dirty = false;
             for tool_index in 0..tool_count {
                 // === INJECTION POINT C (before): Check for urgent abort before each tool (except first) ===
@@ -1607,13 +1651,17 @@ impl Agent {
                     .unwrap_or_else(|| self.session.id.clone());
 
                 if let Some(error_msg) = tc.validation_error() {
+                    malformed_calls.push(MalformedToolCallInfo {
+                        name: tc.name.clone(),
+                        error: error_msg.clone(),
+                    });
                     logging::warn(&error_msg);
                     let _ = event_tx.send(ServerEvent::ToolDone {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: error_msg.clone(),
                         error: Some(error_msg.clone()),
-                        duration_ms: None,
+                                    duration_ms: None,
                     });
                     self.add_message(
                         Role::User,
@@ -1627,6 +1675,10 @@ impl Agent {
                     continue;
                 }
 
+                // A call that passed validation is genuinely valid even if
+                // the tool itself later fails: it resets the malformed-round
+                // bound in handle_malformed_tool_round below.
+                executed_valid_call = true;
                 self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str());
@@ -1759,7 +1811,7 @@ impl Agent {
                                 name: tc.name.clone(),
                                 output: output.output.clone(),
                                 error: None,
-                                duration_ms: Some(tool_elapsed.as_millis() as u64),
+                                    duration_ms: None,
                             });
 
                             let side_pane_images =
@@ -1792,7 +1844,7 @@ impl Agent {
                                 name: tc.name.clone(),
                                 output: error_msg.clone(),
                                 error: Some(error_msg.clone()),
-                                duration_ms: Some(tool_elapsed.as_millis() as u64),
+                                    duration_ms: None,
                             });
 
                             self.add_message_with_duration(
@@ -1882,7 +1934,7 @@ impl Agent {
                         name: tc.name.clone(),
                         output: bg_msg.clone(),
                         error: None,
-                        duration_ms: Some(tool_elapsed.as_millis() as u64),
+                                    duration_ms: None,
                     });
 
                     self.add_message_with_duration(
@@ -1915,6 +1967,18 @@ impl Agent {
                 self.session.save()?;
             }
 
+            // Bounded recovery for repeated malformed tool calls (e.g. a
+            // model emitting null arguments): correct with the expected
+            // schema, then end the turn with an actionable error instead of
+            // retrying the same malformed round forever. Mirrors the blocking
+            // loop (turn_loops.rs) via the shared helper.
+            self.handle_malformed_tool_round(
+                &malformed_calls,
+                executed_valid_call,
+                &mut consecutive_malformed_tool_rounds,
+                &tools,
+            )?;
+
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.
@@ -1932,129 +1996,5 @@ impl Agent {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn abnormal_incomplete_stop_excludes_natural_completion() {
-        for reason in [None, Some("end_turn"), Some("stop")] {
-            assert!(super::incomplete_turn_stop(reason).is_none());
-        }
-        for reason in ["max_tokens", "length", "tool_use"] {
-            assert!(
-                matches!(super::incomplete_turn_stop(Some(reason)), Some(crate::protocol::ServerEvent::TurnStopped {
-                reason: crate::protocol::TurnStopReason::LimitReached,
-                provider_stop_reason: Some(raw), ..
-            }) if raw == reason)
-            );
-        }
-    }
-
-    use super::*;
-    use serde_json::json;
-
-    fn tool_call(name: &str, input: serde_json::Value) -> ToolCall {
-        ToolCall {
-            id: "toolu_test".to_string(),
-            name: name.to_string(),
-            input,
-            intent: None,
-            thought_signature: None,
-        }
-    }
-
-    #[test]
-    fn reload_interrupted_bg_wait_is_non_error_and_resumable() {
-        let tc = tool_call(
-            "bg",
-            json!({"action": "wait", "task_id": "bg-123", "max_wait_seconds": 300}),
-        );
-
-        let (message, is_error) = reload_interrupted_tool_result(&tc, 1.2);
-
-        assert!(!is_error);
-        assert!(message.contains("Resume the wait"));
-        assert!(message.contains("\"task_id\":\"bg-123\""));
-    }
-
-    #[test]
-    fn reload_interrupted_non_wait_tool_remains_error() {
-        let tc = tool_call("bash", json!({"command": "sleep 10"}));
-
-        let (message, is_error) = reload_interrupted_tool_result(&tc, 1.2);
-
-        assert!(is_error);
-        assert!(message.contains("interrupted by server reload"));
-    }
-
-    /// Reference O(n) full scan, preserving the original precedence: the
-    /// `to=functions.` marker is checked before `+#+#`.
-    fn find_wrap_marker_full(text: &str) -> Option<usize> {
-        text.find("to=functions.").or_else(|| text.find("+#+#"))
-    }
-
-    /// Simulate streaming `full` in arbitrary deltas and assert the incremental
-    /// scan finds the first marker position, matching a full rescan each step.
-    fn assert_incremental_matches(full: &str, chunk: usize) {
-        let mut acc = String::new();
-        let mut incremental_hit: Option<usize> = None;
-        let bytes = full.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            let mut end = (i + chunk).min(bytes.len());
-            while end < bytes.len() && !full.is_char_boundary(end) {
-                end += 1;
-            }
-            let delta = &full[i..end];
-            acc.push_str(delta);
-            if incremental_hit.is_none() {
-                incremental_hit = find_wrap_marker_incremental(&acc, delta.len());
-            }
-            i = end;
-        }
-        // The earliest of either marker in the full text.
-        let fn_pos = full.find("to=functions.");
-        let plus_pos = full.find("+#+#");
-        let expected = match (fn_pos, plus_pos) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        assert_eq!(
-            incremental_hit, expected,
-            "incremental scan mismatch for {full:?} chunk={chunk}"
-        );
-    }
-
-    #[test]
-    fn wrap_marker_incremental_detects_markers_across_chunk_sizes() {
-        let cases = [
-            "plain answer with no marker at all",
-            "answer then to=functions.foo({})",
-            "answer then +#+# wrapped",
-            "prefix +#+# and later to=functions.bar",
-            "unicode 🔄 résumé then to=functions.baz",
-            "",
-            "to=functions.first",
-            "+#+#",
-        ];
-        for case in cases {
-            for chunk in [1usize, 2, 3, 5, 7, 100] {
-                assert_incremental_matches(case, chunk);
-            }
-        }
-    }
-
-    #[test]
-    fn wrap_marker_incremental_finds_marker_straddling_delta_boundary() {
-        // Feed "to=functions." split right in the middle so the marker only
-        // exists once both halves are appended; the overlap window must catch it.
-        let mut acc = String::new();
-        acc.push_str("answer to=fun");
-        assert_eq!(
-            find_wrap_marker_incremental(&acc, "answer to=fun".len()),
-            None
-        );
-        acc.push_str("ctions.tool");
-        let hit = find_wrap_marker_incremental(&acc, "ctions.tool".len());
-        assert_eq!(hit, find_wrap_marker_full(&acc));
-        assert_eq!(hit, Some("answer ".len()));
-    }
-}
+#[path = "turn_streaming_mpsc_tests.rs"]
+mod tests;

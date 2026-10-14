@@ -81,6 +81,7 @@ pub(super) async fn run_replay(
     }
 
     Ok(RunResult {
+        cloud_handoff: None,
         reload_session: None,
         rebuild_session: None,
         update_session: None,

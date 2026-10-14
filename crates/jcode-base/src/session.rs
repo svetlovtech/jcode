@@ -49,7 +49,7 @@ pub use crash::{
     CrashedSessionsInfo, detect_crashed_sessions, find_recent_crashed_sessions,
     find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
 };
-pub use jcode_session_types::prompt_title;
+pub use {jcode_session_types::prompt_title, persistence::drain_saves_for_shutdown};
 pub use jcode_session_types::{
     EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
     StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,
@@ -1679,6 +1679,7 @@ request in this new forked session, using the inherited conversation only as con
         self.rebuild_memory_profile_cache();
         self.reset_provider_messages_cache();
         self.reset_persist_state(true);
+        self.persist_state.transcript_stripped = true;
     }
 
     /// Remove all ToolUse content blocks from a specific message.

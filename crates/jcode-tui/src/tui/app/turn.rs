@@ -328,6 +328,10 @@ impl App {
             let mut reasoning_content = String::new();
             let mut reasoning_signature = String::new();
             let mut openai_reasoning_items: Vec<ContentBlock> = Vec::new();
+            // Provider-executed tool items (e.g. native web search), stored
+            // verbatim at their position in the response for exact replay.
+            let mut provider_native_items =
+                crate::message::provider_native::ProviderNativeItems::default();
             let mut openai_native_compaction: Option<(String, usize)> = None;
 
             // Stream with input handling
@@ -1034,6 +1038,40 @@ impl App {
                                         self.status = ProcessingStatus::Streaming;
 
                                         sdk_tool_results.insert(tool_use_id, (content, is_error));
+                                    }
+                                    StreamEvent::ProviderNative { provider: native_provider, item } => {
+                                        if let Some(display) =
+                                            crate::message::provider_native::provider_native_display(
+                                                &native_provider,
+                                                &item,
+                                            )
+                                            && let Some(output) = display.output
+                                        {
+                                            self.pause_streaming_tps(false);
+                                            self.commit_pending_streaming_assistant_message();
+                                            let input = display
+                                                .input
+                                                .unwrap_or_else(|| provider_native_items.call_input(&display.id));
+                                            let tool_call = ToolCall {
+                                                intent: ToolCall::intent_from_input(&input),
+                                                id: display.id,
+                                                name: display.name,
+                                                input,
+                                                thought_signature: None,
+                                            };
+                                            self.push_display_message(DisplayMessage {
+                                                role: "tool".to_string(),
+                                                content: output,
+                                                tool_calls: vec![],
+                                                duration_secs: None,
+                                                title: None,
+                                                tool_data: Some(tool_call),
+                                                timestamp: Some(chrono::Utc::now()),
+                                                tool_duration_ms: None,
+                                            });
+                                            self.status = ProcessingStatus::Streaming;
+                                        }
+                                        provider_native_items.push(text_content.len(), native_provider, item);
                                     }
                                     StreamEvent::GeneratedImage {
                                         id,

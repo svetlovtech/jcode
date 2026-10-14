@@ -17,6 +17,7 @@ members = [
     "crates/jcode-auth-types",
     "crates/jcode-embedding",
     "crates/jcode-gateway-types",
+    "crates/jcode-export-core",
     "crates/jcode-import-core",
     "crates/jcode-pdf",
     "crates/jcode-logging",
@@ -193,6 +194,8 @@ jcode-build-meta = { path = "crates/jcode-build-meta" }
 # so the root feature set fully controls the downstream features (see
 # [features]).
 jcode-tui = { path = "crates/jcode-tui", default-features = false }
+# Fork: `jcode session export` + TUI /export; leaf crate (pure data + templates).
+jcode-export-core = { path = "crates/jcode-export-core" }
 jcode-terminal-prompt = { path = "crates/jcode-terminal-prompt" }
 jcode-voice = { path = "crates/jcode-voice" }
 jcode-companion = { path = "crates/jcode-companion" }

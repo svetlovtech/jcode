@@ -1610,6 +1610,15 @@ pub enum ServerEvent {
         /// key). Lets clients update the auth badge on an OAuth<->API switch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_credential: Option<jcode_provider_core::ResolvedCredential>,
+        /// The server's resolved context window for the active route, in tokens.
+        ///
+        /// A remote client cannot derive this itself: its local provider is an
+        /// inert placeholder with no model catalog, so asking it returns the
+        /// generic 200K default. The server owns the real provider, so it
+        /// reports the number directly. Omitted when unknown, so older peers
+        /// stay compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
         /// Effective OAuth identity for the selected model-provider account.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_oauth_email: Option<ProviderOAuthEmail>,
