@@ -87,6 +87,12 @@ pub use active_pids::{
     unregister_active_pid, user_session_counts, user_session_presence,
 };
 
+mod session_lease;
+pub use session_lease::{
+    SessionLease, SessionLeaseBlock, read_session_lease, remove_session_lease, session_lease_block,
+    session_leases_dir, write_session_lease,
+};
+
 /// Platform-aware runtime directory for sockets and ephemeral state.
 ///
 /// - Linux: `$XDG_RUNTIME_DIR` (typically `/run/user/<uid>`)

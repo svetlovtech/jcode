@@ -168,8 +168,35 @@ pub fn build_compaction_conversation_text(
             Role::Assistant => "Assistant",
         };
         conversation_text.push_str(&format!("**{}:**\n", role_str));
+        let mut native_call_inputs: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
         for block in &msg.content {
             match block {
+                ContentBlock::ProviderNative { provider, item } => {
+                    use jcode_message_types::provider_native;
+                    let Some(display) = provider_native::provider_native_display(provider, item)
+                    else {
+                        continue;
+                    };
+                    if display.output.is_none() {
+                        if let Some(input) = display.input {
+                            native_call_inputs.insert(display.id, input);
+                        }
+                        continue;
+                    }
+                    if let Some(text) = provider_native::provider_native_text_fallback(
+                        provider,
+                        item,
+                        native_call_inputs.get(&display.id),
+                    ) {
+                        let truncated = if text.len() > 500 {
+                            format!("{}... (truncated)", truncate_str_boundary(&text, 500))
+                        } else {
+                            text
+                        };
+                        conversation_text.push_str(&format!("[Result: {}]\n", truncated));
+                    }
+                }
                 ContentBlock::Text { text, .. } => {
                     conversation_text.push_str(text);
                     conversation_text.push('\n');
@@ -328,6 +355,9 @@ pub fn content_char_count(content: &[ContentBlock]) -> usize {
             // The provider expands a reference into the full definition, but
             // that definition is already accounted for by the tool catalog.
             ContentBlock::ToolReference { tool_name, .. } => tool_name.len() + 20,
+            // Search results are billed as input tokens on replay; the raw JSON
+            // (mostly encrypted page content) is a reasonable size proxy.
+            ContentBlock::ProviderNative { item, .. } => item.to_string().len(),
         })
         .sum()
 }
@@ -645,6 +675,28 @@ pub fn emergency_strip_large_images(messages: &mut [Message], target_total_chars
     let mut contents: Vec<&mut Vec<ContentBlock>> =
         messages.iter_mut().map(|m| &mut m.content).collect();
     strip_large_images_in_contents(&mut contents, target_total_chars)
+}
+
+/// Replace every inline image with a short text note. Used after a provider
+/// rejected an image so the retried request carries none. Returns the number
+/// of images replaced.
+pub fn strip_all_images_in_contents(contents: &mut [&mut Vec<ContentBlock>]) -> usize {
+    let mut stripped = 0;
+    for content in contents.iter_mut() {
+        for block in content.iter_mut() {
+            if let ContentBlock::Image { media_type, .. } = block {
+                let media_type = media_type.clone();
+                *block = ContentBlock::Text {
+                    text: format!(
+                        "[Image omitted: the provider rejected an image in this conversation (media_type={media_type}). Re-open or re-screenshot it in PNG/JPEG if visual details are needed.]"
+                    ),
+                    cache_control: None,
+                };
+                stripped += 1;
+            }
+        }
+    }
+    stripped
 }
 
 /// Core of [`emergency_strip_large_images`], operating directly on a slice of

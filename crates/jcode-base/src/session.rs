@@ -205,6 +205,10 @@ pub struct Session {
     /// Non-conversation UI/state events persisted for higher-fidelity replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replay_events: Vec<StoredReplayEvent>,
+    /// Migration epoch of the machine move that delivered this copy
+    /// (`jcode cloud move` / `return`). Zero for sessions that never moved.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub migration_epoch: u64,
     #[serde(skip)]
     persist_state: SessionPersistState,
     #[serde(skip)]
@@ -276,6 +280,8 @@ struct SessionStartupStub {
     saved: bool,
     #[serde(default)]
     save_label: Option<String>,
+    #[serde(default)]
+    migration_epoch: u64,
 }
 
 const MAX_SESSION_JOURNAL_BYTES: u64 = 512 * 1024;
@@ -300,6 +306,10 @@ fn env_flag_enabled(name: &str) -> bool {
 
 fn default_is_test_session() -> bool {
     env_flag_enabled("JCODE_TEST_SESSION")
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 pub fn derive_session_provider_key(provider_name: &str) -> Option<String> {
@@ -372,12 +382,14 @@ impl Session {
         session.is_debug = stub.is_debug;
         session.saved = stub.saved;
         session.save_label = stub.save_label;
+        session.migration_epoch = stub.migration_epoch;
         session.messages.clear();
         session.env_snapshots.clear();
         session.memory_injections.clear();
         session.replay_events.clear();
         session.rebuild_memory_profile_cache();
         session.reset_persist_state(true);
+        session.persist_state.transcript_stripped = true;
         session
     }
 
@@ -549,6 +561,7 @@ impl Session {
             is_debug: self.is_debug,
             saved: self.saved,
             save_label: self.save_label.clone(),
+            migration_epoch: self.migration_epoch,
         }
     }
 
@@ -564,6 +577,7 @@ impl Session {
             memory_injections_mode: PersistVectorMode::Clean,
             replay_events_mode: PersistVectorMode::Clean,
             last_meta: Some(self.journal_meta()),
+            transcript_stripped: self.persist_state.transcript_stripped,
         };
     }
 
@@ -799,6 +813,7 @@ impl Session {
             env_snapshots: Vec::new(),
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
+            migration_epoch: 0,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
@@ -856,6 +871,7 @@ impl Session {
             env_snapshots: Vec::new(),
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
+            migration_epoch: 0,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
@@ -1098,6 +1114,12 @@ request in this new forked session, using the inherited conversation only as con
         self.status = SessionStatus::Error { message };
     }
 
+    /// Why this in-memory copy may not run turns or persist on this machine
+    /// because the session migrated (see `jcode_storage::session_lease`).
+    pub fn migration_lease_block(&self) -> Option<crate::storage::SessionLeaseBlock> {
+        crate::storage::session_lease_block(&self.id, self.migration_epoch)
+    }
+
     /// Mark session as active (e.g., when resuming)
     pub fn mark_active(&mut self) {
         self.status = SessionStatus::Active;
@@ -1202,6 +1224,9 @@ request in this new forked session, using the inherited conversation only as con
                         *content = crate::message::redact_secrets(content);
                     }
                     ContentBlock::ToolUse { input, .. } => redact_json_value(input),
+                    // Export copy only: the stored item stays verbatim for
+                    // replay, but queries can carry pasted credentials.
+                    ContentBlock::ProviderNative { item, .. } => redact_json_value(item),
                     ContentBlock::Image { .. } => {}
                     ContentBlock::OpenAICompaction { .. } | ContentBlock::ToolReference { .. } => {}
                 }
@@ -1767,6 +1792,8 @@ struct RemoteStartupSessionSnapshot {
     saved: bool,
     #[serde(default)]
     save_label: Option<String>,
+    #[serde(default)]
+    migration_epoch: u64,
 }
 
 #[cfg(test)]

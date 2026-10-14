@@ -1,3 +1,5 @@
+pub mod provider_native;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCall {
     #[serde(default)]
@@ -216,6 +218,14 @@ pub enum ContentBlock {
     ToolReference {
         tool_use_id: String,
         tool_name: String,
+    },
+    /// A complete provider-native (server-side) tool item, e.g. an Anthropic
+    /// `server_tool_use` or `web_search_tool_result` block. The provider has
+    /// already run the tool; consumers store it verbatim as
+    /// [`ContentBlock::ProviderNative`] for replay and render it for display.
+    ProviderNative {
+        provider: String,
+        item: serde_json::Value,
     },
 }
 
