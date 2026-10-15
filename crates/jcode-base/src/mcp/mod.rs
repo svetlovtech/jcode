@@ -7,6 +7,7 @@
 
 mod client;
 mod manager;
+pub mod budget;
 pub mod oauth;
 pub mod pool;
 mod protocol;
@@ -21,5 +22,5 @@ pub use protocol::*;
 pub use schema_cache::{McpSchemaCache, fingerprint_config};
 pub use tool::{
     McpTool, create_mcp_tools, create_mcp_tools_from_cached, create_mcp_tools_from_cached_many,
-    dispatch_name, dispatch_names,
+    dispatch_name, dispatch_names, take_accept_large_output,
 };
