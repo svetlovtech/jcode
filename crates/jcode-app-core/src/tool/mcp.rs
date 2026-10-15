@@ -88,9 +88,9 @@ fn match_rank(
 /// first: every match in full, then shorter descriptions, then full detail for
 /// only the leading matches with the rest listed by name. The first rendering
 /// that fits wins, so small results are never trimmed.
-fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, usize) {
+fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> Result<(String, usize)> {
     use jcode_core::util::estimate_tokens;
-    let render = |detailed: usize, description_chars: Option<usize>| {
+    let render = |detailed: usize, description_chars: Option<usize>| -> Result<String> {
         let head: Vec<McpSearchResult> = matches[..detailed]
             .iter()
             .map(|m| McpSearchResult {
@@ -104,7 +104,7 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
                 input_schema: m.input_schema.clone(),
             })
             .collect();
-        let mut out = serde_json::to_string(&head).unwrap_or_default();
+        let mut out = serde_json::to_string(&head)?;
         if detailed < matches.len() {
             let rest: Vec<&str> = matches[detailed..]
                 .iter()
@@ -116,13 +116,13 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
                 rest.join(", ")
             ));
         }
-        out
+        Ok(out)
     };
     let fits = |out: &String| estimate_tokens(out) <= budget;
 
-    let full = render(matches.len(), None);
+    let full = render(matches.len(), None)?;
     if fits(&full) {
-        return (full, matches.len());
+        return Ok((full, matches.len()));
     }
     // Shorten descriptions progressively, keeping every schema.
     let longest = matches
@@ -132,9 +132,9 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
         .unwrap_or(0);
     let mut chars = longest / 2;
     while chars >= MIN_SEARCH_DESCRIPTION_CHARS {
-        let out = render(matches.len(), Some(chars));
+        let out = render(matches.len(), Some(chars))?;
         if fits(&out) {
-            return (out, matches.len());
+            return Ok((out, matches.len()));
         }
         chars /= 2;
     }
@@ -142,13 +142,13 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
     let (mut lo, mut hi) = (0usize, matches.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if fits(&render(mid, Some(MIN_SEARCH_DESCRIPTION_CHARS))) {
+        if fits(&render(mid, Some(MIN_SEARCH_DESCRIPTION_CHARS))?) {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    (render(lo, Some(MIN_SEARCH_DESCRIPTION_CHARS)), lo)
+    Ok((render(lo, Some(MIN_SEARCH_DESCRIPTION_CHARS))?, lo))
 }
 
 /// Fixed MCP discovery surface used when individual server definitions are deferred.
@@ -198,24 +198,26 @@ impl Tool for McpSearchTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        let input_flags = input.clone();
         let params: McpSearchInput = serde_json::from_value(input)?;
         let server_filter = params
             .server
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let query = params
+        // Tokenize the optional query directly, avoiding a lowercased copy of
+        // the entire query and an artificial empty-query sentinel.
+        let query_terms: Vec<String> = params
             .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase);
+            .iter()
+            .flat_map(|query| query.split_whitespace().map(str::to_ascii_lowercase))
+            .collect();
         let manager = self.manager.read().await;
         let catalog = manager.searchable_tools().await;
         drop(manager);
 
         let names = crate::mcp::dispatch_names(&catalog);
-        let matches: Vec<McpSearchResult> = catalog
+        let ranked: Vec<(MatchRank, McpSearchResult)> = catalog
             .into_iter()
             .zip(names)
             .filter_map(|((server, tool), name)| {
@@ -249,37 +251,52 @@ impl Tool for McpSearchTool {
                 if !allowed {
                     return None;
                 }
-                if let Some(query) = &query {
-                    let description = tool.description.as_deref().unwrap_or_default();
-                    if !name.to_ascii_lowercase().contains(query)
-                        && !server.to_ascii_lowercase().contains(query)
-                        && !tool.name.to_ascii_lowercase().contains(query)
-                        && !description.to_ascii_lowercase().contains(query)
-                    {
-                        return None;
-                    }
-                }
-                Some(McpSearchResult {
-                    name,
-                    server,
-                    tool: tool.name,
-                    description: tool.description.unwrap_or_else(|| "MCP tool".to_string()),
-                    input_schema: tool.input_schema,
-                })
+                let description = tool.description.as_deref().unwrap_or_default();
+                let rank = match_rank(&query_terms, &name, &server, &tool.name, description)?;
+                Some((
+                    rank,
+                    McpSearchResult {
+                        name,
+                        server,
+                        tool: tool.name,
+                        description: tool
+                            .description
+                            .unwrap_or_else(|| "MCP tool".to_string())
+                            .trim()
+                            .to_string(),
+                        input_schema: tool.input_schema,
+                    },
+                ))
             })
             .collect();
+
+        // Name matches win. Description-only matches are noise once any tool
+        // matches by name, so they are dropped rather than ranked below.
+        let best = ranked.iter().map(|(rank, _)| *rank).max();
+        let matches: Vec<McpSearchResult> = ranked
+            .into_iter()
+            .filter(|(rank, _)| Some(*rank) == best)
+            .map(|(_, result)| result)
+            .collect();
+        let total = matches.len();
+        let budget = if super::accepts_large_output(&input_flags) {
+            usize::MAX
+        } else {
+            SEARCH_TOKEN_BUDGET
+        };
+        let (output, detailed) = fit_search_results(&matches, budget)?;
 
         // Ask the agent to load the matched definitions natively. With
         // provider-native deferred loading these become directly callable
         // tools without changing the cached prompt prefix; other providers
         // ignore the references and use `mcp_call` with the schemas above.
-        let references: Vec<&str> = matches
+        let references: Vec<&str> = matches[..detailed]
             .iter()
             .take(MAX_SEARCH_TOOL_REFERENCES)
             .map(|m| m.name.as_str())
             .collect();
-        Ok(ToolOutput::new(serde_json::to_string_pretty(&matches)?)
-            .with_title(format!("MCP tools ({})", matches.len()))
+        Ok(ToolOutput::new(output)
+            .with_title(format!("MCP tools ({})", total))
             .with_metadata(json!({ "tool_references": references })))
     }
 }
@@ -339,6 +356,7 @@ impl Tool for McpCallTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        let input_flags = input.clone();
         let mut params: McpCallInput = serde_json::from_value(input)?;
         let dispatched_name = dispatch_name(&params.server, &params.tool);
         // Check the current alias too: a per-alias deny must not be bypassed
@@ -380,6 +398,9 @@ impl Tool for McpCallTool {
         if params.arguments.is_null() {
             params.arguments = Value::Object(serde_json::Map::new());
         }
+        // The escape hatch may arrive at either level; never forward it.
+        let accept_large_output = super::accepts_large_output(&input_flags)
+            | crate::mcp::take_accept_large_output(&mut params.arguments);
 
         // Deferred dispatch must honor the same session-local replacement as
         // eager and batched dispatch. Never fall through to the real MCP server
@@ -437,6 +458,11 @@ impl Tool for McpCallTool {
             }
         }
         let output = output_parts.join("\n");
+        let output = if accept_large_output {
+            output
+        } else {
+            crate::mcp::budget::fit_to_budget(&output, crate::mcp::budget::MCP_RESULT_TOKEN_BUDGET)
+        };
         let title = format!("mcp:{}:{}", params.server, params.tool);
         if result.is_error {
             Ok(ToolOutput::new(format!("Error: {}", output)).with_title(title))
@@ -766,36 +792,52 @@ impl McpManagementTool {
             ).with_title("MCP: No servers"));
         }
 
+        // Names only: full descriptions for every tool of every server cost
+        // tens of thousands of tokens. `mcp_search` returns descriptions and
+        // schemas for the tools the agent actually needs.
         let mut output = String::new();
-        output.push_str(&format!("Connected MCP servers: {}\n\n", servers.len()));
+        output.push_str(&format!(
+            "Connected MCP servers: {} ({} tools)\n\n",
+            servers.len(),
+            all_tools
+                .iter()
+                .filter(|(owner, _)| servers.contains(owner))
+                .count()
+        ));
 
         let names = crate::mcp::dispatch_names(&all_tools);
+        let registry = self.registry.as_ref().and_then(|r| r.upgrade());
         for server in &servers {
-            output.push_str(&format!("## {}\n", server));
-            let server_tools: Vec<_> = all_tools
+            // Callable aliases, which differ from raw names when servers collide.
+            let server_tools: Vec<String> = all_tools
                 .iter()
                 .zip(&names)
                 .filter(|((owner, _), _)| owner == server)
-                .collect();
-
-            if server_tools.is_empty() {
-                output.push_str("  (no tools)\n");
-            } else {
-                for ((_, tool), fallback) in server_tools {
-                    let name = self
-                        .registry
+                .map(|((_, tool), fallback)| {
+                    registry
                         .as_ref()
-                        .and_then(|r| r.upgrade())
                         .and_then(|r| r.mcp_alias(server, &tool.name))
-                        .unwrap_or_else(|| fallback.clone());
-                    output.push_str(&format!(
-                        "  - {}: {}\n",
-                        name,
-                        tool.description.as_deref().unwrap_or("(no description)")
-                    ));
-                }
+                        .unwrap_or_else(|| fallback.clone())
+                })
+                .collect();
+            output.push_str(&format!(
+                "## {} ({} tool{})\n",
+                server,
+                server_tools.len(),
+                if server_tools.len() == 1 { "" } else { "s" }
+            ));
+            if server_tools.is_empty() {
+                output.push_str("(no tools)\n");
+            } else {
+                output.push_str(&server_tools.join(", "));
+                output.push('\n');
             }
             output.push('\n');
+        }
+        if !servers.is_empty() {
+            output.push_str(
+                "Use mcp_search with a server or query for descriptions and input schemas.\n\n",
+            );
         }
 
         if !configured.is_empty() {
