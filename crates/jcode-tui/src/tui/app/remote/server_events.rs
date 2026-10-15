@@ -408,6 +408,8 @@ mod history_dedup_tests {
             content: content.to_string(),
             tool_calls: None,
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
         }
     }
 

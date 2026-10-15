@@ -50,6 +50,8 @@ fn hidden_todo(payload: &str) -> DisplayMessage {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     }
 }
 
@@ -69,7 +71,18 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 fn pinned_todo_regression_packed_fresh_session_keeps_prompt_when_band_appears() {
     let _render_lock = viewport_snapshot_test_lock();
     with_pinned_todos_config(|| {
-        let _changelog = header::scoped_unseen_changelog_entries_override_for_tests(Vec::new());
+        let _changelog_guard = {
+            // Merged API: dc16df5f5 renamed the scoped helper to a set/restore
+            // pair; scope it manually for this test.
+            crate::tui::ui::header::set_unseen_changelog_entries_override_for_tests(Some(Vec::new()));
+            struct DropGuard;
+            impl Drop for DropGuard {
+                fn drop(&mut self) {
+                    crate::tui::ui::header::set_unseen_changelog_entries_override_for_tests(None);
+                }
+            }
+            DropGuard
+        };
         reset_prompt_viewport_state_for_test();
         struct RestoreDebug(bool);
         impl Drop for RestoreDebug {

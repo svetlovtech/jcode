@@ -1447,6 +1447,11 @@ pub enum WebSearchEngine {
 }
 
 impl WebSearchEngine {
+    /// True for engines the local `websearch` tool can run itself.
+    pub fn is_local(self) -> bool {
+        !matches!(self, Self::Native)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Duckduckgo => "duckduckgo",
@@ -1541,6 +1546,13 @@ pub struct WebSearchConfig {
     pub searxng_url: Option<String>,
     /// Environment variable containing the SearXNG base URL.
     pub searxng_url_env: String,
+}
+
+impl WebSearchConfig {
+    /// True when provider-native search is the preferred engine.
+    pub fn native_enabled(&self) -> bool {
+        self.engine == WebSearchEngine::Native
+    }
 }
 
 impl Default for WebSearchConfig {

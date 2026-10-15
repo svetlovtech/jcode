@@ -93,6 +93,13 @@ pub use session_lease::{
     session_leases_dir, write_session_lease,
 };
 
+/// Serialize this crate's tests that mutate `JCODE_HOME`.
+#[cfg(test)]
+pub(crate) fn test_jcode_home_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Platform-aware runtime directory for sockets and ephemeral state.
 ///
 /// - Linux: `$XDG_RUNTIME_DIR` (typically `/run/user/<uid>`)

@@ -848,4 +848,24 @@ fn html_decode(s: &str) -> String {
 
 #[cfg(test)]
 #[path = "websearch_tests.rs"]
+/// Engines the local tool tries, in order. `native` is provider-side and never
+/// runs locally: when it is preferred (e.g. the active provider has no server
+/// search), the local fallbacks run, defaulting to DuckDuckGo then Bing.
+fn local_engine_order(
+    preferred: WebSearchEngine,
+    fallbacks: &[WebSearchEngine],
+) -> Vec<WebSearchEngine> {
+    let mut engines: Vec<WebSearchEngine> = std::iter::once(preferred)
+        .chain(fallbacks.iter().copied())
+        .filter(|engine| engine.is_local())
+        .collect();
+    if engines.is_empty() {
+        engines = vec![WebSearchEngine::Duckduckgo, WebSearchEngine::Bing];
+    }
+    let mut seen = std::collections::HashSet::new();
+    engines.retain(|engine| seen.insert(*engine));
+    engines
+}
+
+#[path = "websearch_tests.rs"]
 mod tests;

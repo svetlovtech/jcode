@@ -3061,11 +3061,13 @@ fn history_response_stats_cross_real_render_protocol_and_sdk_boundary() {
     let legacy: Vec<_> = jcode_base::session::render_messages(&session)
         .into_iter()
         .map(|row| jcode_base::protocol::HistoryMessage {
-            role: row.role,
-            content: row.content,
+            response_stats: None,
+            role: row.role.clone(),
+            content: row.content.clone(),
             tool_calls: None,
-            tool_data: row.tool_data,
-            response_stats: row.response_stats,
+            tool_data: None,
+            timestamp: row.timestamp,
+            tool_duration_ms: row.tool_duration_ms,
         })
         .collect();
     let mut state = state_with_session();

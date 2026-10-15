@@ -1453,14 +1453,18 @@ fn create_math_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::Test
             duration_secs: None,
             title: None,
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
         },
         DisplayMessage {
             role: "assistant".to_string(),
-            content: "Euler $e^{i\\pi_{3}} + 1 = 0$ done.\n\n$$\n\\frac{\\partial L}{\\partial \\theta_{88}} = \\theta^\\top x\n$$".to_string(),
+            content: "Euler $e^{i\\pi_{3}} + 1 = 0$ done.".to_string(),
             tool_calls: vec![],
             duration_secs: None,
             title: None,
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
         },
     ];
     app.bump_display_messages_version();

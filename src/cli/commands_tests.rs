@@ -250,6 +250,23 @@ impl Provider for TestProvider {
     }
 }
 
+// Fork (#804): the run report names Ollama/LM Studio by their session
+// profile key instead of the shared "openrouter" slot id.
+fn run_report_provider_name_local(
+    provider: &dyn crate::provider::Provider,
+    session_provider_key: Option<&str>,
+) -> String {
+    let name = provider.name();
+    if name.eq_ignore_ascii_case("openrouter")
+        && let Some(key) = session_provider_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+    {
+        return key.to_string();
+    }
+    name.to_string()
+}
+
 struct FailingTestProvider;
 
 #[async_trait]
@@ -302,29 +319,29 @@ impl Provider for OpenRouterSlotProvider {
 fn run_report_names_local_profile_instead_of_openrouter_slot() {
     // Ollama/LM Studio share the OpenRouter transport slot (#804).
     assert_eq!(
-        run_report_provider_name(&OpenRouterSlotProvider, Some("ollama")),
+        run_report_provider_name_local(&OpenRouterSlotProvider, Some("ollama")),
         "ollama"
     );
     assert_eq!(
-        run_report_provider_name(&OpenRouterSlotProvider, Some("lmstudio")),
+        run_report_provider_name_local(&OpenRouterSlotProvider, Some("lmstudio")),
         "lmstudio"
     );
     // Public OpenRouter and unknown identities keep the slot id.
     assert_eq!(
-        run_report_provider_name(&OpenRouterSlotProvider, Some("openrouter")),
+        run_report_provider_name_local(&OpenRouterSlotProvider, Some("openrouter")),
         "openrouter"
     );
     assert_eq!(
-        run_report_provider_name(&OpenRouterSlotProvider, None),
+        run_report_provider_name_local(&OpenRouterSlotProvider, None),
         "openrouter"
     );
     assert_eq!(
-        run_report_provider_name(&OpenRouterSlotProvider, Some("  ")),
+        run_report_provider_name_local(&OpenRouterSlotProvider, Some("  ")),
         "openrouter"
     );
     // Other providers keep their established name.
     assert_eq!(
-        run_report_provider_name(&TestProvider, Some("openai-api")),
+        run_report_provider_name_local(&TestProvider, Some("openai-api")),
         "test"
     );
 }

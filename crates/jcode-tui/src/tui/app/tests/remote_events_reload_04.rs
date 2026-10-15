@@ -845,12 +845,12 @@ fn test_rejected_remote_automatic_route_retains_old_identity_and_drops_payload()
                 id: 0,
                 model: "unrelated-model".into(),
                 provider_name: Some("Other".into()),
+                context_window: None,
                 error: None,
                 provider_oauth_email: None,
                 resolved_credential: None,
                 reasoning_effort: None,
-                context_window: None,
-            },
+                            },
             &mut remote,
         );
         assert!(app.remote_model_switch_in_flight);
@@ -862,12 +862,12 @@ fn test_rejected_remote_automatic_route_retains_old_identity_and_drops_payload()
                 id: 22,
                 model: "claude-sonnet-4".into(),
                 provider_name: None,
+                context_window: None,
                 error: Some("Target is no longer in the auto-switch pool".into()),
                 provider_oauth_email: None,
                 resolved_credential: None,
                 reasoning_effort: None,
-                context_window: None,
-            },
+                            },
             &mut remote,
         );
         assert_eq!(
@@ -1077,6 +1077,7 @@ fn test_remote_fallback_offer_accept_stages_switch_and_resends() {
             id: 0,
             model: "claude-sonnet-4".to_string(),
             provider_name: Some("Anthropic".to_string()),
+            context_window: None,
             error: None,
             provider_oauth_email: None,
             resolved_credential: None,
@@ -1124,6 +1125,7 @@ fn test_remote_fallback_resend_dropped_when_switch_fails() {
             id: 0,
             model: "claude-sonnet-4".to_string(),
             provider_name: None,
+            context_window: None,
             error: Some("switch failed".to_string()),
             provider_oauth_email: None,
             resolved_credential: None,
@@ -1742,7 +1744,7 @@ fn test_info_widget_remote_openai_uses_remote_provider_for_usage_and_context() {
     app.remote_provider_name = Some("OpenAI".to_string());
     app.remote_provider_model = Some("gpt-5.4".to_string());
     app.remote_resolved_credential = Some(jcode_provider_core::ResolvedCredential::Oauth);
-    app.update_context_limit_for_model("gpt-5.4");
+    app.update_context_limit_for_model("gpt-5.4", Some(1_000_000));
 
     let data = crate::tui::TuiState::info_widget_data(&app);
 
@@ -1783,6 +1785,23 @@ fn test_setting_context_limit_also_syncs_the_compaction_budget() {
         budget, 1_000_000,
         "compaction budget must follow the panel limit, or the session compacts early"
     );
+}
+
+
+fn model_changed_event(
+    error: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> crate::protocol::ServerEvent {
+    crate::protocol::ServerEvent::ModelChanged {
+        context_window: None,
+        id: 0,
+        model: "gpt-5.6-terra".to_string(),
+        provider_name: Some("OpenAI".to_string()),
+        error: error.map(str::to_string),
+        provider_oauth_email: None,
+        resolved_credential: None,
+        reasoning_effort: reasoning_effort.map(str::to_string),
+    }
 }
 
 /// Issue #1504: the effort chip must follow the effort the server reports for
