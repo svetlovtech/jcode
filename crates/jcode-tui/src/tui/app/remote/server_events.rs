@@ -3157,8 +3157,45 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             false
         }
-        ServerEvent::StdinRequest { .. } => {
-            app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
+        ServerEvent::StdinRequest {
+            request_id,
+            prompt,
+            source,
+            ask,
+            ..
+        } => {
+            // Fork: ask_user surfaces its question in the chat and remembers
+            // the pending request so the user's next typed message is
+            // delivered as the answer (Request::StdinResponse).
+            if jcode_app_core::tool::StdinRequestSource::from_wire(&source)
+                == jcode_app_core::tool::StdinRequestSource::AskUser
+            {
+                // Fork: a structured ask spec opens the interactive modal;
+                // clients/daemons without the spec fall back to the textual
+                // prompt interception.
+                match ask {
+                    Some(spec) => app.fork_ask_ops().on_ask_prompt_with_spec(
+                        request_id.clone(),
+                        prompt.clone(),
+                        spec.into(),
+                    ),
+                    None => {
+                        app.fork_ask_ops()
+                            .on_ask_prompt(request_id.clone(), prompt.clone());
+                    }
+                }
+            } else {
+                // Upstream behavior: a running command wants stdin; do not
+                // intercept typed input for it.
+                app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
+            }
+            false
+        }
+        // Fork: the question was answered on another surface (Telegram won the
+        // race) - close the modal now instead of letting it swallow keys until
+        // its timeout. Mirrors the in-process BusEvent handler.
+        ServerEvent::AskQuestionResolved { answer, .. } => {
+            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
             false
         }
         ServerEvent::PeerUserMessage { content } => {
