@@ -1638,8 +1638,8 @@ fn config_save_round_trip_with_empty_prompts_stays_parseable() {
 #[test]
 fn swarm_root_effort_config_defaults_and_independent_modes() {
     let defaults = Config::default();
-    assert_eq!(defaults.agents.root_effort_for_swarm(false), "max");
-    assert_eq!(defaults.agents.root_effort_for_swarm(true), "max");
+    assert_eq!(defaults.agents.root_effort_for_swarm(false), "low");
+    assert_eq!(defaults.agents.root_effort_for_swarm(true), "low");
     let cfg: Config = toml::from_str(
         "[agents]\nswarm_root_effort = 'low'\nswarm_deep_root_effort = ' High '\nswarm_effort = 'medium'\n",
     ).unwrap();
@@ -1659,12 +1659,12 @@ fn swarm_root_effort_config_defaults_and_independent_modes() {
         let cfg: Config =
             toml::from_str(&format!("[agents]\nswarm_root_effort = '{level}'")).unwrap();
         assert_eq!(cfg.agents.root_effort_for_swarm(false), level);
-        assert_eq!(cfg.agents.root_effort_for_swarm(true), "max");
+        assert_eq!(cfg.agents.root_effort_for_swarm(true), "low");
     }
     for invalid in ["", "swarm", "swarm-deep", "turbo"] {
         let cfg: Config = toml::from_str(&format!("[agents]\nswarm_root_effort = '{invalid}'\nswarm_deep_root_effort = '{invalid}'\nswarm_effort = 'low'")).unwrap();
-        assert_eq!(cfg.agents.root_effort_for_swarm(false), "max");
-        assert_eq!(cfg.agents.root_effort_for_swarm(true), "max");
+        assert_eq!(cfg.agents.root_effort_for_swarm(false), "low");
+        assert_eq!(cfg.agents.root_effort_for_swarm(true), "low");
         assert_eq!(cfg.agents.swarm_effort.as_deref(), Some("low"));
     }
 }
