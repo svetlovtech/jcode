@@ -687,6 +687,8 @@ async fn tool_descriptions_stay_under_token_cap() {
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
     // codemode documents its sandbox API; compile_remote a credit/consent notice.
+    // bash carries the agentgrep/rg repository-search routing guidance
+    // (29d3e85bb, fixes #1804) pinned by tool_time_badge observed-output tests.
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -696,6 +698,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "applet",
         "codemode",
         "compile_remote",
+        "bash",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -766,6 +769,18 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        // Fork ask_user multi-select (checkboxes) needs the explicit
+        // '; '-joined answer format spelled out for the model.
+        ("ask_user", "$.properties.multiple"),
+        (
+            "ask_user",
+            "$.properties.questions.items.properties.multiple",
+        ),
+        // Upstream swarm UX: label is referenced by set_swarm_label, tldr and
+        // to_swarm document the delivery semantics inline.
+        ("swarm", "$.properties.label"),
+        ("swarm", "$.properties.tldr"),
+        ("swarm", "$.properties.to_swarm"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
