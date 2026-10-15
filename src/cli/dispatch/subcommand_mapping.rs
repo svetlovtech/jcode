@@ -21,7 +21,17 @@ pub(super) fn map_memory_subcommand(subcmd: MemoryCommand) -> commands::MemorySu
             overwrite,
         },
         MemoryCommand::Stats => commands::MemorySubcommand::Stats,
+        MemoryCommand::Backfill => commands::MemorySubcommand::Backfill,
         MemoryCommand::ClearTest => commands::MemorySubcommand::ClearTest,
+    }
+}
+
+/// Fork: cloud-synced sessions subcommand mapping.
+pub(super) fn map_cloud_subcommand(subcmd: CloudCommand) -> commands::CloudSubcommand {
+    match subcmd {
+        CloudCommand::Sessions { action } => {
+            commands::CloudSubcommand::Sessions(map_cloud_sessions_subcommand(action))
+        }
     }
 }
 
