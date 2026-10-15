@@ -86,15 +86,19 @@ fn history_provider_name_from_session(session: &crate::session::Session) -> Opti
     }
 
     // An `openai-compatible:<profile>` key is a named/user profile route
-    // (e.g. `openai-compatible:zai-gateway`). Display the profile id itself so
-    // the client header reflects the gateway the user configured instead of
-    // the generic OpenRouter slot that executes it.
+    // (e.g. `openai-compatible:deepseek`). Report its display name like every
+    // other arm below (#1286) so the client header shows the gateway the user
+    // configured, not the raw slot id.
     if let Some((family, profile)) = key.split_once(':')
         && family.eq_ignore_ascii_case("openai-compatible")
     {
         let profile = profile.trim();
         if !profile.is_empty() {
-            return Some(profile.to_string());
+            return Some(
+                crate::provider_catalog::openai_compatible_profile_by_id(profile)
+                    .map(|p| p.display_name.to_string())
+                    .unwrap_or_else(|| profile.to_string()),
+            );
         }
     }
 
