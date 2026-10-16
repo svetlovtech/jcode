@@ -1599,7 +1599,9 @@ impl Agent {
                         name: tc.name.clone(),
                         output: error_msg.clone(),
                         error: Some(error_msg.clone()),
-                                    duration_ms: None,
+                        // Validation fails before execution starts: no measurable
+                        // run time, so the badge stays hidden (duration unknown).
+                        duration_ms: None,
                     });
                     self.add_message(
                         Role::User,
@@ -1749,7 +1751,7 @@ impl Agent {
                                 name: tc.name.clone(),
                                 output: output.output.clone(),
                                 error: None,
-                                    duration_ms: None,
+                                duration_ms: Some(tool_elapsed.as_millis() as u64),
                             });
 
                             let side_pane_images =
@@ -1782,7 +1784,7 @@ impl Agent {
                                 name: tc.name.clone(),
                                 output: error_msg.clone(),
                                 error: Some(error_msg.clone()),
-                                    duration_ms: None,
+                                duration_ms: Some(tool_elapsed.as_millis() as u64),
                             });
 
                             self.add_message_with_duration(
