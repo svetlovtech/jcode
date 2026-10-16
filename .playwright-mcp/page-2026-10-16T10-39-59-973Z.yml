@@ -1,0 +1,4 @@
+- generic [ref=f3e3]:
+  - generic [ref=f3e14]: Wanna Hike
+  - paragraph [ref=f3e15]: Это приложение работает внутри Telegram. Откройте его через @wanna_hike_bot.
+  - button "Повторить" [ref=f3e16] [cursor=pointer]

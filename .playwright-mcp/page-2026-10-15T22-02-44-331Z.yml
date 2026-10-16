@@ -1,0 +1,144 @@
+- generic [ref=e7]:
+  - generic [ref=e26]:
+    - generic [ref=e29]:
+      - list [ref=e31]:
+        - listitem [ref=e32]:
+          - link [ref=e33] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - generic [ref=e34]:
+              - img "Кавказская Тропа" [ref=e35]
+              - generic [ref=e36]: КАВКАЗСКАЯТРОПА
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: Обзор
+          - list [ref=e41]:
+            - listitem [ref=e42]:
+              - link "Панель управления" [ref=e43] [cursor=pointer]:
+                - /url: /admin/dashboard
+            - listitem [ref=e50]:
+              - link "Аккаунт" [ref=e51] [cursor=pointer]:
+                - /url: /admin/dashboard/user/account
+        - generic [ref=e57]:
+          - generic [ref=e58]: Системы
+          - list [ref=e60]:
+            - listitem [ref=e62]:
+              - button "TG Guardian" [ref=e63]
+            - listitem [ref=e70]:
+              - button "Почта" [ref=e71]
+            - listitem [ref=e80]:
+              - button "GPX Helper" [ref=e81]
+            - listitem [ref=e88]:
+              - button "Garmin Extractor" [ref=e89]
+            - listitem [ref=e97]:
+              - button "Elecache" [ref=e98]
+            - listitem [ref=e106]:
+              - link "Проверка треков" [ref=e107] [cursor=pointer]:
+                - /url: /admin/dashboard/trackcheck
+            - listitem [ref=e114]:
+              - button "OSM-мониторинг" [ref=e115]
+            - listitem [ref=e127]:
+              - button "Личный кабинет" [ref=e128]
+            - listitem [ref=e141]:
+              - button "Wannahike" [ref=e142]
+            - listitem [ref=e154]:
+              - button "Trail Now" [ref=e155]
+            - listitem [ref=e164]:
+              - button "Hikerbox" [ref=e165]
+            - listitem [ref=e175]:
+              - button "Промокоды" [ref=e176]
+            - listitem [ref=e187]:
+              - button "EventStream" [ref=e188]
+      - button "Toggle Sidebar" [ref=e193]
+    - main [ref=e194]:
+      - generic [ref=e195]:
+        - button "Toggle Sidebar" [ref=e196]
+        - button "Поиск по разделам" [ref=e198]:
+          - generic [ref=e199]: Поиск…
+          - generic: ⌘K
+        - generic [ref=e200]:
+          - button "Переключить тему" [ref=e201]
+          - button "Выбрать язык" [ref=e202]
+          - button "Меню пользователя" [ref=e203]:
+            - generic [ref=e204]: A
+      - main [ref=e206]:
+        - generic [ref=e207]:
+          - heading "Панель управления OnTrail" [level=4] [ref=e208]
+          - paragraph [ref=e209]: Управление всеми сервисами Кавказской Тропы из единой панели администратора.
+          - generic [ref=e210]:
+            - generic [ref=e212]:
+              - heading "TG Guardian" [level=6] [ref=e219]
+              - paragraph [ref=e220]: "Бот проверки подписки: удаляет сообщения пользователей, не подписанных на канал «Кавказская тропа» (@rucaucasiantrail), и присылает предупреждение. Журнал событий и статистика."
+              - generic [ref=e221]:
+                - link "Модерация" [ref=e222] [cursor=pointer]:
+                  - /url: /admin/dashboard/tg-guardian/moderation-log
+                - link "Статистика" [ref=e226] [cursor=pointer]:
+                  - /url: /admin/dashboard/tg-guardian/statistics
+                - link "Пользователи" [ref=e230] [cursor=pointer]:
+                  - /url: /admin/dashboard/users/list
+            - generic [ref=e235]:
+              - heading "GPX Helper" [level=6] [ref=e242]
+              - paragraph [ref=e243]: "Анализ и хранение GPX-треков: загрузка, профили высот, Altair-графики и библиотека треков."
+              - generic [ref=e244]:
+                - link "Загрузить и проанализировать" [ref=e245] [cursor=pointer]:
+                  - /url: /admin/dashboard/gpx-helper/upload
+                - link "Библиотека треков" [ref=e249] [cursor=pointer]:
+                  - /url: /admin/dashboard/gpx-helper/library
+            - generic [ref=e254]:
+              - heading "Garmin Extractor" [level=6] [ref=e262]
+              - paragraph [ref=e263]: Асинхронное извлечение GPX из Garmin Connect по публичной ссылке на активность.
+              - generic [ref=e264]:
+                - link "Новое извлечение" [ref=e265] [cursor=pointer]:
+                  - /url: /admin/dashboard/garmin-extractor/new
+                - link "История задач" [ref=e269] [cursor=pointer]:
+                  - /url: /admin/dashboard/garmin-extractor/jobs
+            - generic [ref=e274]:
+              - heading "Elecache" [level=6] [ref=e286]
+              - paragraph [ref=e287]: Сервис кэширования тайлов высотных данных. Управление тайлами, мониторинг запросов и статистика.
+              - generic [ref=e288]:
+                - link "Карта" [ref=e289] [cursor=pointer]:
+                  - /url: /admin/dashboard/elecache/tiles
+                - link "Статистика" [ref=e293] [cursor=pointer]:
+                  - /url: /admin/dashboard/elecache/statistics
+            - generic [ref=e298]:
+              - heading "Личный кабинет" [level=6] [ref=e305]
+              - paragraph [ref=e306]: "Управление данными личного кабинета туристов: пользователи, треки, походы, жалобы, награды и рейтинг."
+              - generic [ref=e307]:
+                - link "Пользователи" [ref=e308] [cursor=pointer]:
+                  - /url: /admin/dashboard/lk/users
+                - link "Треки" [ref=e312] [cursor=pointer]:
+                  - /url: /admin/dashboard/lk/tracks
+                - link "Походы" [ref=e316] [cursor=pointer]:
+                  - /url: /admin/dashboard/lk/plans
+                - link "Награды" [ref=e320] [cursor=pointer]:
+                  - /url: /admin/dashboard/lk/awards
+            - generic [ref=e325]:
+              - heading "Wannahike" [level=6] [ref=e335]
+              - paragraph [ref=e336]: "Модерация заявок «ищу попутчика»: походы, отклики и пользователи мини-приложения и бота @wanna_hike_bot."
+              - generic [ref=e337]:
+                - link "Походы" [ref=e338] [cursor=pointer]:
+                  - /url: /admin/dashboard/wannahike/posts
+                - link "Пользователи" [ref=e342] [cursor=pointer]:
+                  - /url: /admin/dashboard/wannahike/users
+            - generic [ref=e347]:
+              - heading "Trail Now" [level=6] [ref=e354]
+              - paragraph [ref=e355]: "Живая карта тропы: точки, статусы, комментарии и пользователи мини-приложения Trail Now."
+              - generic [ref=e356]:
+                - link "Точки" [ref=e357] [cursor=pointer]:
+                  - /url: /admin/dashboard/ct-now/points
+                - link "Статусы" [ref=e361] [cursor=pointer]:
+                  - /url: /admin/dashboard/ct-now/statuses
+                - link "Комментарии" [ref=e365] [cursor=pointer]:
+                  - /url: /admin/dashboard/ct-now/comments
+                - link "Пользователи" [ref=e369] [cursor=pointer]:
+                  - /url: /admin/dashboard/ct-now/users
+            - generic [ref=e374]:
+              - heading "Hikerbox" [level=6] [ref=e382]
+              - paragraph [ref=e383]: "Модерация объявлений «отдам даром»: карточки вещей, брони и пользователи мини-приложения и бота @hikerbox_bot."
+              - generic [ref=e384]:
+                - link "Карточки" [ref=e385] [cursor=pointer]:
+                  - /url: /admin/dashboard/hikerbox/cards
+                - link "Брони" [ref=e389] [cursor=pointer]:
+                  - /url: /admin/dashboard/hikerbox/bookings
+                - link "Пользователи" [ref=e393] [cursor=pointer]:
+                  - /url: /admin/dashboard/hikerbox/users
+  - region "Notifications alt+T"

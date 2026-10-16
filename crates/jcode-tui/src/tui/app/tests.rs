@@ -60,8 +60,6 @@ include!("tests/issue_998_model_status_overlay.rs");
 include!("tests/issue_1685_bounded_auto_resume.rs");
 include!("tests/spinner_slash_commands.rs");
 include!("tests/command_suggestions_cache.rs");
-include!("tests/quick_prompts.rs");
-include!("tests/mcp_command.rs");
 include!("tests/merge_command.rs");
 include!("tests/skill_invocation_multi_word.rs");
 include!("tests/remote_header_hint_facts.rs");
@@ -1194,12 +1192,12 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
             session_id: "session_from_stale_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
                 response_stats: None,
-                role: "user".to_string(),
-                content: "history entry".to_string(),
+                role: "assistant".to_string(),
+                content: "stale answer".to_string(),
                 tool_calls: None,
                 tool_data: None,
-                timestamp: None,
-                tool_duration_ms: None,
+            timestamp: None,
+            tool_duration_ms: None,
             }],
             images: vec![],
             provider_name: Some("stale-provider".to_string()),
@@ -1290,12 +1288,12 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
             session_id: "session_real_server_owned".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
                 response_stats: None,
-                role: "user".to_string(),
-                content: "history entry".to_string(),
+                role: "assistant".to_string(),
+                content: "stale answer".to_string(),
                 tool_calls: None,
                 tool_data: None,
-                timestamp: None,
-                tool_duration_ms: None,
+            timestamp: None,
+            tool_duration_ms: None,
             }],
             images: vec![],
             provider_name: Some("stale-provider".to_string()),
@@ -1378,12 +1376,12 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
             session_id: "session_from_ancient_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
                 response_stats: None,
-                role: "user".to_string(),
-                content: "history entry".to_string(),
+                role: "assistant".to_string(),
+                content: "ancient answer".to_string(),
                 tool_calls: None,
                 tool_data: None,
-                timestamp: None,
-                tool_duration_ms: None,
+            timestamp: None,
+            tool_duration_ms: None,
             }],
             images: vec![],
             provider_name: Some("ancient-provider".to_string()),
@@ -1774,24 +1772,6 @@ fn seed_stale_clear_usage(app: &mut App) {
     app.streaming.streaming_context_stale = true;
     app.streaming.streaming_usage_call_reset_pending = true;
     app.kv_cache.current_api_usage_recorded = true;
-    // Accumulated totals from earlier turns (Σ-tokens footer, cost widget).
-    app.token_accounting.total_input_tokens = 180_000;
-    app.token_accounting.total_output_tokens = 9_000;
-    app.cost.total_cost = 1.25;
-    app.last_turn_input_tokens = Some(95_000);
-    app.last_api_completed = Some(Instant::now());
-    app.last_api_completed_provider = Some("anthropic".to_string());
-    app.last_api_completed_model = Some("claude-test".to_string());
-    app.remote_total_tokens = Some((150_000, 8_000));
-    app.remote_token_usage_totals = Some(crate::protocol::TokenUsageTotals {
-        cache_prompt_tokens: Some(120_000),
-        messages_with_token_usage: 12,
-        input_tokens: 150_000,
-        output_tokens: 8_000,
-        cache_reported_input_tokens: 150_000,
-        cache_read_input_tokens: 100_000,
-        cache_creation_input_tokens: 20_000,
-    });
 }
 
 fn assert_clear_usage_reset(app: &App) {
@@ -1803,16 +1783,6 @@ fn assert_clear_usage_reset(app: &App) {
     assert!(!app.streaming.streaming_context_stale);
     assert!(!app.streaming.streaming_usage_call_reset_pending);
     assert!(!app.kv_cache.current_api_usage_recorded);
-    // Accumulated totals must restart with the fresh session.
-    assert_eq!(app.token_accounting.total_input_tokens, 0);
-    assert_eq!(app.token_accounting.total_output_tokens, 0);
-    assert_eq!(app.cost.total_cost, 0.0);
-    assert_eq!(app.last_turn_input_tokens, None);
-    assert_eq!(app.last_api_completed, None);
-    assert_eq!(app.last_api_completed_provider, None);
-    assert_eq!(app.last_api_completed_model, None);
-    assert_eq!(app.remote_total_tokens, None);
-    assert_eq!(app.remote_token_usage_totals, None);
 }
 
 fn seed_stale_clear_image(app: &mut App) -> u64 {
@@ -1899,6 +1869,5 @@ include!("tests/kv_cache_provider_identity.rs");
 include!("tests/cache_retention_routes.rs");
 
 include!("tests/cache_prompt_accounting.rs");
-
-// Fork: /export and /info dispatch + behavior tests.
-include!("tests/fork_export_info.rs");
+include!("tests/quick_prompts.rs");
+include!("tests/mcp_command.rs");

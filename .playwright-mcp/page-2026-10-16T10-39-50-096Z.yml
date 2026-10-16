@@ -1,0 +1,7 @@
+- generic [ref=f2e3]:
+  - paragraph [ref=f2e7]:
+    - text: Не удалось войти. Открой приложение через бота
+    - generic [ref=f2e8]: "@ct_now_bot"
+    - text: и попробуй ещё раз.
+  - button "Повторить" [ref=f2e9]
+  - button "Открыть бота в Telegram" [ref=f2e10]

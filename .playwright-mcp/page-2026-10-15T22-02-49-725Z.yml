@@ -1,0 +1,8 @@
+- generic [active]:
+  - generic:
+    - generic [ref=f1e1]:
+      - generic [ref=f1e2]:
+        - img "Кавказская Тропа" [ref=f1e3]
+        - generic [ref=f1e4]: КАВКАЗСКАЯТРОПА
+      - generic "Загрузка" [ref=f1e5]
+    - region "Notifications alt+T"

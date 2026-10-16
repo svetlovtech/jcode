@@ -83,19 +83,19 @@ fn kv_cache_widget_shows_session_hit_ratio() {
     };
 
     assert!(data.has_data_for(WidgetKind::KvCache));
-    let lines = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 5));
-    let text = lines_text(&lines.all_lines());
+    let framed = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 5));
+    let text = lines_text(&framed.all_lines());
 
-    assert_eq!(lines.lines.len(), 4);
-    assert!(text.contains("KV cache:"));
-    assert!(text.contains("yield "));
+    // Body: the rates line plus one miss row. Headline and totals ride the border.
+    assert_eq!(framed.lines.len(), 2);
+    assert!(text.contains("KV cache"));
+    assert!(text.contains("yield"));
     assert!(text.contains("90%"));
     assert!(text.contains("last "));
     assert!(text.contains("94%"));
     assert!(text.contains("session "));
     assert!(text.contains("39%"));
-    assert!(text.contains("miss attribution"));
-    assert!(text.contains("69k missed total"));
+    assert!(text.contains("69k\n missed"), "{text}");
     assert!(text.contains("20>"));
     assert!(text.contains("69k miss"));
     assert!(text.contains("provider switch"));
@@ -274,8 +274,7 @@ fn todos_widget_renders_exact_pips_for_small_lists() {
     };
 
     let framed = render_todos_widget(&data, Rect::new(0, 0, 80, 8));
-    let lines = framed.all_lines();
-    let header = lines_text(&lines[..1]);
+    let header = lines_text(framed.title.as_slice());
     // Exact 1:1 pips on the header: 2 done + 1 active render as filled ●,
     // 1 open renders as hollow ○. (Active is full amber, not half.)
     assert_eq!(
@@ -293,7 +292,7 @@ fn todos_widget_renders_exact_pips_for_small_lists() {
         "active pip should be full, not half: {header}"
     );
     // The old block bar should be gone everywhere.
-    let all = lines_text(&lines);
+    let all = lines_text(&framed.all_lines());
     assert!(!all.contains('█'), "old block bar should be gone: {all}");
     assert!(!all.contains('░'), "old empty bar should be gone: {all}");
 }
@@ -1113,9 +1112,8 @@ fn model_widget_renders_connection_type() {
         connection_type: Some("websocket".to_string()),
         ..Default::default()
     };
-    let lines = render_model_widget(&data, Rect::new(0, 0, 40, 10))
-        .all_lines();
-    let text = lines
+    let text = render_model_widget(&data, Rect::new(0, 0, 40, 10))
+        .all_lines()
         .iter()
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
@@ -1165,21 +1163,69 @@ fn swarm_widget_dock_mode_lists_managed_agents() {
     // Managing agents bumps the dock's effective priority near the top.
     assert!(data.effective_priority(WidgetKind::SwarmStatus) < WidgetKind::SwarmStatus.priority());
 
-    let lines = super::render_swarm_widget(&data, Rect::new(0, 0, 34, 10))
-        .all_lines();
-    let text = lines_text(&lines);
-    assert!(text.contains("1/2 agents"), "got: {text}");
-    assert!(text.contains("nodes 3/7"), "got: {text}");
-    // Second line is the plan progress bar (low-profile underline cells).
-    assert_eq!(lines.len(), 2, "compact widget is exactly two lines");
-    let bar: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    let framed = super::render_swarm_widget(&data, Rect::new(0, 0, 34, 10));
+    let title = lines_text_concat(framed.title.as_slice());
+    assert!(title.contains("1/2 active"), "got: {title}");
+    let footer = lines_text_concat(framed.footer_right.as_slice());
     assert!(
-        bar.chars().all(|c| c == '▁') && !bar.is_empty(),
-        "expected underline bar cells: {bar}"
+        footer.contains("nodes 3/7"),
+        "plan meter on the border: {footer}"
     );
-    // Height: summary line + bar (+ borders).
-    let h = calculate_widget_height(WidgetKind::SwarmStatus, &data, 34, 20);
-    assert_eq!(h, 4, "compact height should be 2 content + 2 border: {h}");
+    // One row per agent: working agents before finished ones.
+    assert_eq!(framed.lines.len(), 2, "one row per agent");
+    let rows: Vec<String> = framed
+        .lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert!(rows[0].contains("★ researcher"), "{rows:?}");
+    assert!(
+        rows[0].contains("2/5"),
+        "todo progress on the row: {rows:?}"
+    );
+    assert!(rows[1].starts_with("✓ reviewer"), "{rows:?}");
+    for line in &framed.lines {
+        assert!(line.width() <= 34, "row too wide: {rows:?}");
+    }
+    let h = calculate_widget_height(WidgetKind::SwarmStatus, &data, 36, 20);
+    assert_eq!(h, 4, "2 agent rows + 2 border: {h}");
+}
+
+#[test]
+fn swarm_dock_surfaces_attention_and_collapses_overflow() {
+    let mut failed = managed_member("reviewer", "failed", None);
+    failed.detail = Some("cargo test failed".to_string());
+    let mut members: Vec<_> = (0..8)
+        .map(|i| managed_member(&format!("w{i}"), "completed", None))
+        .collect();
+    members.push(failed);
+    let data = InfoWidgetData {
+        swarm_info: Some(SwarmInfo {
+            managed_members: members,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let framed = super::render_swarm_widget(&data, Rect::new(0, 0, 40, 20));
+    let first: String = framed.lines[0]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        first.contains("reviewer") && first.contains("cargo test failed"),
+        "{first}"
+    );
+    assert!(lines_text(framed.title_right.as_slice()).contains("⚠ 1"));
+    assert_eq!(framed.lines.len(), 6, "rows capped");
+    assert!(lines_text(framed.footer.as_slice()).contains("+3 more"));
+    // Tiny sizes never panic or overflow.
+    for (w, h) in [(0, 0), (1, 1), (8, 2), (14, 3)] {
+        let f = super::render_swarm_widget(&data, Rect::new(0, 0, w, h));
+        for line in &f.lines {
+            assert!(line.width() <= usize::from(w), "w={w}");
+        }
+    }
 }
 
 #[test]
@@ -1323,10 +1369,10 @@ fn swarm_widget_handles_empty_swarm_and_zero_area_without_panic() {
         swarm_info: Some(SwarmInfo::default()),
         ..Default::default()
     };
-    let lines = super::render_swarm_widget(&data, Rect::new(0, 0, 40, 4)).all_lines();
-    assert_eq!(lines.len(), 1, "expected only the stats line");
+    let framed = super::render_swarm_widget(&data, Rect::new(0, 0, 40, 4)).settle();
+    assert_eq!(framed.lines.len(), 1, "expected only the stats line");
     // session_count == 0 and client_count == None: stats line is just the bee icon.
-    let text = lines_text(&lines);
+    let text = lines_text(&framed.all_lines());
     assert!(
         !text.contains("0s"),
         "zero sessions must not render: {text}"
@@ -1386,10 +1432,10 @@ fn swarm_widget_caps_member_rows_for_large_swarms() {
         ..Default::default()
     };
 
-    let lines = super::render_swarm_widget(&data, Rect::new(0, 0, 30, 10)).all_lines();
-    // Stats line + at most 3 member rows regardless of swarm size.
-    assert_eq!(lines.len(), 4, "expected stats line + capped member rows");
-    let text = lines_text(&lines);
+    let framed = super::render_swarm_widget(&data, Rect::new(0, 0, 30, 10));
+    // Stats on the border, at most 3 member rows regardless of swarm size.
+    assert_eq!(framed.lines.len(), 3, "expected capped member rows");
+    let text = lines_text(&framed.all_lines());
     assert!(text.contains("500s"), "got: {text}");
     assert!(text.contains("3c"), "got: {text}");
 }
@@ -1419,8 +1465,13 @@ fn background_widget_handles_empty_and_large_task_lists() {
         background_info: Some(info.clone()),
         ..Default::default()
     };
-    let lines = super::render_background_widget(&data, Rect::new(0, 0, 40, 8)).all_lines();
-    let text = lines_text(&lines);
+    let framed = super::render_background_widget(&data, Rect::new(0, 0, 40, 8));
+    assert_eq!(
+        framed.lines.len(),
+        6,
+        "6 task rows; summary and overflow on the border"
+    );
+    let text = lines_text(&framed.all_lines());
     assert!(text.contains("200 running"), "got: {text}");
     assert!(text.contains("+194 more"), "got: {text}");
     // Zero-size rect must not panic (row width clamps to a minimum).
@@ -1565,19 +1616,23 @@ fn background_widget_and_compact_share_summary_format() {
         ..Default::default()
     };
 
-    let widget_text = lines_text(&super::render_background_widget(
-        &data,
-        Rect::new(0, 0, 40, 1),
-    ).all_lines());
+    let framed = super::render_background_widget(&data, Rect::new(0, 0, 40, 1));
+    let widget_text = lines_text(&framed.all_lines());
     let compact = super::render_background_compact(&info, 40);
-    let compact_text = lines_text(&compact);
 
-    assert_eq!(widget_text, compact_text);
+    // The framed widget carries the summary on its top border and the compact
+    // (Overview) form carries it inline on its first row: same summary text.
+    let title = lines_text(framed.title.as_slice());
+    let compact_head = lines_text(&compact[..1]);
+    assert_eq!(title, compact_head);
+    assert!(widget_text.contains("+3 more"), "got: {widget_text}");
+    assert!(lines_text(&compact).contains("+1 more"));
     assert!(widget_text.contains("Background"), "got: {widget_text}");
     assert!(widget_text.contains("4"), "got: {widget_text}");
     assert!(!widget_text.contains("mem:"), "got: {widget_text}");
     assert!(widget_text.contains("selfdev build"), "got: {widget_text}");
     assert!(widget_text.contains("[#####-------]"), "got: {widget_text}");
+    let compact_text = lines_text(&compact);
     assert!(compact_text.contains("train.py"), "got: {compact_text}");
     assert!(compact_text.contains("cargo test"), "got: {compact_text}");
 }

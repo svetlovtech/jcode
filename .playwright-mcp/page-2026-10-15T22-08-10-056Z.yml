@@ -1,0 +1,80 @@
+- generic [ref=f3e27]:
+  - generic [ref=f3e28]:
+    - generic [ref=f3e31]:
+      - list [ref=f3e33]:
+        - listitem [ref=f3e34]:
+          - link [ref=f3e35] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - generic [ref=f3e36]:
+              - img "Кавказская Тропа" [ref=f3e37]
+              - generic [ref=f3e38]: КАВКАЗСКАЯТРОПА
+      - generic [ref=f3e39]:
+        - generic [ref=f3e40]:
+          - generic [ref=f3e41]: Обзор
+          - list [ref=f3e43]:
+            - listitem [ref=f3e44]:
+              - link "Панель управления" [ref=f3e45] [cursor=pointer]:
+                - /url: /admin/dashboard
+            - listitem [ref=f3e52]:
+              - link "Аккаунт" [ref=f3e53] [cursor=pointer]:
+                - /url: /admin/dashboard/user/account
+        - generic [ref=f3e59]:
+          - generic [ref=f3e60]: Системы
+          - list [ref=f3e62]:
+            - listitem [ref=f3e64]:
+              - button "TG Guardian" [ref=f3e65]
+            - listitem [ref=f3e72]:
+              - button "Почта" [ref=f3e73]
+            - listitem [ref=f3e82]:
+              - button "GPX Helper" [ref=f3e83]
+            - listitem [ref=f3e90]:
+              - button "Garmin Extractor" [ref=f3e91]
+            - listitem [ref=f3e99]:
+              - button "Elecache" [ref=f3e100]
+            - listitem [ref=f3e108]:
+              - link "Проверка треков" [ref=f3e109] [cursor=pointer]:
+                - /url: /admin/dashboard/trackcheck
+            - listitem [ref=f3e116]:
+              - button "OSM-мониторинг" [ref=f3e117]
+            - listitem [ref=f3e129]:
+              - button "Личный кабинет" [ref=f3e130]
+            - listitem [ref=f3e143]:
+              - button "Wannahike" [ref=f3e144]
+            - listitem [ref=f3e156]:
+              - button "Trail Now" [ref=f3e157]
+            - listitem [ref=f3e166]:
+              - button "Hikerbox" [ref=f3e167]
+            - listitem [ref=f3e177]:
+              - button "Промокоды" [expanded] [ref=f3e178]
+              - list [ref=f3e189]:
+                - listitem [ref=f3e190]:
+                  - link "Промокоды" [ref=f3e191] [cursor=pointer]:
+                    - /url: /admin/dashboard/promo
+                - listitem [ref=f3e193]:
+                  - link "Кампании" [ref=f3e194] [cursor=pointer]:
+                    - /url: /admin/dashboard/promo/campaigns
+            - listitem [ref=f3e197]:
+              - button "EventStream" [ref=f3e198]
+      - button "Toggle Sidebar" [ref=f3e203]
+    - main [ref=f3e204]:
+      - generic [ref=f3e205]:
+        - button "Toggle Sidebar" [ref=f3e206]
+        - button "Поиск по разделам" [ref=f3e208]:
+          - generic [ref=f3e209]: Поиск…
+          - generic: ⌘K
+        - generic [ref=f3e210]:
+          - button "Переключить тему" [ref=f3e211]
+          - button "Выбрать язык" [ref=f3e212]
+          - button "Меню пользователя" [ref=f3e213]:
+            - generic [ref=f3e214]: A
+      - main [ref=f3e216]:
+        - generic [ref=f3e218]:
+          - generic [ref=f3e219]:
+            - generic [ref=f3e220]:
+              - heading "Кампании промокодов" [level=1] [ref=f3e221]
+              - paragraph [ref=f3e222]: "Поводы выпуска: имя и текст привилегий по умолчанию для новых кодов."
+            - generic [ref=f3e223]:
+              - button "Обновить" [ref=f3e224]
+              - button "Новая кампания" [ref=f3e225]
+          - generic [ref=f3e226]: Кампаний пока нет — создайте первую.
+  - region "Notifications alt+T"

@@ -63,6 +63,7 @@ mod commit_log;
 pub(crate) use commit_log::CommitLogOverlay;
 mod commands_cloud;
 mod commands_colors;
+mod commands_desktop;
 mod commands_dispatch;
 mod commands_improve;
 mod commands_overnight;
@@ -74,8 +75,6 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
-/// Fork: agent ask_user prompts surfaced in the TUI (kept separate from
-/// upstream files so merges see one small module).
 pub(crate) mod fork_ask;
 /// Fork: interactive ask_user modal (all logic in the dedicated module;
 /// upstream files carry small call sites).
@@ -84,27 +83,28 @@ pub(crate) mod fork_ask_modal;
 pub(crate) mod fork_export;
 /// Fork: `/info` tool-call statistics (fork-only logic behind a small hook).
 pub(crate) mod fork_info_tools;
+/// Fork: quick prompts ([prompts] in config.toml) - expansion, palette
+/// fingerprint, and hint interning (all logic in the dedicated module).
+pub(crate) mod quick_prompts;
+/// Fork: `/mcp` slash command for managing MCP servers from the TUI (all
+/// logic in the dedicated module; upstream files carry small call sites).
+mod mcp_command;
+/// Fork: session usage-total lifecycle (the `/clear` reset for accumulated
+/// token/cost totals, shared by both clear paths).
+mod session_usage;
+
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
 pub(crate) mod idle_animation_repaint;
 mod idle_heap_release;
-/// Fork: quick prompts ([prompts] in config.toml) - expansion, palette
-/// fingerprint, and hint interning (all logic in the dedicated module).
-pub(crate) mod quick_prompts;
 mod inline_interactive;
 mod input;
 mod input_help;
 mod local;
-/// Fork: `/mcp` slash command for managing MCP servers from the TUI (all
-/// logic in the dedicated module; upstream files carry small call sites).
-mod mcp_command;
 mod misc_ui;
 mod model_context;
 mod navigation;
-/// Fork: session usage-total lifecycle (the `/clear` reset for accumulated
-/// token/cost totals, shared by both clear paths).
-mod session_usage;
 pub(crate) mod oauth_telemetry;
 mod observe;
 pub(crate) mod onboarding_flow;
@@ -187,11 +187,6 @@ struct PendingSplitPrompt {
 
 struct PendingLocalTransfer {
     receiver: mpsc::Receiver<anyhow::Result<PreparedTransferSession>>,
-}
-
-/// Fork: pending `/mcp` operation result (see `mcp_command.rs`).
-struct PendingMcpCommand {
-    receiver: mpsc::Receiver<String>,
 }
 
 /// A reasoning trace anchored in the transcript during the current turn
@@ -596,10 +591,10 @@ pub struct RunResult {
     pub rebuild_session: Option<String>,
     /// Session ID to update (download from GitHub releases and reload)
     pub update_session: Option<String>,
-    /// After `/cloud` or `/local`: exec into the session at its new location.
-    pub cloud_handoff: Option<CloudHandoff>,
     /// Session ID to restart (exec into current binary, no build)
     pub restart_session: Option<String>,
+    /// After `/cloud` or `/local`: exec into the session at its new location.
+    pub cloud_handoff: Option<CloudHandoff>,
     /// Exit code to use (for canary wrapper communication)
     pub exit_code: Option<i32>,
     /// The session ID that was active (for resume hints on exit)
@@ -744,6 +739,8 @@ pub(super) struct OvernightAutoPokeState {
 }
 
 #[derive(Clone, Debug, Default)]
+/// Memoized [`App::command_candidates`] list: registered commands plus
+/// quick-prompt entries, rebuilt only when the source set changes.
 struct CommandCandidatesCache {
     candidates: Vec<(String, &'static str)>,
     /// Fingerprint of the quick-prompt sources at build time (config
@@ -922,6 +919,11 @@ struct CostState {
 
 /// State for an in-progress OAuth/API-key login flow triggered by `/login`.
 /// TUI Application state
+/// Fork: pending `/mcp` operation result (see `mcp_command.rs`).
+struct PendingMcpCommand {
+    receiver: mpsc::Receiver<String>,
+}
+
 pub struct App {
     provider: Arc<dyn Provider>,
     registry: Registry,
@@ -995,9 +997,6 @@ pub struct App {
     // cached context after compaction, prompt rebuilds, tool-definition refreshes, or message edits.
     context_revision: u64,
     // Track last streaming activity for "stale" detection
-    /// Fork: ALL pending ask_user state (typed-answer interception, modal,
-    /// staged answer) owned by the fork_ask module. See `fork_ask::ForkAskState`.
-    pub fork_ask: crate::tui::app::fork_ask::ForkAskState,
     last_stream_activity: Option<Instant>,
     // When the user last pressed a key, mouse-scrolled, or pasted.
     //
@@ -1019,11 +1018,12 @@ pub struct App {
     // while the client was idle. Drives the starvation watchdog that recovers a
     // stranded auto-poke continuation instead of spinning forever.
     queued_followup_starved_since: Option<Instant>,
+    // Esc redirected the turn to a pending follow-up prompt. Remote servers
+    // send Done before Interrupted, so the follow-up waits for Interrupted
+    // (or this deadline) or the late Interrupted would clobber the new turn.
+    remote_interrupt_ack_deadline: Option<Instant>,
     // Reload reconnect is waiting for server history before deciding whether to continue.
     pending_reload_reconnect_status: Option<PendingReloadReconnectStatus>,
-    // While set, a queued Esc-redirect waits for the server's Interrupted event;
-    // on timeout the hold releases so the follow-up is never stranded.
-    remote_interrupt_ack_deadline: Option<Instant>,
     // Current status
     status: ProcessingStatus,
     // Subagent status (shown during Task tool execution)
@@ -1165,7 +1165,6 @@ pub struct App {
     turn_reasoning_traces: Vec<TurnReasoningTrace>,
     // Hot-reload: if set, exec into new binary with this session ID (no rebuild)
     reload_requested: Option<String>,
-    cloud_handoff_requested: Option<CloudHandoff>,
     // Hot-rebuild: if set, do full git pull + cargo build + tests then exec
     rebuild_requested: Option<String>,
     // Update: if set, check for and download update from GitHub releases then exec
@@ -1176,6 +1175,8 @@ pub struct App {
     pending_background_client_reload: Option<(String, crate::bus::ClientMaintenanceAction)>,
     // Restart: if set, exec into current binary with this session ID (no build)
     restart_requested: Option<String>,
+    // `/cloud` or `/local` finished: reattach at the new location on quit.
+    cloud_handoff_requested: Option<CloudHandoff>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
     pasted_contents: Vec<String>,
     // Pending pasted images (media_type, base64_data) attached to next message
@@ -1560,10 +1561,12 @@ pub struct App {
     pending_startup_prompt_echo: Option<String>,
     // Pending account switch from inline picker (for remote mode async processing)
     pending_account_picker_action: Option<crate::tui::AccountPickerAction>,
+    pending_mcp_command: Option<PendingMcpCommand>,
     // Keybindings for model switching
     model_switch_keys: ModelSwitchKeys,
     // Keybindings for effort switching
     effort_switch_keys: super::keybind::EffortSwitchKeys,
+    speed_switch_keys: super::keybind::SpeedSwitchKeys,
     // Keybindings for scrolling
     scroll_keys: ScrollKeys,
     // Keybinding for centered-mode toggle
@@ -1606,6 +1609,12 @@ pub struct App {
     stashed_input: Option<(String, usize)>,
     // Undo history for in-progress input editing (Ctrl+Z)
     input_undo_stack: Vec<(String, usize)>,
+    input_typing_undo: Option<(Instant, usize)>,
+
+    // Track last streaming activity for "stale" detection
+    /// Fork: ALL pending ask_user state (typed-answer interception, modal,
+    /// staged answer) owned by the fork_ask module. See `fork_ask::ForkAskState`.
+    pub fork_ask: crate::tui::app::fork_ask::ForkAskState,
     // Draft replaced by an explicit jump into prompt history (Ctrl+Up),
     // restored when Down walks back past the newest entry
     history_draft: Option<(String, usize)>,
@@ -1671,8 +1680,6 @@ pub struct App {
     pending_transfer_request: bool,
     // Local transfer preparation currently running in the background.
     pending_local_transfer: Option<PendingLocalTransfer>,
-    /// Fork: in-flight `/mcp` operation result (see `mcp_command.rs`).
-    pending_mcp_command: Option<PendingMcpCommand>,
     // Queue mode: if true, Enter during processing queues; if false, Enter queues to send next
     // Toggle with Ctrl+Tab or Ctrl+T
     queue_mode: bool,
