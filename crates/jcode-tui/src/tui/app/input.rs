@@ -532,7 +532,28 @@ pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
         .collect()
 }
 
+/// Normalize newlines in pasted text before it reaches the composer or the
+/// placeholder machinery.
+///
+/// Terminals deliver bracketed-paste line breaks as `\r\n` or a bare `\r`
+/// (xterm, Terminal.app, kitty and others translate `\n` to `\r` on the way
+/// out). The composer's sanitizer keeps only `\n`, so CR-only pastes used to
+/// lose every line break and collapse into one line. Convert CR variants to
+/// `\n` here and drop a single trailing newline the terminal appends for the
+/// "paste then Enter" muscle memory (#544).
+pub(super) fn normalize_paste_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\r') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.ends_with('\n') {
+        normalized.pop();
+    }
+    std::borrow::Cow::Owned(normalized)
+}
+
 pub(super) fn handle_text_paste(app: &mut App, text: String) {
+    let text = normalize_paste_newlines(&text).into_owned();
     crate::logging::info(&format!(
         "Text paste: {} chars, {} lines",
         text.len(),
@@ -723,6 +744,22 @@ pub(super) fn strip_terminal_control_sequences(text: &str) -> std::borrow::Cow<'
             continue;
         }
         // Drop stray C0 controls; keep tab and newline, which are meaningful.
+        // Carriage return is a line break terminals emit for pasted newlines
+        // (see `normalize_paste_newlines`): convert it instead of dropping,
+        // so a CR-only paste cannot collapse into one line. CRLF becomes a
+        // single `\n` because the `\n` that follows is copied as an ordinary
+        // character only when the `\r` did not already claim the break; here
+        // `\r` claims it and the following `\n` would double the break, so
+        // skip it explicitly below.
+        if byte == b'\r' {
+            cleaned.push('\n');
+            index += 1;
+            // Collapse CRLF into one newline.
+            if bytes.get(index) == Some(&b'\n') {
+                index += 1;
+            }
+            continue;
+        }
         if byte < 0x20 && byte != b'\t' && byte != b'\n' {
             index += 1;
             continue;

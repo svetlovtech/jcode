@@ -1730,6 +1730,30 @@ fn remote_done_finalizes_resumed_activity_without_current_message_id() {
 }
 
 #[test]
+fn cr_only_multiline_paste_keeps_line_breaks() {
+    let mut app = create_test_app();
+    // Terminals that emit CR (not CRLF) for pasted newlines used to lose
+    // every break: the sanitizer dropped \r and `.lines()` counted one line,
+    // so even a 20-line paste landed inline as mush.
+    let cr_only = ["let a = 1;", "let b = 2;", "let c = 3;", "let d = 4;", "let e = 5;"]
+        .join("\r");
+    crate::tui::app::input::handle_text_paste(&mut app, cr_only);
+    assert_eq!(
+        app.input, "[pasted 5 lines]",
+        "CR-only paste must count as 5 lines and use the placeholder"
+    );
+    assert_eq!(app.pasted_contents.len(), 1);
+    assert_eq!(app.pasted_contents[0].matches('\n').count(), 4);
+
+    // CRLF pastes: trailing \r\n must not become an extra blank line.
+    let mut app = create_test_app();
+    let crlf = "one\r\ntwo\r\n";
+    crate::tui::app::input::handle_text_paste(&mut app, crlf.to_string());
+    assert_eq!(app.input, "one\ntwo");
+    assert!(app.pasted_contents.is_empty());
+}
+
+#[test]
 fn oversized_pasted_submit_is_rejected_and_preserves_input() {
     let mut app = create_test_app();
     let pasted = format!(
