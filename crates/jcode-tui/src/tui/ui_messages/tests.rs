@@ -3769,7 +3769,7 @@ fn render_tool_message_shows_inline_diff_for_pascal_case_multiedit() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("┌─ diff"), "plain={plain}");
+    assert!(plain.contains("╭─ diff"), "plain={plain}");
     assert!(plain.contains("old line"), "plain={plain}");
     assert!(plain.contains("new line"), "plain={plain}");
 }
@@ -3803,7 +3803,7 @@ fn render_tool_message_labels_single_file_apply_patch_diff() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("┌─ diff · src/example.rs"), "plain={plain}");
+    assert!(plain.contains("╭─ diff · +1 -1 · src/example.rs"), "plain={plain}");
     assert!(plain.contains("old_value"), "plain={plain}");
     assert!(plain.contains("new_value"), "plain={plain}");
 }
@@ -3837,7 +3837,7 @@ fn render_tool_message_preserves_multi_file_apply_patch_boundaries() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let a_header = plain.find("┌─ diff · a.txt").expect("missing a.txt header");
+    let a_header = plain.find("╭─ diff · +2 -2 · a.txt").expect("missing a.txt header");
     let old_a = plain.find("old a").expect("missing a.txt deletion");
     let new_a = plain.find("new a").expect("missing a.txt addition");
     let b_header = plain
@@ -3880,10 +3880,10 @@ fn render_tool_message_shows_numbered_write_result_diff_after_input_compaction()
         .join("\n");
 
     assert!(
-        lines[0].spans.iter().any(|span| span.content == "+2"),
+        lines[1].spans.iter().any(|span| span.content == "+2"),
         "plain={plain}"
     );
-    assert!(plain.contains("┌─ diff"), "plain={plain}");
+    assert!(plain.contains("╭─ diff"), "plain={plain}");
     assert!(plain.contains("<!doctype html>"), "plain={plain}");
     assert!(plain.contains("<html lang=\"en\">"), "plain={plain}");
 }
@@ -3924,7 +3924,7 @@ fn render_tool_message_never_draws_an_empty_edit_diff_frame() {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(!plain.contains("┌─ diff"), "tool={name}, plain={plain}");
+        assert!(!plain.contains("╭─ diff"), "tool={name}, plain={plain}");
         assert!(!plain.contains("(+0 -0)"), "tool={name}, plain={plain}");
     }
 }
@@ -3961,7 +3961,7 @@ fn render_tool_message_marks_failed_apply_patch_without_empty_diff() {
         plain.trim_start().starts_with("✗ apply_patch"),
         "plain={plain}"
     );
-    assert!(!plain.contains("┌─ diff"), "plain={plain}");
+    assert!(!plain.contains("╭─ diff"), "plain={plain}");
     assert!(!plain.contains("(+0 -0)"), "plain={plain}");
 }
 
@@ -4049,11 +4049,29 @@ fn render_tool_message_full_inline_mode_shows_full_diff() {
 
     assert!(!plain.contains("more changes"), "plain={plain}");
     assert!(plain.contains("old line 4"), "plain={plain}");
+    // Long added lines wrap: the text survives across the diff rows instead
+    // of being truncated with an ellipsis, so join the source-side spans.
+    let source_text = lines
+        .iter()
+        .filter(|line| extract_line_text(line).starts_with("│ "))
+        .flat_map(|line| {
+            line.spans
+                .iter()
+                .skip(if line.spans[0].content.contains('↪') {
+                    1
+                } else {
+                    2
+                })
+        })
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
     assert!(
-        plain.contains("new line 4 suffix_4_abcdefghijklmnopqrstuvwxyz0123456789"),
+        source_text.contains("new line 4 suffix_4_abcdefghijklmnopqrstuvwxyz0123456789"),
         "plain={plain}"
     );
+    assert!(lines.iter().all(|line| line.width() <= 39), "plain={plain}");
     assert!(!plain.contains('…'), "plain={plain}");
+    assert_eq!(plain.matches("+7 -7").count(), 1, "plain={plain}");
 }
 
 #[test]
@@ -4501,11 +4519,11 @@ fn render_tool_message_edit_row_does_not_duplicate_diff_header_path() {
             .count();
         assert_eq!(occurrences, 1, "path should appear once: {text:#?}");
         assert!(
-            text[1].contains("diff Â· +1 -1 Â· /repo/src/very_specific_name.rs"),
+            text[1].contains("diff · +1 -1 · /repo/src/very_specific_name.rs"),
             "{text:#?}"
         );
         if let Some(intent) = intent {
-            assert!(text[0].contains(&format!("edit Â· {intent}")), "{text:#?}");
+            assert!(text[0].contains(&format!("edit · {intent}")), "{text:#?}");
         }
 
         // With diffs hidden the row is the only place the path can appear.
