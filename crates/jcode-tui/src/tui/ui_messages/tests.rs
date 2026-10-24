@@ -107,6 +107,8 @@ fn render_tool_message_compacts_every_multi_file_diff_header() {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
     for width in [40, 72, 120] {
         for mode in [
@@ -2599,10 +2601,15 @@ fn transcript_assistant_message_omits_tool_summary_restored_from_history() {
         timestamp: None,
         tool_duration_ms: None,
     };
+    let live = DisplayMessage {
+        tool_calls: Vec::new(),
+        ..restored.clone()
     };
     let render = |msg: &DisplayMessage| -> Vec<String> {
         render_assistant_message(msg, 80, crate::config::DiffDisplayMode::Off)
             .iter()
+            .map(extract_line_text)
+            .collect()
     };
     let restored_lines = render(&restored);
     assert!(
@@ -3905,7 +3912,7 @@ fn render_tool_message_never_draws_an_empty_edit_diff_frame() {
                 input: serde_json::json!({"file_path": "demo.txt"}),
                 intent: None,
                 thought_signature: None,
-            }),
+        }),
             timestamp: None,
             tool_duration_ms: None,
         };
@@ -4481,7 +4488,9 @@ fn render_tool_message_edit_row_does_not_duplicate_diff_header_path() {
                 }),
                 intent: intent.map(str::to_string),
                 thought_signature: None,
-            }),
+        }),
+            timestamp: None,
+            tool_duration_ms: None,
         };
 
         let lines = render_tool_message(&msg, 160, crate::config::DiffDisplayMode::Inline);
@@ -4563,7 +4572,9 @@ fn render_tool_message_failures_keep_normal_headers_and_muted_reasons() {
                     input: input.clone(),
                     intent: intent.map(str::to_string),
                     thought_signature: None,
-                }),
+        }),
+                timestamp: None,
+                tool_duration_ms: None,
             };
             let lines = render_tool_message(&msg, 140, crate::config::DiffDisplayMode::Inline);
             assert_eq!(lines.len(), 2, "{name}");
@@ -4641,6 +4652,8 @@ fn render_tool_message_mixed_batch_keeps_call_labels_and_nested_failure_reason()
                 {"tool": "bash", "parameters": {"command": "true"}, "intent": "Check success"}
             ]}), intent: None, thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
     let lines = render_tool_message(&msg, 140, crate::config::DiffDisplayMode::Off);
     assert_eq!(lines.len(), 4);
@@ -4693,6 +4706,8 @@ fn render_tool_message_batch_level_failure_does_not_invent_successful_children()
             intent: Some("Inspect sources".to_string()),
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     };
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
     assert_eq!(lines.len(), 2);
@@ -4965,6 +4980,4 @@ fn batch_subcall_colors_duration_independently_from_tokens() {
         assert_eq!(tokens.style.fg, Some(rgb(224, 118, 118)));
         assert!(line.width() <= 60);
     }
-}
-
 }

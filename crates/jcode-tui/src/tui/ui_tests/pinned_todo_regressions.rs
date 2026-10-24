@@ -108,6 +108,8 @@ fn hidden_todo(payload: &str) -> DisplayMessage {
             intent: None,
             thought_signature: None,
         }),
+        timestamp: None,
+        tool_duration_ms: None,
     }
 }
 
