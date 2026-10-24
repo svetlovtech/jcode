@@ -1,5 +1,10 @@
 #[test]
 fn first_prompt_preserves_welcome_header_spacing() {
+    // Hold the env lock (before the render lock, matching the env-then-render
+    // order) so a sibling test's JCODE_IDLE_ANIMATION override cannot turn the
+    // idle donut on for the welcome frame only.
+    let _env = crate::storage::lock_test_env();
+    crate::config::invalidate_config_cache();
     let _lock = viewport_snapshot_test_lock();
     for (width, height) in [(80, 40), (100, 60), (60, 80)] {
         for centered in [false, true] {
@@ -30,7 +35,7 @@ fn first_prompt_preserves_welcome_header_spacing() {
                     .lines()
                     .position(|line| line.contains("/model to switch")),
                 Some(header_y),
-                "submitting must not jump the transcript to the top: {submitted}"
+                "submitting must not jump the transcript to the top ({width}x{height} centered={centered}):\nWELCOME:\n{welcome}\nSUBMITTED:\n{submitted}"
             );
             let prompt_y = submitted
                 .lines()
@@ -61,7 +66,8 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
                 centered_mode: centered,
                 chat_native_scrollbar: scrollbar,
                 info_widget_data: info_widget::InfoWidgetData {
-                    model: Some(WIDGET.into()),
+                    model: Some("gpt-5.6-sol".into()),
+                    session_name: Some(WIDGET.into()),
                     reasoning_effort: Some("high".into()),
                     context_limit: Some(256_000),
                     observed_context_tokens: Some(1_000),
@@ -361,7 +367,7 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
     let _env = crate::storage::lock_test_env();
     let _lock = viewport_snapshot_test_lock();
     // Construct the rendered text independently of the reservation helper.
-    let shortcut = format!(" [{}] [⇧] [A]", viewport::copy_badge_alt_label());
+    let shortcut = format!(" [{}⇧A]", viewport::copy_badge_alt_label());
     let shortcut_width = unicode_width::UnicodeWidthStr::width(shortcut.as_str());
     let mut margins = info_widget::Margins {
         right_widths: vec![30, 30, 30],
@@ -417,7 +423,7 @@ fn test_expand_badge_reserves_right_margin_for_info_widgets() {
 fn test_copy_badge_truncates_full_width_line_before_appending_shortcut() {
     let _env = crate::storage::lock_test_env();
     let _lock = viewport_snapshot_test_lock();
-    let shortcut = format!(" [{}] [⇧] [A]", viewport::copy_badge_alt_label());
+    let shortcut = format!(" [{}⇧A]", viewport::copy_badge_alt_label());
     let shortcut_width = unicode_width::UnicodeWidthStr::width(shortcut.as_str());
     let copy_badge_ui = crate::tui::app::CopyBadgeUiState::default();
     let reserved = copy_badge_reserved_width('a', &copy_badge_ui, Instant::now());
@@ -441,7 +447,7 @@ fn test_copy_badge_line_prefers_row_with_free_width_over_truncation() {
     let full = Line::from("│ ".to_string() + &"x".repeat(60));
     let short = Line::from("│ short".to_string());
     let visible_lines = vec![full, short];
-    let reserved = 14usize; // " [Alt] [⇧] [S]"
+    let reserved = 8usize; // " [Alt⇧S]"
 
     let picked = pick_copy_badge_line(0, 0, 2, 0, 2, &visible_lines, 62, reserved);
     assert_eq!(picked, 1, "badge should move to the line with free width");

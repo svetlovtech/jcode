@@ -9,6 +9,19 @@ pub struct OpenAiResetCredits {
     pub ordinary_usage_allowed: Option<bool>,
 }
 
+/// Read-only Claude session-limit reset offer (the `/limit-reset` program),
+/// pinned to the login whose usage was fetched. `None` label is the default
+/// scope. Only fetched at the five-hour wall, where the offer applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnthropicLimitResetOffer {
+    pub account_label: Option<String>,
+    /// The server says a reset can be claimed right now.
+    pub available: bool,
+    /// RFC3339 time the next reset becomes available when one was spent.
+    pub next_available_at: Option<String>,
+    pub resets_per_week: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProviderUsage {
     pub provider_name: String,
@@ -16,6 +29,7 @@ pub struct ProviderUsage {
     pub extra_info: Vec<(String, String)>,
     pub hard_limit_reached: bool,
     pub openai_reset_credits: Option<OpenAiResetCredits>,
+    pub anthropic_limit_reset: Option<AnthropicLimitResetOffer>,
     pub error: Option<String>,
     /// When jcode last successfully used this login/credential (unix seconds).
     /// Drives most-recently-used-first ordering in `/usage`. `None` sorts last.
@@ -688,6 +702,42 @@ pub struct ErrorCounts {
     pub tool_error: u32,
     pub mcp_error: u32,
     pub rate_limited: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageReportEvent {
+    /// Version 2 uses uncached input, disjoint cache buckets and stable event IDs.
+    #[serde(default)]
+    pub usage_contract_version: u32,
+    /// UTC provider usage observation time, preserved across durable retries.
+    #[serde(default)]
+    pub occurred_at: String,
+    pub event_id: String,
+    pub id: String,
+    /// Logical session that made the call (the agent's own session id when
+    /// known). Not the process-global telemetry session, so concurrent agents
+    /// in one server process are attributed separately.
+    pub session_id: String,
+    pub event: &'static str,
+    pub version: String,
+    pub os: &'static str,
+    pub arch: &'static str,
+    /// What made the call: `agent`, `compaction`, `sidecar`.
+    pub source: &'static str,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub total_tokens: u64,
+    /// Number of provider responses folded into this report.
+    pub responses: u32,
+    pub schema_version: u32,
+    pub build_channel: String,
+    pub is_git_checkout: bool,
+    pub is_ci: bool,
+    pub ran_from_cargo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

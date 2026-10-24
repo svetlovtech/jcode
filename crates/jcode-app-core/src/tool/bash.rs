@@ -1,4 +1,6 @@
-use super::{StdinInputRequest, StdinRequestSource, Tool, ToolContext, ToolOutput};
+use super::{
+    BACKGROUND_WAIT_GUIDANCE, StdinInputRequest, StdinRequestSource, Tool, ToolContext, ToolOutput,
+};
 use crate::background::TaskResult;
 use crate::bus::{
     BackgroundTaskProgress, BackgroundTaskProgressKind, BackgroundTaskProgressSource,
@@ -29,10 +31,10 @@ const MAX_OUTPUT_LEN: usize = 30000;
 const DEFAULT_TIMEOUT_MS: u64 = 120000;
 const STDIN_POLL_INTERVAL_MS: u64 = 500;
 const STDIN_INITIAL_DELAY_MS: u64 = 300;
+const STDIN_RESPONSE_TIMEOUT_MS: u64 = 1500;
 const PROGRESS_MARKER_PREFIX: &str = "JCODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "JCODE_CHECKPOINT ";
-const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `JCODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `JCODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly. Put large temporary files, worktrees, and virtual environments under `$JCODE_SCRATCH_DIR`, not `/tmp`, because `/tmp` may be RAM-backed.";
-const BASH_TOOL_DESCRIPTION: &str = "Run a bash command.";
+const BASH_TOOL_DESCRIPTION: &str = "Run a bash command. For repository searches, prefer agentgrep or rg over grep -r. rg skips hidden and ignored files by default, not all untracked files. Use --hidden --no-ignore when those files must be searched.";
 const WINDOWS_SHELL_TOOL_DESCRIPTION: &str =
     "Run a Windows cmd.exe command (compatibility name `bash`). Use cmd.exe syntax, not Bash.";
 
@@ -785,12 +787,15 @@ mod utf8_truncation_tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn build_shell_command_uses_disk_backed_scratch_directory() {
+    #[test]
+    fn build_shell_command_uses_disk_backed_scratch_directory() {
+        // Keep JCODE_HOME stable until the final directory assertion. Running
+        // synchronously avoids holding the environment MutexGuard across await.
+        let _env_lock = crate::storage::lock_test_env();
         let expected = super::tool_scratch_dir().expect("jcode scratch directory");
         let output = build_shell_command("printf '%s\\n%s\\n' \"$TMPDIR\" \"$JCODE_SCRATCH_DIR\"")
+            .as_std_mut()
             .output()
-            .await
             .expect("run bash command");
         assert!(output.status.success(), "bash command should succeed");
         let stdout = String::from_utf8(output.stdout).expect("utf-8 scratch paths");
@@ -901,12 +906,11 @@ impl Tool for BashTool {
         if crate::browser::is_browser_command(&params.command) {
             params.command = crate::browser::rewrite_command_with_full_path(&params.command);
 
-            // Start/attach a browser session for this jcode session.
-            // This gives each agent its own browser tab, preventing
-            // multi-agent conflicts when using the browser bridge.
+            // Give each agent its own browser session without blocking async workers.
             if !cfg!(windows)
                 && std::env::var("BROWSER_SESSION").is_err()
-                && let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
+                && let Some(session_name) =
+                    crate::browser::ensure_browser_session_for_async(&ctx.session_id, None).await
             {
                 params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
             }
@@ -924,8 +928,8 @@ impl Tool for BashTool {
 }
 
 const FILE_EDIT_HINT: &str = "Note: this command edits files in place. Next time use `edit` \
-(exact replacements, all-or-nothing, pass `edits` for several), `replace` (regex or multi-file, \
-with expected_count), or `apply_patch` (multi-file patches). They fail loudly on a missed match \
+(exact replacements, all-or-nothing, pass `edits` for several) or `apply_patch` \
+(multi-file patches). They fail loudly on a missed match \
 instead of silently writing nothing, and show a reviewable diff.";
 
 /// Detect shell commands that rewrite source files in place, where a missed
@@ -1010,6 +1014,7 @@ impl BashTool {
 
         let mut command = build_shell_command(&params.command);
         command
+            .env("JCODE_SESSION_ID", &ctx.session_id)
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1091,8 +1096,17 @@ impl BashTool {
                                         break;
                                     }
 
-                                    match response_rx.await {
-                                        Ok(input) => {
+                                    // Most clients cannot answer stdin prompts. Without a
+                                    // prompt reply, close stdin so commands that read it
+                                    // (e.g. `rg pattern` with no path) see EOF instead of
+                                    // hanging until the tool timeout.
+                                    match tokio::time::timeout(
+                                        Duration::from_millis(STDIN_RESPONSE_TIMEOUT_MS),
+                                        response_rx,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(input)) => {
                                             let line = if input.ends_with('\n') {
                                                 input
                                             } else {
@@ -1106,7 +1120,10 @@ impl BashTool {
                                                 break;
                                             }
                                         }
-                                        Err(_) => break,
+                                        Ok(Err(_)) | Err(_) => {
+                                            drop(stdin_pipe);
+                                            break;
+                                        }
                                     }
 
                                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1180,17 +1197,14 @@ impl BashTool {
                      Name: {}\n\
                      Output file: {}\n\
                      Status file: {}\n\n\
+                     {BACKGROUND_WAIT_GUIDANCE}\n\n\
                      The command is still running; do not rerun it unless you intentionally want a second copy.\n\
-                     Use `bg` with action=\"wait\" and task_id=\"{}\" to wait for completion or the next progress checkpoint.\n\
-                     Use `bg` with action=\"output\" and task_id=\"{}\" to inspect output.\n\
                      If you expected it to finish quickly and it did not, the `timeout` parameter is in MILLISECONDS; pass a larger value or omit it.",
                     timeout_ms as f64 / 1000.0,
                     info.task_id,
                     display_name,
                     info.output_file.display(),
                     info.status_file.display(),
-                    info.task_id,
-                    info.task_id,
                 );
 
                 Ok(ToolOutput::new(output)
@@ -1232,6 +1246,7 @@ impl BashTool {
         let display_name = summarize_background_command(params.intent.as_deref(), &params.command);
 
         let mut cmd = build_detached_shell_wrapper(&params.command);
+        cmd.env("JCODE_SESSION_ID", &ctx.session_id);
         let stdout = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1290,17 +1305,14 @@ impl BashTool {
                      Foreground time used: {:.1}s\n\
                      Output file: {}\n\
                      Status file: {}\n\n\
-                     The command is still running; do not rerun it unless you intentionally want a second copy.\n\
-                     Use `bg` with action=\"wait\" and task_id=\"{}\" to wait for completion or the next progress checkpoint.\n\
-                     Use `bg` with action=\"output\" and task_id=\"{}\" to inspect output.",
+                     {BACKGROUND_WAIT_GUIDANCE}\n\n\
+                     The command is still running; do not rerun it unless you intentionally want a second copy.",
                     timeout_ms as f64 / 1000.0,
                     info.task_id,
                     display_name,
                     elapsed.as_secs_f64(),
                     info.output_file.display(),
                     info.status_file.display(),
-                    info.task_id,
-                    info.task_id,
                 );
                 return Ok(ToolOutput::new(output)
                     .with_title(
@@ -1340,11 +1352,10 @@ impl BashTool {
                     .await;
                 spawn_detached_progress_follower(info.task_id.clone(), info.output_file.clone());
                 let output = format!(
-                    "Command continued in background due to reload.\n\nTask ID: {}\nOutput file: {}\nStatus file: {}\n\nUse `bg` with action=\"wait\" and task_id=\"{}\" after reload to wait for completion or the next progress checkpoint.",
+                    "Command continued in background due to reload.\n\nTask ID: {}\nOutput file: {}\nStatus file: {}\n\n{BACKGROUND_WAIT_GUIDANCE}",
                     info.task_id,
                     info.output_file.display(),
                     info.status_file.display(),
-                    info.task_id,
                 );
                 return Ok(ToolOutput::new(output)
                     .with_title(
@@ -1373,6 +1384,7 @@ impl BashTool {
         let description = params.intent.clone();
         let display_name = summarize_background_command(description.as_deref(), &command);
         let working_dir = ctx.working_dir.clone();
+        let session_id_env = ctx.session_id.clone();
         let timeout_ms = params.timeout.map(|timeout| timeout.min(600000));
         let timeout_duration = timeout_ms.map(Duration::from_millis);
 
@@ -1387,6 +1399,7 @@ impl BashTool {
                 wake,
 				move |output_path| async move {
 					let mut cmd = build_shell_command(&command);
+					cmd.env("JCODE_SESSION_ID", &session_id_env);
 					#[cfg(unix)]
 					unsafe {
 						cmd.pre_exec(|| {
@@ -1516,7 +1529,7 @@ impl BashTool {
         } else if notify {
             "You will be notified when the task completes."
         } else {
-            "Notifications disabled. Use `bg` tool to check status."
+            "Notifications disabled."
         };
 
         let stall_msg = match params.stall_wake_seconds {
@@ -1536,25 +1549,19 @@ impl BashTool {
         };
 
         let output = format!(
-            "Command started in background.\n\n\
+            "Command started in background as requested.\n\n\
              Task ID: {}\n\
              Name: {}\n\
              Output file: {}\n\
              Status file: {}\n\n\
-             {}\n\
-             {}To wait for completion/checkpoints: use the `bg` tool with action=\"wait\" and task_id=\"{}\"\n\
-             To check progress immediately: use the `bg` tool with action=\"status\" and task_id=\"{}\"\n\
-             To see output: use the `read` tool on the output file, or `bg` with action=\"output\"\n\n\
-             {}",
+             {}\n{}\n\
+             {BACKGROUND_WAIT_GUIDANCE}",
             info.task_id,
             display_name,
             info.output_file.display(),
             info.status_file.display(),
             notify_msg,
             stall_msg,
-            info.task_id,
-            info.task_id,
-            BACKGROUND_PROGRESS_GUIDANCE,
         );
 
         Ok(ToolOutput::new(output)

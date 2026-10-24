@@ -75,7 +75,6 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
         let _enter = runtime.enter();
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -86,10 +85,11 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::OpenAI),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -107,7 +107,11 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
 
         assert!(provider.openai_provider().is_some());
         assert!(provider.model_routes().iter().any(|route| {
-            route.provider == "OpenAI" && route.api_method == "openai-oauth" && route.available
+            route.provider == "OpenAI"
+                && route.api_method_kind() == ModelRouteApiMethod::OpenAIOAuth
+                && jcode_provider_core::oauth_account_label(&route.api_method)
+                    == crate::auth::codex::active_account_label().as_deref()
+                && route.available
         }));
     });
 }
@@ -143,7 +147,6 @@ fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
         .expect("save fresh test OpenAI auth");
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(Some(Arc::clone(&existing) as Arc<dyn Provider>)),
             copilot_api: RwLock::new(None),
@@ -154,10 +157,11 @@ fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::OpenAI),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -181,7 +185,6 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
         let _enter = runtime.enter();
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -192,10 +195,11 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -215,7 +219,11 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
 
         assert!(provider.anthropic_provider().is_some());
         assert!(provider.model_routes().iter().any(|route| {
-            route.provider == "Anthropic" && route.api_method == "claude-oauth" && route.available
+            route.provider == "Anthropic"
+                && route.api_method_kind() == ModelRouteApiMethod::ClaudeOAuth
+                && jcode_provider_core::oauth_account_label(&route.api_method)
+                    == crate::auth::claude::active_account_label().as_deref()
+                && route.available
         }));
     });
 }
@@ -227,7 +235,6 @@ fn test_on_auth_changed_hot_initializes_anthropic_from_api_key_and_marks_routes_
         let _enter = runtime.enter();
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -238,10 +245,11 @@ fn test_on_auth_changed_hot_initializes_anthropic_from_api_key_and_marks_routes_
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -292,7 +300,6 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
         let _enter = runtime.enter();
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -303,10 +310,11 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -329,23 +337,31 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
             .iter()
             .find(|route| {
                 route.provider == "Anthropic"
-                    && route.api_method == "claude-oauth"
+                    && route.api_method_kind() == ModelRouteApiMethod::ClaudeOAuth
+                    && jcode_provider_core::oauth_account_label(&route.api_method)
+                        == crate::auth::claude::active_account_label().as_deref()
                     && route.model == "claude-opus-4-6"
             })
             .expect("plain opus route");
         assert!(plain_opus.available);
-        assert!(plain_opus.detail.is_empty());
+        let label = crate::auth::claude::active_account_label().expect("saved Claude account");
+        assert_eq!(plain_opus.detail, format!("account {label}"));
 
         let opus_1m = routes
             .iter()
             .find(|route| {
                 route.provider == "Anthropic"
-                    && route.api_method == "claude-oauth"
+                    && route.api_method_kind() == ModelRouteApiMethod::ClaudeOAuth
+                    && jcode_provider_core::oauth_account_label(&route.api_method)
+                        == crate::auth::claude::active_account_label().as_deref()
                     && route.model == "claude-opus-4-6[1m]"
             })
             .expect("1m opus route");
         assert!(!opus_1m.available);
-        assert_eq!(opus_1m.detail, "requires extra usage");
+        assert_eq!(
+            opus_1m.detail,
+            format!("account {label} · requires extra usage")
+        );
     });
 }
 
@@ -358,7 +374,6 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
                 let _enter = runtime.enter();
 
                 let provider = MultiProvider {
-                    claude: RwLock::new(None),
                     anthropic: RwLock::new(None),
                     openai: RwLock::new(None),
                     copilot_api: RwLock::new(None),
@@ -369,10 +384,11 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
                     openrouter: RwLock::new(None),
                     openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                     active_openai_compatible_profile: RwLock::new(None),
+                    session_id: RwLock::new(None),
                     active: RwLock::new(ActiveProvider::OpenRouter),
-                    use_claude_cli: false,
                     startup_notices: RwLock::new(Vec::new()),
                     initial_provider: Some(ActiveProvider::OpenRouter),
+                    catalog_scope: next_catalog_scope(),
                     routes_memo: std::sync::Mutex::new(None),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
@@ -399,7 +415,6 @@ fn test_on_auth_changed_preserves_openrouter_model_and_explicit_provider_pin() {
                 let runtime = enter_test_runtime();
                 let _enter = runtime.enter();
                 let provider = MultiProvider {
-                    claude: RwLock::new(None),
                     anthropic: RwLock::new(None),
                     openai: RwLock::new(None),
                     copilot_api: RwLock::new(None),
@@ -410,10 +425,11 @@ fn test_on_auth_changed_preserves_openrouter_model_and_explicit_provider_pin() {
                     openrouter: RwLock::new(None),
                     openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                     active_openai_compatible_profile: RwLock::new(None),
+                    session_id: RwLock::new(None),
                     active: RwLock::new(ActiveProvider::OpenRouter),
-                    use_claude_cli: false,
                     startup_notices: RwLock::new(Vec::new()),
                     initial_provider: Some(ActiveProvider::OpenRouter),
+                    catalog_scope: next_catalog_scope(),
                     routes_memo: std::sync::Mutex::new(None),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
@@ -457,7 +473,6 @@ fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
             });
 
             let provider = MultiProvider {
-                claude: RwLock::new(None),
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
                 copilot_api: RwLock::new(None),
@@ -468,10 +483,11 @@ fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
                 openrouter: RwLock::new(None),
                 openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                 active_openai_compatible_profile: RwLock::new(None),
+                session_id: RwLock::new(None),
                 active: RwLock::new(ActiveProvider::Copilot),
-                use_claude_cli: false,
                 startup_notices: RwLock::new(Vec::new()),
                 initial_provider: Some(ActiveProvider::Copilot),
+                catalog_scope: next_catalog_scope(),
                 routes_memo: std::sync::Mutex::new(None),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
@@ -539,7 +555,6 @@ fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_ex
         .expect("save expired antigravity auth");
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -550,10 +565,11 @@ fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_ex
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Antigravity),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Antigravity),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -570,7 +586,6 @@ fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_ex
 #[test]
 fn test_multi_provider_antigravity_routes_do_not_include_legacy_duplicate_entries() {
     let provider = MultiProvider {
-        claude: RwLock::new(None),
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
@@ -581,10 +596,11 @@ fn test_multi_provider_antigravity_routes_do_not_include_legacy_duplicate_entrie
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
+        session_id: RwLock::new(None),
         active: RwLock::new(ActiveProvider::Antigravity),
-        use_claude_cli: false,
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: Some(ActiveProvider::Antigravity),
+        catalog_scope: next_catalog_scope(),
         routes_memo: std::sync::Mutex::new(None),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
@@ -709,7 +725,6 @@ fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
         .expect("save test Gemini auth");
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -720,10 +735,11 @@ fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Gemini),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Gemini),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -753,7 +769,6 @@ fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
             });
 
             let provider = MultiProvider {
-                claude: RwLock::new(None),
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
                 copilot_api: RwLock::new(None),
@@ -764,10 +779,11 @@ fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
                 openrouter: RwLock::new(None),
                 openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                 active_openai_compatible_profile: RwLock::new(None),
+                session_id: RwLock::new(None),
                 active: RwLock::new(ActiveProvider::Cursor),
-                use_claude_cli: false,
                 startup_notices: RwLock::new(Vec::new()),
                 initial_provider: Some(ActiveProvider::Cursor),
+                catalog_scope: next_catalog_scope(),
                 routes_memo: std::sync::Mutex::new(None),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };

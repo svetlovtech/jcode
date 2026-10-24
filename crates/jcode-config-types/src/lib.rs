@@ -13,7 +13,11 @@ fn jcode_home_dir() -> Option<std::path::PathBuf> {
 }
 
 mod display;
-pub use display::DisplayConfig;
+mod menubar;
+mod power;
+mod session;
+pub use session::{HibernationMode, SessionConfig};
+pub use {display::DisplayConfig, menubar::MenubarConfig, power::PowerConfig};
 pub mod keybindings;
 mod serde_lenient;
 pub use keybindings::{
@@ -166,30 +170,6 @@ mod diff_display_mode_tests {
                 serde_json::from_str::<DiffDisplayMode>(&encoded).unwrap(),
                 mode
             );
-        }
-    }
-}
-
-/// When to show the overscroll status line (model/provider/context info below
-/// the input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OverscrollStatusMode {
-    /// Never show the status line.
-    Off,
-    /// Always show the status line below the input (default).
-    #[default]
-    On,
-    /// Elastic reveal: show it briefly when scrolling past the bottom.
-    Overscroll,
-}
-
-impl OverscrollStatusMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-            Self::Overscroll => "overscroll",
         }
     }
 }
@@ -360,6 +340,21 @@ impl std::fmt::Display for UpdateChannel {
     }
 }
 
+
+/// When to show the overscroll status line (model/provider/context info below
+/// the input).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverscrollStatusMode {
+    /// Never show the status line.
+    Off,
+    /// Always show the status line below the input (default).
+    #[default]
+    On,
+    /// Elastic reveal: show it briefly when scrolling past the bottom.
+    Overscroll,
+}
+
 /// Cross-provider failover behavior when the same input would be resent elsewhere.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -396,14 +391,26 @@ pub struct CompactionConfig {
     /// Compaction mode: reactive (default), proactive, or semantic
     pub mode: CompactionMode,
 
+    /// [reactive] Context fraction that starts background compaction.
+    pub reactive_threshold: f32,
+
+    /// [reactive] Alternative token threshold, whichever is reached first.
+    /// Zero disables the token alternative.
+    pub reactive_threshold_tokens: usize,
+
     /// [proactive] Number of turns to look ahead when projecting token growth
     pub lookahead_turns: usize,
 
     /// [proactive] EWMA alpha for token growth smoothing (0.0-1.0, higher = more recency bias)
     pub ewma_alpha: f32,
 
-    /// [proactive/semantic] Minimum context fill level before any proactive check fires (0.0-1.0)
+    /// [proactive/semantic] Minimum context fill level (0.0-1.0), alternatively
+    /// satisfied by proactive_floor_tokens when that alternative is enabled.
     pub proactive_floor: f32,
+
+    /// [proactive/semantic] Alternative minimum token count. Either this count
+    /// or proactive_floor must be reached. Zero disables the token alternative.
+    pub proactive_floor_tokens: usize,
 
     /// [proactive/semantic] Minimum number of token snapshots needed before proactive check
     pub min_samples: usize,
@@ -438,9 +445,12 @@ impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             mode: CompactionMode::Reactive,
+            reactive_threshold: 0.80,
+            reactive_threshold_tokens: 400_000,
             lookahead_turns: 15,
             ewma_alpha: 0.3,
             proactive_floor: 0.40,
+            proactive_floor_tokens: 150_000,
             min_samples: 3,
             stall_window: 5,
             min_turns_between_compactions: 10,
@@ -601,16 +611,13 @@ pub struct AgentsConfig {
     /// string to change the worker default. An explicit `model` in the swarm
     /// tool overrides this default for newly spawned workers.
     pub swarm_model: Option<String>,
-    /// Optional default reasoning effort for spawned swarm/subagent sessions
-    /// (`"low"`, `"medium"`, `"high"`, ...). Applied when a `swarm spawn`
-    /// call does not pass an explicit `effort`. Leave unset to let workers
-    /// inherit the provider-wide reasoning effort.
+    /// Reasoning effort for spawned swarm workers (`"low"`, `"medium"`,
+    /// `"high"`, ...). The swarm tool does not let agents choose worker
+    /// effort. Unset means `"low"`.
     pub swarm_effort: Option<String>,
-    /// Root reasoning effort in light swarm mode. Unset or invalid means `max`.
+    /// Root reasoning effort in swarm mode. Unset or invalid means `low`.
     /// This does not change worker effort (`swarm_effort`).
     pub swarm_root_effort: Option<String>,
-    /// Root reasoning effort in deep swarm mode. Unset or invalid means `max`.
-    pub swarm_deep_root_effort: Option<String>,
     /// Default terminal mode for swarm-created agents.
     pub swarm_spawn_mode: SwarmSpawnMode,
     /// Maximum percentage (1-90) of the chat column height the inline swarm
@@ -624,10 +631,16 @@ pub struct AgentsConfig {
     /// as chips on a single row.
     #[serde(default)]
     pub swarm_strip_layout: SwarmStripLayout,
-    /// Jev Decisions provider for recall: auto, openrouter, typesafe, aimlapi,
-    /// or jcode. Auto uses a provider-specific BYOK credential before Jcode.
+    /// Jev Decisions provider for recall: auto, openrouter, typesafe, laya,
+    /// aimlapi, or jcode. Auto uses a provider-specific BYOK credential before Jcode.
     #[serde(default = "default_memory_jev_provider")]
     pub memory_jev_provider: String,
+    /// Optional model override for memory Jev Decisions.
+    pub memory_jev_model: Option<String>,
+    /// Optional model override for browser Jev Decisions.
+    pub browser_jev_model: Option<String>,
+    /// Optional model override for voice Jev Decisions.
+    pub voice_jev_model: Option<String>,
     /// Minimum Jev relevance probability. Invalid values fail closed.
     #[serde(default = "default_memory_jev_threshold")]
     pub memory_jev_threshold: f32,
@@ -663,13 +676,28 @@ pub struct AgentsConfig {
     #[serde(default)]
     pub memory_embedding_dim: Option<usize>,
     /// Maximum number of live swarm worker agents in one swarm. This is the RAM
-    /// safety budget for both recursive ad hoc spawning and deep-mode `run_plan`
-    /// parallelism. Completed/stopped workers do not consume slots. Light mode
-    /// still uses a smaller fixed fan-out. `0` disables this configurable guard,
+    /// safety budget for spawning. Completed/stopped workers do not consume
+    /// slots. `0` disables this configurable guard,
     /// leaving only the absolute `MAX_SWARM_MEMBERS` hard cap.
     /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
     #[serde(default = "default_swarm_max_concurrent_agents")]
     pub swarm_max_concurrent_agents: usize,
+    /// Stalled-worker watchdog window in seconds. A running swarm worker with
+    /// no streamed tokens, tool events, or task heartbeats for this long, and
+    /// no tool currently executing, is flagged as stalled in swarm status and
+    /// its coordinator is notified once. `0` disables the watchdog.
+    /// Env override: `JCODE_SWARM_STALL_AFTER_SECS`.
+    #[serde(default = "default_swarm_stall_after_secs")]
+    pub swarm_stall_after_secs: u64,
+    /// When the watchdog flags a worker as stalled, also queue a short nudge
+    /// message into the worker's own session. Off by default.
+    /// Env override: `JCODE_SWARM_STALL_NUDGE`.
+    #[serde(default)]
+    pub swarm_stall_nudge: bool,
+}
+
+fn default_swarm_stall_after_secs() -> u64 {
+    600
 }
 
 fn default_swarm_max_concurrent_agents() -> usize {
@@ -710,11 +738,13 @@ impl Default for AgentsConfig {
             swarm_model: None,
             swarm_effort: None,
             swarm_root_effort: None,
-            swarm_deep_root_effort: None,
             swarm_spawn_mode: SwarmSpawnMode::default(),
             swarm_gallery_max_pct: None,
             swarm_strip_layout: SwarmStripLayout::default(),
             memory_jev_provider: default_memory_jev_provider(),
+            memory_jev_model: None,
+            browser_jev_model: None,
+            voice_jev_model: None,
             memory_jev_threshold: default_memory_jev_threshold(),
             memory_model: None,
             memory_sidecar_enabled: default_memory_sidecar_enabled(),
@@ -726,25 +756,22 @@ impl Default for AgentsConfig {
             memory_embedding_base_url: None,
             memory_embedding_dim: None,
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
+            swarm_stall_after_secs: default_swarm_stall_after_secs(),
+            swarm_stall_nudge: false,
         }
     }
 }
 
 impl AgentsConfig {
-    /// Resolve a swarm mode's root effort without allowing orchestration
-    /// sentinels to recurse into another mode. Unknown values preserve the
-    /// historical maximum-effort behavior without invalidating other settings.
-    pub fn root_effort_for_swarm(&self, deep: bool) -> &'static str {
-        let configured = if deep {
-            self.swarm_deep_root_effort.as_deref()
-        } else {
-            self.swarm_root_effort.as_deref()
-        };
-        let value = configured.unwrap_or("max").trim();
+    /// Resolve swarm mode's root effort without allowing the orchestration
+    /// sentinel to recurse into itself. Unknown values use the low-effort
+    /// default without invalidating other settings.
+    pub fn root_effort_for_swarm(&self) -> &'static str {
+        let value = self.swarm_root_effort.as_deref().unwrap_or("low").trim();
         ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
             .into_iter()
             .find(|level| level.eq_ignore_ascii_case(value))
-            .unwrap_or("max")
+            .unwrap_or("low")
     }
 }
 
@@ -930,6 +957,12 @@ impl<'de> Deserialize<'de> for HookCommands {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HooksConfig {
+    /// Synchronous input transformers run before each tool call. Each receives
+    /// the tool input JSON on stdin and may print replacement JSON on stdout.
+    /// Empty stdout or any failure leaves the input unchanged.
+    pub pre_tool_transform: Option<HookCommands>,
+    /// Max milliseconds to wait for each input transformer (default: 500).
+    pub pre_tool_transform_timeout_ms: u64,
     /// Runs when an agent turn begins (after the user message is added and
     /// before the model starts generating). Fires before the first `pre_tool`,
     /// so integrations can detect that the agent is actively working even while
@@ -953,9 +986,18 @@ pub struct HooksConfig {
     /// Env override: JCODE_HOOK_PRE_TOOL.
     pub pre_tool: Option<HookCommands>,
     /// Runs after each tool call completes.
-    /// Fields: TOOL_NAME, STATUS ("ok"/"error"), DURATION_MS, OUTPUT_BYTES.
+    /// Fields: TOOL_NAME, TOOL_CALL_ID, TOOL_INPUT, TOUCHED_PATHS, STATUS
+    /// ("ok"/"error"), DURATION_MS, OUTPUT_BYTES, ERROR.
     /// Env override: JCODE_HOOK_POST_TOOL.
     pub post_tool: Option<HookCommands>,
+    /// Synchronous hook after each successful tool call. Same fields as
+    /// post_tool, tool input JSON on stdin. Its stdout is appended to the tool
+    /// result the model sees (e.g. linter output for edited files).
+    /// Env override: JCODE_HOOK_POST_TOOL_FEEDBACK.
+    pub post_tool_feedback: Option<HookCommands>,
+    /// Max milliseconds to wait for each post_tool_feedback hook (default:
+    /// 10000). Env override: JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS.
+    pub post_tool_feedback_timeout_ms: u64,
     /// Max milliseconds to wait for the pre_tool gate before failing open
     /// (default: 5000). Env override: JCODE_HOOK_PRE_TOOL_TIMEOUT_MS.
     pub pre_tool_timeout_ms: u64,
@@ -964,12 +1006,16 @@ pub struct HooksConfig {
 impl Default for HooksConfig {
     fn default() -> Self {
         Self {
+            pre_tool_transform: None,
+            pre_tool_transform_timeout_ms: 500,
             turn_start: None,
             turn_end: None,
             session_start: None,
             session_end: None,
             pre_tool: None,
             post_tool: None,
+            post_tool_feedback: None,
+            post_tool_feedback_timeout_ms: 10_000,
             pre_tool_timeout_ms: 5000,
         }
     }
@@ -1213,6 +1259,10 @@ pub struct KeybindingsConfig {
     pub effort_increase: String,
     /// Effort decrease key (default: "cmd+left" on macOS, "alt+left" elsewhere)
     pub effort_decrease: String,
+    /// Speed tier increase key, Standard -> Fast -> Ultrafast (default: "alt+up")
+    pub speed_increase: String,
+    /// Speed tier decrease key, Ultrafast -> Fast -> Standard (default: "alt+down")
+    pub speed_decrease: String,
     /// Centered mode toggle key (default: "alt+c")
     pub centered_toggle: String,
     /// Scroll to previous prompt key (default: "ctrl+[")
@@ -1241,10 +1291,14 @@ pub struct KeybindingsConfig {
     pub copy_selection_toggle: String,
     /// Toggle the diagram pane position (default: "alt+t")
     pub diagram_pane_toggle: String,
+    /// Show/hide the pinned diagram pane (default: "alt+shift+m")
+    pub diagram_pane_visibility_toggle: String,
     /// Toggle typing scroll lock (default: "alt+s")
     pub typing_scroll_lock_toggle: String,
-    /// Cycle inline diff display mode (default: "alt+g")
+    /// Cycle inline diff display mode (default: unbound; use /diff)
     pub diff_mode_cycle: String,
+    /// Show the git commit log of the current project (default: "alt+g")
+    pub commit_log: String,
     /// Toggle the info widget (default: "alt+i")
     pub info_widget_toggle: String,
     /// Show/dismiss the session todo list as an inline card in the chat
@@ -1261,6 +1315,9 @@ pub struct KeybindingsConfig {
     /// Open the `/resume` session picker (default: "cmd+b" on macOS, "alt+r"
     /// elsewhere). Set "" to disable.
     pub open_resume: String,
+    /// Start/stop built-in voice input (default: "ctrl+space"). Speech streams
+    /// to Nari and the transcript is sent as a prompt. Set "" to disable.
+    pub voice_input: String,
     /// Session picker Enter action: "current-terminal" (default) or "new-terminal".
     /// Ctrl+Enter performs the alternate action.
     pub session_picker_enter: SessionPickerResumeAction,
@@ -1285,6 +1342,8 @@ impl Default for KeybindingsConfig {
             fallback_switch: get("fallback_switch", "ctrl+y"),
             effort_increase: get("effort_increase", "alt+right"),
             effort_decrease: get("effort_decrease", "alt+left"),
+            speed_increase: get("speed_increase", "alt+up"),
+            speed_decrease: get("speed_decrease", "alt+down"),
             centered_toggle: get("centered_toggle", "alt+c"),
             scroll_prompt_up: get("scroll_prompt_up", "ctrl+["),
             scroll_prompt_down: get("scroll_prompt_down", "ctrl+]"),
@@ -1299,8 +1358,10 @@ impl Default for KeybindingsConfig {
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
             diagram_pane_toggle: get("diagram_pane_toggle", "alt+t"),
+            diagram_pane_visibility_toggle: get("diagram_pane_visibility_toggle", "alt+shift+m"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
-            diff_mode_cycle: get("diff_mode_cycle", "alt+g"),
+            diff_mode_cycle: get("diff_mode_cycle", ""),
+            commit_log: get("commit_log", "alt+g"),
             info_widget_toggle: get("info_widget_toggle", "alt+i"),
             todo_card_toggle: get("todo_card_toggle", "alt+x"),
             swarm_panel_focus: get("swarm_panel_focus", "alt+n"),
@@ -1313,6 +1374,7 @@ impl Default for KeybindingsConfig {
                     "alt+r"
                 },
             ),
+            voice_input: get("voice_input", "ctrl+space"),
             session_picker_enter: SessionPickerResumeAction::CurrentTerminal,
         }
     }
@@ -1355,17 +1417,20 @@ pub struct FeatureConfig {
     /// incomplete todos). `/poke on` / `/poke off` still override this per session
     /// (default: true)
     pub auto_poke: bool,
+    /// Opt in to one aggregate todo weak-point follow-up per completion cycle.
+    /// Requires auto-poke; independent of the display-only completion report.
+    /// Disabled by default for every user.
+    pub todo_gate_digest: bool,
     /// Inject timestamps into user messages and tool results sent to the model (default: true)
     pub message_timestamps: bool,
     /// Persist auto-recalled memory injections into normal session history instead of sending
     /// them as request-only ephemeral suffix messages (default: false)
     pub persist_memory_injections: bool,
-    /// Surface an in-chat system message whenever a request misses the KV cache
-    /// for a harness-caused (avoidable) reason: the system prompt, tool set, or
-    /// message prefix changed without the conversation legitimately growing.
-    /// These should essentially never happen, so the notice acts as a loud alarm
-    /// that something in the harness silently invalidated the prefix cache
-    /// (default: true).
+    /// Surface an in-chat system message for each meaningful observed KV cache
+    /// miss, including low/zero reads, route changes, expiry, and harness prefix
+    /// changes. Missing telemetry and ordinary first-request cache fills are not
+    /// classified as misses. Harness changes without a documented cause raise a
+    /// warning, while explained misses are informational (default: true).
     pub kv_cache_miss_notices: bool,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
     pub update_channel: UpdateChannel,
@@ -1379,6 +1444,7 @@ impl Default for FeatureConfig {
             swarm: true,
             mermaid: true,
             auto_poke: true,
+            todo_gate_digest: false,
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
@@ -1387,75 +1453,8 @@ impl Default for FeatureConfig {
     }
 }
 
-/// Search engine used by the websearch tool.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum WebSearchEngine {
-    /// DuckDuckGo HTML search, no API key required.
-    #[default]
-    Duckduckgo,
-    /// Bing search. Uses the Bing API when configured, otherwise Bing HTML search.
-    Bing,
-    /// SearXNG metasearch instance (JSON API). Requires `searxng_url` (or the
-    /// `JCODE_SEARXNG_URL` env var) to point at a SearXNG instance. Useful on
-    /// hosts where DuckDuckGo/Bing block the request via TLS fingerprinting.
-    Searxng,
-}
-
-impl WebSearchEngine {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Duckduckgo => "duckduckgo",
-            Self::Bing => "bing",
-            Self::Searxng => "searxng",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "duckduckgo" | "ddg" => Some(Self::Duckduckgo),
-            "bing" => Some(Self::Bing),
-            "searxng" | "searx" => Some(Self::Searxng),
-            _ => None,
-        }
-    }
-}
-
-/// Configuration for the websearch tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WebSearchConfig {
-    /// Preferred engine when the tool input does not specify one.
-    pub engine: WebSearchEngine,
-    /// Keyless HTML engines to try after the preferred engine fails.
-    pub fallback_engines: Vec<WebSearchEngine>,
-    /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
-    pub bing_api_key: Option<String>,
-    /// Environment variable containing the Bing API key.
-    pub bing_api_key_env: String,
-    /// Bing market, e.g. "en-US" or "zh-CN".
-    pub bing_market: String,
-    /// Base URL of a SearXNG instance (e.g. "https://searx.example.org"), used
-    /// by the `searxng` engine. When empty, the `searxng_url_env` variable is
-    /// consulted instead.
-    pub searxng_url: Option<String>,
-    /// Environment variable containing the SearXNG base URL.
-    pub searxng_url_env: String,
-}
-
-impl Default for WebSearchConfig {
-    fn default() -> Self {
-        Self {
-            engine: WebSearchEngine::Duckduckgo,
-            fallback_engines: vec![WebSearchEngine::Bing],
-            bing_api_key: None,
-            bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-            bing_market: "en-US".to_string(),
-            searxng_url: None,
-            searxng_url_env: "JCODE_SEARXNG_URL".to_string(),
-        }
-    }
-}
+mod web_search;
+pub use web_search::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1472,7 +1471,7 @@ pub struct ProviderConfig {
     pub anthropic_cache_ttl_1h: bool,
     /// OpenAI transport mode (auto|websocket|https)
     pub openai_transport: Option<String>,
-    /// OpenAI service tier override (priority|flex)
+    /// OpenAI service tier override (priority|ultrafast|flex|off). Ultrafast is opt-in.
     pub openai_service_tier: Option<String>,
     /// OpenAI native compaction mode: "auto", "explicit", or "off".
     pub openai_native_compaction_mode: String,
@@ -1515,6 +1514,12 @@ pub struct ProviderConfig {
     /// Maximum exponential-backoff delay between transient-error retries.
     /// Default: 30 seconds. Overridable via `JCODE_RETRY_BACKOFF_CAP_SECS`.
     pub retry_backoff_cap_secs: u64,
+    /// Request-body compression policy: "auto" (compress only when the
+    /// measured uplink makes it faster), "always", or "off". Applies only to
+    /// endpoints verified to accept it: gzip (Anthropic, ChatGPT HTTPS), zstd
+    /// (OpenAI API), and WebSocket permessage-deflate (Responses sockets).
+    /// Overridable via `JCODE_REQUEST_COMPRESSION`.
+    pub request_compression: String,
 }
 
 impl Default for ProviderConfig {
@@ -1523,7 +1528,7 @@ impl Default for ProviderConfig {
             default_model: None,
             default_provider: None,
             openai_reasoning_effort: Some("low".to_string()),
-            anthropic_reasoning_effort: None,
+            anthropic_reasoning_effort: Some("low".to_string()),
             anthropic_cache_ttl_1h: true,
             openai_transport: None,
             openai_service_tier: Some("priority".to_string()),
@@ -1539,6 +1544,7 @@ impl Default for ProviderConfig {
             stream_idle_timeout_secs: 180,
             max_retries: 8,
             retry_backoff_cap_secs: 30,
+            request_compression: "auto".to_string(),
         }
     }
 }
@@ -1753,29 +1759,6 @@ impl Default for GatewayConfig {
     }
 }
 
-/// Power-management configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PowerConfig {
-    /// Prevent automatic system sleep while any jcode session is actively
-    /// streaming/processing. Linux also asks logind to block lid-switch suspend.
-    /// Windows cannot override a user-initiated lid close or power-button action;
-    /// those remain controlled by the active Windows power plan. The display is
-    /// still allowed to sleep. Default: true.
-    ///
-    /// Honored by the shared `jcode serve` daemon. The `JCODE_DISABLE_POWER_INHIBIT`
-    /// environment variable forces this off regardless of the config value.
-    pub prevent_sleep_while_streaming: bool,
-}
-
-impl Default for PowerConfig {
-    fn default() -> Self {
-        Self {
-            prevent_sleep_while_streaming: true,
-        }
-    }
-}
-
 /// A single global launch hotkey: a chord plus the directory it opens jcode in.
 ///
 /// `dir` is usually an absolute path, but a few sentinels keep dynamic targets
@@ -1825,6 +1808,29 @@ pub struct LaunchHotkeysConfig {
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;
+
+    #[test]
+    fn anthropic_effort_defaults_to_low() {
+        let config = ProviderConfig::default();
+        assert_eq!(config.anthropic_reasoning_effort.as_deref(), Some("low"));
+        let parsed: ProviderConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.anthropic_reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn proactive_floor_defaults_and_legacy_config() {
+        let config = CompactionConfig::default();
+        assert_eq!(config.reactive_threshold, 0.80);
+        assert_eq!(config.reactive_threshold_tokens, 400_000);
+        assert_eq!(config.proactive_floor, 0.40);
+        assert_eq!(config.proactive_floor_tokens, 150_000);
+        let parsed: CompactionConfig =
+            serde_json::from_str(r#"{"proactive_floor":0.15}"#).unwrap();
+        assert_eq!(parsed.proactive_floor, 0.15);
+        assert_eq!(parsed.proactive_floor_tokens, 150_000);
+        assert_eq!(parsed.reactive_threshold, 0.80);
+        assert_eq!(parsed.reactive_threshold_tokens, 400_000);
+    }
 
     #[test]
     fn explicit_reasoning_display_is_distinguishable_from_the_legacy_fallback() {

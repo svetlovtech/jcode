@@ -45,7 +45,6 @@ input = ["text"]
         });
 
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -56,10 +55,11 @@ input = ["text"]
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: None,
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };

@@ -178,6 +178,83 @@ fn test_mcp_http_server_is_not_stdio() {
     let server = config.servers.get("remote").unwrap();
     assert!(!server.is_stdio());
     assert_eq!(server.url.as_deref(), Some("https://example.com/mcp"));
+    assert!(server.is_runnable());
+    assert_eq!(
+        server.remote_transport(),
+        Some(RemoteTransport::StreamableHttp)
+    );
+}
+
+#[test]
+fn remote_transport_inference_respects_explicit_type() {
+    let parse = |value| serde_json::from_value::<McpServerConfig>(value).unwrap();
+    assert_eq!(
+        parse(serde_json::json!({"url": "https://example.com/mcp"})).remote_transport(),
+        Some(RemoteTransport::StreamableHttp)
+    );
+    assert_eq!(
+        parse(serde_json::json!({"type": " SSE ", "url": "https://example.com/mcp"}))
+            .remote_transport(),
+        Some(RemoteTransport::LegacySse)
+    );
+    for kind in ["stdio", "websocket", "unknown"] {
+        let config = parse(serde_json::json!({"type": kind, "url": "https://example.com/mcp"}));
+        assert!(!config.is_runnable(), "explicit {kind} must not infer HTTP");
+        assert!(config.remote_transport().is_none());
+    }
+    let unknown = parse(serde_json::json!({"type": "unknown", "command": "do-not-spawn"}));
+    assert!(!unknown.is_runnable());
+    let local =
+        parse(serde_json::json!({"command": "local-server", "url": "https://example.com/mcp"}));
+    assert!(local.is_stdio());
+    assert!(local.remote_transport().is_none());
+    assert!(!parse(serde_json::json!({"type": "http"})).is_runnable());
+}
+
+#[test]
+fn remote_display_target_does_not_expose_url_credentials() {
+    let config: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://user:secret@example.com/mcp?token=secret#secret",
+    }))
+    .unwrap();
+    assert_eq!(config.display_target(), "http https://example.com/mcp");
+    let opaque: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "mailto:user:secret@example.com?token=secret",
+    }))
+    .unwrap();
+    assert_eq!(opaque.display_target(), "http [invalid URL]");
+}
+
+#[test]
+fn merged_config_retains_remote_servers_and_expands_headers() {
+    let _guard = crate::storage::lock_test_env();
+    let previous_home = std::env::var_os("JCODE_HOME");
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    crate::env::set_var("JCODE_HOME", home.path());
+    std::fs::write(project.path().join(".mcp.json"), r#"{
+        "mcpServers": {
+            "remote-http": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN_MISSING:-fixture-token}"}},
+            "remote-sse": {"type": "sse", "url": "https://example.com/events"},
+            "unknown": {"type": "websocket", "url": "https://example.com/ws"},
+            "missing-url": {"type": "http"}
+        }
+    }"#).unwrap();
+    let config = McpConfig::load_for_dir(Some(project.path()));
+    match previous_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    assert_eq!(config.servers.len(), 2);
+    assert!(config.servers["remote-http"].is_remote());
+    assert_eq!(
+        config.servers["remote-http"].headers["Authorization"],
+        "Bearer fixture-token"
+    );
+    assert_eq!(
+        config.servers["remote-sse"].remote_transport(),
+        Some(RemoteTransport::LegacySse)
+    );
 }
 
 #[test]
@@ -709,6 +786,61 @@ env = { TOKEN = "codex-inline-secret" }
         crate::env::remove_var("JCODE_HOME");
     }
     result.expect("live Claude and snapshot Codex assertions");
+}
+
+#[test]
+fn codex_import_preserves_enabled_false() {
+    let _guard = crate::storage::lock_test_env();
+    let previous_home = std::env::var_os("JCODE_HOME");
+    let home = tempfile::tempdir().expect("home tempdir");
+    crate::env::set_var("JCODE_HOME", home.path());
+
+    let codex_dir = home.path().join("external").join(".codex");
+    std::fs::create_dir_all(&codex_dir).expect("create codex config dir");
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        r#"[mcp_servers.disabled_one]
+command = "disabled-bin"
+enabled = false
+
+[mcp_servers.active_one]
+command = "active-bin"
+"#,
+    )
+    .expect("write Codex config");
+
+    let result = std::panic::catch_unwind(|| {
+        let config = McpConfig::load_for_dir(None);
+        let disabled = config
+            .servers
+            .get("disabled_one")
+            .expect("disabled server is still imported");
+        assert!(
+            !disabled.is_enabled(),
+            "enabled = false must survive the import instead of silently activating the server"
+        );
+        assert!(
+            config
+                .servers
+                .get("active_one")
+                .expect("default-enabled server")
+                .is_enabled()
+        );
+
+        let snapshot =
+            std::fs::read_to_string(home.path().join("mcp.json")).expect("Codex snapshot");
+        assert!(
+            snapshot.contains(r#""enabled": false"#),
+            "snapshot should record the disabled state: {snapshot}"
+        );
+    });
+
+    if let Some(previous_home) = previous_home {
+        crate::env::set_var("JCODE_HOME", previous_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+    result.expect("codex enabled=false import assertions");
 }
 
 #[test]

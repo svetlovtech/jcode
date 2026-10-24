@@ -207,6 +207,7 @@ struct TestState {
     queue_mode: bool,
     active_skill: Option<String>,
     centered_mode: bool,
+    diff_mode_override: Option<crate::config::DiffDisplayMode>,
     anim_elapsed: f32,
     now_ms: u64,
     time_since_activity: Option<Duration>,
@@ -222,7 +223,7 @@ struct TestState {
     side_pane_images: Vec<crate::session::RenderedImage>,
     pin_images: bool,
     inline_images_visible: bool,
-    chat_overscroll_active: bool,
+    image_expand_level: Option<crate::tui::ImageExpandLevel>,
     cache_ttl_status: Option<crate::tui::CacheTtlInfo>,
     openai_reset_hint: Option<&'static str>,
     status_notice: Option<String>,
@@ -231,10 +232,14 @@ struct TestState {
     transcript_swarm_members: Option<Vec<crate::protocol::SwarmMemberStatus>>,
     swarm_panel_selected: usize,
     swarm_panel_focused: bool,
+    pinned_todos_payload: Option<String>,
     swarm_panel_full_page: bool,
 }
 
 impl crate::tui::TuiState for TestState {
+    fn pinned_todos_payload(&self) -> Option<&str> {
+        self.pinned_todos_payload.as_deref()
+    }
     fn display_messages(&self) -> &[DisplayMessage] {
         &self.display_messages
     }
@@ -258,6 +263,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn side_pane_images(&self) -> Vec<crate::session::RenderedImage> {
         self.side_pane_images.clone()
+    }
+    fn image_expand_level(&self, _id: u64) -> crate::tui::ImageExpandLevel {
+        self.image_expand_level.unwrap_or_default()
     }
     fn display_messages_version(&self) -> u64 {
         self.messages_version
@@ -347,14 +355,6 @@ impl crate::tui::TuiState for TestState {
     fn time_since_activity(&self) -> Option<Duration> {
         self.time_since_activity
     }
-    fn chat_overscroll_active(&self) -> bool {
-        self.chat_overscroll_active
-    }
-    fn chat_overscroll_remaining(&self) -> Option<f32> {
-        // TestState models the elastic reveal: while active, a countdown is
-        // depleting (a config-pinned line would report None here instead).
-        self.chat_overscroll_active.then_some(1.0)
-    }
     fn total_session_tokens(&self) -> Option<(u64, u64)> {
         None
     }
@@ -368,7 +368,8 @@ impl crate::tui::TuiState for TestState {
         false
     }
     fn diff_mode(&self) -> crate::config::DiffDisplayMode {
-        crate::config::DiffDisplayMode::Inline
+        self.diff_mode_override
+            .unwrap_or(crate::config::DiffDisplayMode::Inline)
     }
     fn current_session_id(&self) -> Option<String> {
         None
@@ -598,10 +599,15 @@ fn reset_prompt_viewport_state_for_test() {
 mod advanced_footer;
 #[path = "tool_time_badge.rs"]
 mod tool_time_badge;
+#[path = "pinned_todo_regressions.rs"]
+mod pinned_todo_regressions;
+
 #[path = "basic.rs"]
 mod basic;
 #[path = "diagrams.rs"]
 mod diagrams;
+#[path = "expanded_diff.rs"]
+mod expanded_diff;
 #[path = "inline_picker.rs"]
 mod inline_picker;
 #[path = "onboarding.rs"]
@@ -612,6 +618,8 @@ mod palette_topology;
 mod prepared_messages_tests;
 #[path = "rendering.rs"]
 mod rendering;
+#[path = "scrollbar_overlay.rs"]
+mod scrollbar_overlay;
 #[path = "swarm_buffer.rs"]
 mod swarm_buffer;
 #[path = "tools.rs"]

@@ -45,6 +45,7 @@ fn hostile_tool() -> Vec<ToolDefinition> {
         name: "mcp__hostile__probe".to_string(),
         description: "probe".to_string(),
         input_schema: hostile_schema(),
+        defer_loading: false,
     }]
 }
 
@@ -69,6 +70,51 @@ fn assert_descriptions_survive(wire: &Value, provider: &str) {
         serialized.contains("map of MIME type to value"),
         "{provider} dropped a nested property description: {wire}"
     );
+}
+
+#[test]
+fn todo_add_missing_properties_is_repaired_on_gemini_wire_paths() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "add": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["content", "status", "priority", "id", "confidence"],
+                    "additionalProperties": true
+                }
+            }
+        }
+    });
+    let tools = vec![ToolDefinition {
+        name: "todo".to_string(),
+        description: "Screenshot regression".to_string(),
+        input_schema: schema.clone(),
+        defer_loading: false,
+    }];
+    let built = jcode_provider_gemini::build_tools(&tools).expect("tools");
+    let wire = serde_json::to_value(&built).expect("serialize request tools");
+    let direct = &wire[0]["functionDeclarations"][0]["parameters"];
+    // Use the exact model name from the failing session to exercise routing.
+    let antigravity = jcode_provider_antigravity::antigravity_compatible_schema(
+        &schema,
+        "gemini-3.8-flash-tiered",
+    );
+    for (route, parameters) in [("direct", direct), ("antigravity", &antigravity)] {
+        assert_eq!(
+            parameters["properties"]["add"]["type"], "array",
+            "{route}: {parameters}"
+        );
+        let item = &parameters["properties"]["add"]["items"];
+        assert_eq!(item["type"], "object", "{route}: {parameters}");
+        assert!(item.get("required").is_none(), "{route}: {parameters}");
+        let errors = jcode_schema_dialect::must_not_contain_unsupported_constructs(
+            parameters,
+            &jcode_schema_dialect::registry::GEMINI,
+        );
+        assert!(errors.is_empty(), "{route}: {errors:?}");
+    }
 }
 
 #[test]
@@ -245,6 +291,7 @@ fn anthropic_sends_a_schema_without_a_top_level_combiner() {
                 { "properties": { "target": { "type": "string" } } }
             ]
         }),
+        defer_loading: false,
     }];
 
     let built = jcode_provider_anthropic::format_tools(&combiner_tool, false, false);
@@ -281,6 +328,7 @@ fn anthropic_sends_a_schema_without_a_top_level_combiner() {
         name: "noargs".to_string(),
         description: "probe".to_string(),
         input_schema: serde_json::json!({}),
+        defer_loading: false,
     }];
     let bare_wire =
         serde_json::to_value(jcode_provider_anthropic::format_tools(&bare, false, false))
@@ -317,6 +365,7 @@ fn a_keyword_no_deny_list_has_ever_heard_of_reaches_no_provider() {
             },
             "required": ["x"]
         }),
+        defer_loading: false,
     }];
     const NOVEL: &str = "someKeywordFromADraftThatDoesNotExistYet";
 

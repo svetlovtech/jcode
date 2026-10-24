@@ -176,7 +176,9 @@ fn test_token_badges_survive_full_terminal_draw() {
                         .unwrap_or_else(|| panic!("missing tool row: {rows:#?}"))
                         as u16;
                     let row = &rows[y as usize];
-                    assert!(row.contains("(6 lines)"), "{row}");
+                    // A standalone patch's summary lives on the inline diff
+                    // header, so only batch subcall rows still carry it.
+                    assert_eq!(row.contains("(6 lines)"), batch, "{row}");
                     assert!(row.trim_end().ends_with(&label), "{row}");
                     let x = (0..width)
                         .find(|&x| {
@@ -503,10 +505,13 @@ Completed: 2 succeeded, 1 failed"
         "rendered={rendered:?}"
     );
     assert!(
+        rendered.iter().any(|line| line.contains("✗ agentgrep")),
+        "failed subcall should be attributed to agentgrep: {rendered:?}"
+    );
+    assert!(
         rendered
             .iter()
-            .any(|line| line.contains("✗ agentgrep invalid input: missing mode")),
-        "failed subcall should be attributed to agentgrep: {rendered:?}"
+            .any(|line| line.contains("╰─missing field `mode`"))
     );
     assert!(
         rendered
@@ -555,9 +560,16 @@ fn test_render_tool_message_batch_all_failed_marks_all_children_failed() {
     );
     let failed_children = rendered
         .iter()
-        .filter(|line| line.contains("✗ agentgrep invalid input: missing mode"))
+        .filter(|line| line.contains("✗ agentgrep"))
         .count();
     assert_eq!(failed_children, 3, "rendered={rendered:?}");
+    assert_eq!(
+        rendered
+            .iter()
+            .filter(|line| line.contains("╰─missing field `mode`"))
+            .count(),
+        3
+    );
     assert!(
         !rendered
             .iter()

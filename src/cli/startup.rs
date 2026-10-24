@@ -19,12 +19,17 @@ pub async fn run() -> Result<()> {
     // Parse once, before startup side effects. Invalid arguments and --help
     // must not harden credential files or create configuration/telemetry state.
     let args = Args::parse();
-    // Credential import must refuse existing stores without normal startup
-    // hardening, migrations, telemetry, or provider discovery touching them.
+    // Interactive login prompts (masked secrets, QR codes) are a terminal
+    // concern. The shared auth flows reach them through this presenter.
+    super::login::install_terminal_login_presenter();
+    // Snapshot user-supplied provider env before provider init rewrites it.
+    super::provider_init::capture_user_openrouter_model_env();
+    // Credential import and explicit MCP management do not need normal agent
+    // startup hardening, migrations, telemetry, or provider discovery.
     if args.ssh.is_none()
         && matches!(
             args.command,
-            Some(Command::Auth(super::args::AuthCommand::Import { .. }))
+            Some(Command::Auth(super::args::AuthCommand::Import { .. }) | Command::Mcp { .. })
         )
     {
         if let Some(cwd) = &args.cwd {
@@ -52,7 +57,16 @@ pub async fn run() -> Result<()> {
         .name("jcode-session-bak-prune".to_string())
         .spawn(crate::session::prune_old_session_backups)
         .ok();
-    logging::info("jcode starting");
+    // Record which binary actually launched. Stale copies earlier on PATH (or a
+    // shortcut pinned to an old install) otherwise look identical to the
+    // updated launcher in logs, and keep re-offering the same update (#1626).
+    logging::info(&format!(
+        "jcode starting (version={}, exe={})",
+        jcode_build_meta::version(),
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    ));
 
     // Wire config-reload reactions without making config depend on auth/bus:
     // when the config cache reloads, invalidate the auth-status cache and
@@ -204,13 +218,7 @@ fn is_telemetry_subcommand_invocation(
 pub fn register_external_provider_runtimes() {
     crate::provider::external::register_external_provider(
         crate::provider::external::GROK_BUILD_RUNTIME,
-        || {
-            let mut process = jcode_provider_grok_build_runtime::GrokBuildProcess::from_env();
-            process.command = crate::auth::grok_build::cli_path();
-            std::sync::Arc::new(
-                jcode_provider_grok_build_runtime::GrokBuildProvider::with_process(process),
-            )
-        },
+        || std::sync::Arc::new(jcode_provider_grok_build_runtime::GrokBuildProvider::new()),
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::GEMINI_RUNTIME,
@@ -223,10 +231,6 @@ pub fn register_external_provider_runtimes() {
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTIGRAVITY_RUNTIME,
         || std::sync::Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new()),
-    );
-    crate::provider::external::register_external_provider(
-        crate::provider::external::CLAUDE_CLI_RUNTIME,
-        || std::sync::Arc::new(jcode_provider_claude_cli_runtime::ClaudeProvider::new()),
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTHROPIC_RUNTIME,

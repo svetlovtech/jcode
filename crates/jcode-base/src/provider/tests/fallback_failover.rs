@@ -1,3 +1,5 @@
+include!("agent_failover.rs");
+
 #[test]
 fn test_fallback_sequence_includes_all_providers() {
     assert_eq!(
@@ -173,7 +175,6 @@ fn test_initial_provider_allows_cross_provider_switch_and_reports_target_credent
         let runtime = enter_test_runtime();
         let _enter = runtime.enter();
         let provider = MultiProvider {
-            claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
@@ -184,10 +185,11 @@ fn test_initial_provider_allows_cross_provider_switch_and_reports_target_credent
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
+            session_id: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::OpenAI),
+            catalog_scope: next_catalog_scope(),
             routes_memo: std::sync::Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
@@ -291,7 +293,6 @@ fn test_should_not_failover_on_generic_error() {
 #[test]
 fn test_no_provider_error_mentions_tokens_and_details() {
     let provider = MultiProvider {
-        claude: RwLock::new(None),
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
@@ -302,10 +303,11 @@ fn test_no_provider_error_mentions_tokens_and_details() {
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
+        session_id: RwLock::new(None),
         active: RwLock::new(ActiveProvider::OpenAI),
-        use_claude_cli: false,
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
+        catalog_scope: next_catalog_scope(),
         routes_memo: std::sync::Mutex::new(None),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
@@ -331,7 +333,6 @@ fn test_active_compat_profile_counts_as_configured_openrouter_slot() {
         with_env_var("DEEPSEEK_API_KEY", "test-deepseek-key", || {
             crate::env::remove_var("OPENROUTER_API_KEY");
             let provider = MultiProvider {
-                claude: RwLock::new(None),
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
                 copilot_api: RwLock::new(None),
@@ -342,10 +343,11 @@ fn test_active_compat_profile_counts_as_configured_openrouter_slot() {
                 openrouter: RwLock::new(None),
                 openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                 active_openai_compatible_profile: RwLock::new(None),
+                session_id: RwLock::new(None),
                 active: RwLock::new(ActiveProvider::OpenRouter),
-                use_claude_cli: false,
                 startup_notices: RwLock::new(Vec::new()),
                 initial_provider: None,
+                catalog_scope: next_catalog_scope(),
                 routes_memo: std::sync::Mutex::new(None),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };

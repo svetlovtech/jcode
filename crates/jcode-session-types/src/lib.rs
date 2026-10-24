@@ -3,6 +3,13 @@ use jcode_message_types::{ContentBlock, Message, Role, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+mod title;
+mod transcription;
+pub use title::prompt_title;
+pub use transcription::{
+    TRANSCRIPTION_CLOSE, TRANSCRIPTION_OPEN, strip_transcription, wrap_transcription,
+};
+
 /// Identifies a session to resume, across the agent backends jcode can import
 /// from. This is pure data (only ids/paths) with no UI dependency; it lives in
 /// `jcode-session-types` so the foundation/import layer can match on it without
@@ -69,6 +76,9 @@ pub struct ResponseStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderedMessage {
+    /// Execution duration for a completed tool row, when recorded by the runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
     /// Present only on the final visible assistant row of a completed stored
     /// user turn. Tool-only intermediate rounds contribute to these totals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
