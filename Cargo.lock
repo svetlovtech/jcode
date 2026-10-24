@@ -3419,6 +3419,7 @@ dependencies = [
  "jcode-pdf",
  "jcode-plan",
  "jcode-productivity-core",
+ "jcode-protocol",
  "jcode-provider-core",
  "jcode-schema-dialect",
  "jcode-selfdev-types",
@@ -3632,8 +3633,11 @@ dependencies = [
 name = "jcode-config-types"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -4363,6 +4367,7 @@ dependencies = [
  "async-trait",
  "jcode-agent-runtime",
  "jcode-message-types",
+ "jcode-protocol",
  "jcode-tool-types",
  "serde_json",
  "tokio",
@@ -4407,6 +4412,7 @@ dependencies = [
  "jcode-fuzzy",
  "jcode-logging",
  "jcode-productivity-core",
+ "jcode-protocol",
  "jcode-provider-core",
  "jcode-selfdev-types",
  "jcode-session-types",
@@ -4512,6 +4518,7 @@ dependencies = [
 name = "jcode-tui-messages"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "jcode-config-types",
  "jcode-message-types",
  "jcode-session-types",

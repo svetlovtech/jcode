@@ -1914,6 +1914,12 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
 
     let total_width = area.width as usize;
 
+    // The elastic overscroll reveal (and its dwell countdown) was replaced by
+    // the pinned session status line upstream, so there is never a live
+    // countdown to reserve space for. Kept as a binding so the advanced-footer
+    // branch below keeps its shape.
+    let countdown_secs: Option<f32> = None;
+
     // Fork: the advanced footer replaces the fact-derived span list. Build
     // its spans first and fall back to truncation fit; the countdown logic
     // below is style-agnostic and still applies. The info block sits on the

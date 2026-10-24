@@ -41,6 +41,12 @@ pub(super) fn map_cloud_subcommand(subcmd: CloudCommand) -> commands::CloudSubco
         CloudCommand::Sessions { action } => {
             commands::CloudSubcommand::Sessions(map_cloud_sessions_subcommand(action))
         }
+        // Ephemeral/Prepare/Move/Return/... are handled directly by
+        // cloud_move::run_cli in dispatch.rs and never reach this mapping.
+        other => {
+            let _ = other;
+            unreachable!("non-Sessions cloud subcommands are dispatched by cloud_move::run_cli")
+        }
     }
 }
 
@@ -178,4 +184,3 @@ pub(super) fn map_transcript_mode(mode: TranscriptModeArg) -> crate::protocol::T
         TranscriptModeArg::Send => crate::protocol::TranscriptMode::Send,
     }
 }
-

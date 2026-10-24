@@ -170,7 +170,6 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();
     needs_redraw |= app.progress_copy_selection_edge_autoscroll();
     app.progress_mouse_scroll_animation();
-    needs_redraw |= app.update_chat_overscroll();
     // Fork: chat-integration footer status probe (non-blocking).
     crate::tui::chat_status::probe_if_stale();
     needs_redraw |= app.update_pinned_images_auto_hide();
