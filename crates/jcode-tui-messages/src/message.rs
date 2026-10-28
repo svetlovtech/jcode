@@ -462,6 +462,8 @@ mod tests {
             tool_calls: vec!["read".to_string()],
             duration_secs: Some(1.0),
             title: Some("Read".to_string()),
+            timestamp: None,
+            tool_duration_ms: None,
             tool_data: Some(ToolCall {
                 id: "call-1".to_string(),
                 name: "read".to_string(),
@@ -497,6 +499,8 @@ mod tests {
             tool_calls: vec!["read".to_string()],
             tool_data: None,
             stored_index: None,
+            timestamp: None,
+            tool_duration_ms: None,
         };
 
         let display = DisplayMessage::from_rendered_message(rendered);

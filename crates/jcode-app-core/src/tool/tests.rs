@@ -686,6 +686,9 @@ async fn tool_descriptions_stay_under_token_cap() {
     // user, so planning happens proactively rather than only when prompted.
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
+    // codemode documents its sandbox API; compile_remote a credit/consent notice.
+    // bash carries the agentgrep/rg repository-search routing guidance
+    // (29d3e85bb, fixes #1804) pinned by tool_time_badge observed-output tests.
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -693,6 +696,9 @@ async fn tool_descriptions_stay_under_token_cap() {
         "browser",
         "todo",
         "applet",
+        "codemode",
+        "compile_remote",
+        "bash",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -763,6 +769,18 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         ),
         ("applet", "$.properties.placement"),
         ("desktop_selfdev", "$.properties.action"),
+        // Fork ask_user multi-select (checkboxes) needs the explicit
+        // '; '-joined answer format spelled out for the model.
+        ("ask_user", "$.properties.multiple"),
+        (
+            "ask_user",
+            "$.properties.questions.items.properties.multiple",
+        ),
+        // Upstream swarm UX: label is referenced by set_swarm_label, tldr and
+        // to_swarm document the delivery semantics inline.
+        ("swarm", "$.properties.label"),
+        ("swarm", "$.properties.tldr"),
+        ("swarm", "$.properties.to_swarm"),
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -1875,3 +1893,70 @@ mod mcp_collision;
 
 #[path = "tests/sdk.rs"]
 mod sdk_tests;
+
+#[test]
+fn touched_paths_include_patch_headers_and_path_keys() {
+    let ctx = mcp_test_context(std::path::Path::new("/work"));
+    let input = serde_json::json!({
+        "file_path": "notes.md",
+        "patch_text": "*** Begin Patch\n*** Update File: docs/a.md\n@@\n-x\n+y\n*** Add File: /abs/b.txt\n+hi\n*** Update File: notes.md\n*** End Patch",
+    });
+    let paths: Vec<String> = Registry::touched_paths(&input, &ctx)
+        .into_iter()
+        .map(|(key, path)| format!("{key}:{}", path.display()))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "file_path:/work/notes.md",
+            "patch:/work/docs/a.md",
+            "patch:/abs/b.txt",
+        ]
+    );
+
+    let diff = "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1 +1 @@\n-a\n+b\n--- /dev/null\n+++ b/new.md\n";
+    assert_eq!(Registry::patch_paths(diff), vec!["src/x.rs", "new.md"]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn post_tool_feedback_hook_appends_stdout_to_tool_result() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env_lock = crate::storage::lock_test_env();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("prose.md");
+    std::fs::write(&target, "hello\n").expect("write target");
+    let script = dir.path().join("feedback.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ninput=$(cat)\necho \"call=$JCODE_HOOK_TOOL_CALL_ID tool=$JCODE_HOOK_TOOL_NAME\"\necho \"paths=$JCODE_HOOK_TOUCHED_PATHS\"\ncase \"$input\" in *prose.md*) echo stdin-ok ;; esac\nexit 1\n",
+    )
+    .expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let previous = std::env::var_os("JCODE_HOOK_POST_TOOL_FEEDBACK");
+    crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", &script);
+    // jcode-base is compiled without cfg(test) here, so the config cache only
+    // re-checks env every 500ms; force a reload so the hook is visible now.
+    crate::config::invalidate_config_cache();
+
+    let registry = Registry::new(Arc::new(MockProvider) as Arc<dyn Provider>).await;
+    let mut ctx = mcp_test_context(dir.path());
+    ctx.tool_call_id = "call_feedback".to_string();
+    let result = registry
+        .execute("read", serde_json::json!({"file_path": "prose.md"}), ctx)
+        .await;
+
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_HOOK_POST_TOOL_FEEDBACK", value),
+        None => crate::env::remove_var("JCODE_HOOK_POST_TOOL_FEEDBACK"),
+    }
+    let output = result.expect("read should succeed").output;
+    assert!(output.contains("hello"), "{output}");
+    assert!(output.contains("[post_tool_feedback]"), "{output}");
+    assert!(output.contains("call=call_feedback tool=read"), "{output}");
+    assert!(
+        output.contains(&format!("paths={}", target.display())),
+        "{output}"
+    );
+    assert!(output.contains("stdin-ok"), "{output}");
+}

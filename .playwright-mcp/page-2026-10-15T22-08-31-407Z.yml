@@ -1,0 +1,176 @@
+- generic:
+  - generic:
+    - generic [aria-hidden]:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - list:
+                - listitem:
+                  - link:
+                    - /url: /admin/dashboard
+                    - generic: КАВКАЗСКАЯ ТРОПА
+            - generic:
+              - generic:
+                - generic: Обзор
+                - generic:
+                  - list:
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard
+                        - generic: Панель управления
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard/user/account
+                        - generic: Аккаунт
+              - generic:
+                - generic: Системы
+                - generic:
+                  - list:
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: TG Guardian
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Почта
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: GPX Helper
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Garmin Extractor
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Elecache
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard/trackcheck
+                        - generic: Проверка треков
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: OSM-мониторинг
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Личный кабинет
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Wannahike
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Trail Now
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Hikerbox
+                    - generic:
+                      - listitem:
+                        - button [expanded]:
+                          - generic: Промокоды
+                        - generic:
+                          - list:
+                            - listitem:
+                              - link:
+                                - /url: /admin/dashboard/promo
+                                - generic: Промокоды
+                            - listitem:
+                              - link:
+                                - /url: /admin/dashboard/promo/campaigns
+                                - generic: Кампании
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: EventStream
+            - button
+      - main:
+        - generic:
+          - button:
+            - generic: Toggle Sidebar
+          - button:
+            - generic: Поиск…
+            - generic: ⌘K
+          - generic:
+            - button
+            - button
+            - button:
+              - generic: A
+        - main:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=1]: Промокоды
+                  - paragraph:
+                    - text: "Выпуск и учёт промокодов. Публичная проверка:"
+                    - link:
+                      - /url: /promo/
+                      - text: /promo/
+                - generic:
+                  - button: Обновить
+                  - button: Выпустить промокод
+              - generic:
+                - generic:
+                  - generic: Промокоды (0)
+                  - generic:
+                    - textbox:
+                      - /placeholder: Поиск по коду…
+                    - combobox:
+                      - generic: Все статусы
+                - generic:
+                  - paragraph: Промокодов пока нет — выпустите первый.
+    - region "Notifications alt+T"
+  - dialog [ref=f4e7]:
+    - heading "Выпуск промокода" [level=2] [ref=f4e9]
+    - generic [ref=f4e10]:
+      - generic [ref=f4e11]:
+        - generic [ref=f4e12]:
+          - text: Промокод (пусто = сгенерировать 8 цифр)
+          - textbox "Промокод (пусто = сгенерировать 8 цифр)" [active] [ref=f4e13]:
+            - /placeholder: напр. 1835-8268 или 1835-*
+          - paragraph [ref=f4e14]: «*» заменяется на 8 случайных цифр. Дефисы и пробелы игнорируются — гость может ввести код в любом виде.
+        - generic [ref=f4e15]:
+          - text: Сколько кодов (1–50)
+          - spinbutton "Сколько кодов (1–50)" [ref=f4e16]: "1"
+      - generic [ref=f4e17]:
+        - text: Привилегии (что получит держатель)
+        - textbox "Привилегии (что получит держатель)" [ref=f4e18]:
+          - /placeholder: Скидка 10% на любой трек и бесплатный мини-гид
+        - paragraph [ref=f4e19]: Этот текст показывается с зелёной галочкой на странице проверки.
+      - generic [ref=f4e20]:
+        - generic [ref=f4e21]:
+          - text: Кампания
+          - combobox [ref=f4e22]:
+            - generic: Без кампании
+        - generic [ref=f4e25]:
+          - text: Заметка (только для админов)
+          - textbox "Заметка (только для админов)" [ref=f4e26]:
+            - /placeholder: для рассылки партнёрам
+      - generic [ref=f4e27]:
+        - generic [ref=f4e28]:
+          - text: Лимит применений
+          - spinbutton "Лимит применений" [ref=f4e29]
+        - generic [ref=f4e30]:
+          - text: Лимит на человека
+          - spinbutton "Лимит на человека" [ref=f4e31]: "1"
+        - generic [ref=f4e32]:
+          - switch "Активен сразу" [checked] [ref=f4e33] [cursor=pointer]
+          - generic [ref=f4e34]: Активен сразу
+      - generic [ref=f4e35]:
+        - generic [ref=f4e36]:
+          - text: Начало (необязательно)
+          - textbox "Начало (необязательно)" [ref=f4e37]
+        - generic [ref=f4e38]:
+          - text: Окончание (необязательно)
+          - textbox "Окончание (необязательно)" [ref=f4e39]
+      - generic [ref=f4e40]:
+        - button "Отмена" [ref=f4e41]
+        - button "Выпустить" [ref=f4e42]
+    - button "Close" [ref=f4e43]

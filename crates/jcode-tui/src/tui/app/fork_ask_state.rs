@@ -960,6 +960,24 @@ mod tests {
     }
 
     #[test]
+    fn paste_with_cr_only_line_breaks_flattens_correctly() {
+        // Terminals emitting CR for pasted newlines must not collapse the
+        // answer into one word run: normalize before flattening.
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
+        assert!(app.fork_ask.modal.is_some());
+
+        app.fork_ask.modal_paste("да\r\nточно\rсогласен");
+        let modal = app.fork_ask.modal.as_ref().unwrap();
+        assert!(modal.custom_mode);
+        assert_eq!(modal.custom_draft, "да точно согласен");
+    }
+
+    #[test]
     fn paste_without_open_modal_goes_to_the_composer() {
         let mut app = crate::tui::app::tests::create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();

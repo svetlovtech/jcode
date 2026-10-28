@@ -56,6 +56,18 @@ pub(super) async fn process_turn_with_input(
         return;
     }
 
+    // Commands queued with Ctrl+Enter run before queued prompts, matching the
+    // remote dispatcher. If one starts its own turn, the prompts wait for it.
+    if !app.queued_commands.is_empty() {
+        app.is_processing = false;
+        app.status = ProcessingStatus::Idle;
+        super::input::run_queued_commands_local(app);
+        if app.pending_turn || app.is_processing {
+            finish_turn(app);
+            return;
+        }
+    }
+
     app.process_queued_messages(terminal, event_stream).await;
     finish_turn(app);
 }
@@ -63,6 +75,7 @@ pub(super) async fn process_turn_with_input(
 pub(super) fn handle_tick(app: &mut App) -> bool {
     let reset_redraw = app.poll_usage_reset();
     app.refresh_terminal_title_metrics();
+    app.sync_herdr_agent_state();
     // Liveness breadcrumb: if the UI loop wedges, the watchdog reports this as
     // the last phase that made progress.
     crate::logging::watchdog::beat("tui.idle_tick");
@@ -72,6 +85,8 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     // no paint at all, which drops the animation to whatever unrelated events
     // happen to trigger (~4fps in practice).
     let mut needs_redraw = reset_redraw | crate::tui::periodic_redraw_required(app);
+    needs_redraw |= app.poll_oauth_account_telemetry();
+    needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
     app.maybe_release_idle_heap();
@@ -80,8 +95,6 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();
     needs_redraw |= app.progress_copy_selection_edge_autoscroll();
     app.progress_mouse_scroll_animation();
-    // Fork: chat-integration footer status probe (non-blocking).
-    crate::tui::chat_status::probe_if_stale();
     needs_redraw |= app.update_pinned_images_auto_hide();
     // Dissolve stale (off-screen) reasoning traces with zero visible motion.
     needs_redraw |= app.gc_offscreen_reasoning_traces();
@@ -93,6 +106,10 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     if app.submit_input_on_startup && !app.is_processing {
         app.submit_input_on_startup = false;
         app.submit_input();
+        needs_redraw = true;
+    }
+    if !app.is_processing && !app.pending_queued_dispatch && !app.queued_commands.is_empty() {
+        super::input::run_queued_commands_local(app);
         needs_redraw = true;
     }
     let ops = app.stream_buffer.flush();
@@ -112,8 +129,6 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.poll_compaction_completion();
     needs_redraw |= app.maybe_refresh_overnight_display_card();
     needs_redraw |= super::commands::poll_local_transfer_prepare(app);
-    // Fork: surface finished /mcp operations in the transcript.
-    needs_redraw |= super::mcp_command::poll_mcp_command(app);
     needs_redraw |= super::commands::maybe_begin_pending_local_transfer(app);
     needs_redraw |= app.maybe_progress_provider_failover_countdown();
     app.check_debug_command();
@@ -198,18 +213,8 @@ pub(super) fn handle_bus_event(
             app.handle_productivity_report_ready(event);
             true
         }
-        // Fork: /export finished writing; surface the path in the transcript.
-        Ok(BusEvent::SessionExportReady(event)) => {
-            app.handle_session_export_ready(event);
-            true
-        }
         Ok(BusEvent::MermaidRenderCompleted) => true,
-        // Fork: ask_user resolved on another surface (Telegram won); close the
-        // local modal (mirror of the remote handler).
-        Ok(BusEvent::AskQuestionResolved { answer, .. }) => {
-            app.fork_ask_ops().on_question_resolved_elsewhere(&answer);
-            true
-        }
+        Ok(BusEvent::GitInfoRefreshed) => true,
         Ok(BusEvent::UsageReport(results)) => {
             app.handle_usage_report(results);
             true
@@ -252,7 +257,7 @@ pub(super) fn handle_bus_event(
             app.session.provider_session_id = None;
             app.upstream_provider = None;
             app.invalidate_model_picker_cache();
-            app.update_context_limit_for_model(&model);
+            app.update_context_limit_for_model(&model, None);
             app.session.provider_key = provider_key.or_else(|| {
                 crate::provider::MultiProvider::session_provider_key_after_model_switch(
                     &model,
@@ -428,6 +433,7 @@ fn apply_terminal_event(
             Ok(false)
         }
         Some(Ok(Event::Key(key))) => {
+            let key = jcode_tui_core::korean_input::normalize_key_event(key);
             crate::tui::ui::note_key_event_read();
             app.note_client_interaction();
             app.update_copy_badge_key_event(key);
@@ -441,13 +447,7 @@ fn apply_terminal_event(
         }
         Some(Ok(Event::Paste(text))) => {
             app.note_client_interaction();
-            // Fork: while the ask modal is open the paste IS the answer draft;
-            // routing it to the composer behind the modal looked like a hang.
-            if app.fork_ask.modal().is_some() {
-                app.fork_ask.modal_paste(&text);
-            } else {
-                app.handle_paste(text);
-            }
+            app.handle_paste(text);
             Ok(true)
         }
         Some(Ok(Event::Mouse(mouse))) => {

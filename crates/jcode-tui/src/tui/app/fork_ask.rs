@@ -49,12 +49,14 @@ impl ForkAskState {
 
     /// Fork fix: a terminal paste while the ask modal is open must land in the
     /// modal's own-answer draft, not in the composer hidden behind the modal.
-    /// Multi-line pastes are flattened (the answer is a single line).
+    /// Multi-line pastes are flattened (the answer is a single line); CR line
+    /// breaks are normalized first so CR-only pastes keep their line
+    /// structure instead of collapsing into one word soup.
     pub(super) fn modal_paste(&mut self, text: &str) {
         let Some(modal) = self.modal.as_mut() else {
             return;
         };
-        let flat = text
+        let flat = crate::tui::app::input::normalize_paste_newlines(text)
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())

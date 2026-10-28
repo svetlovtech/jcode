@@ -1,3 +1,5 @@
+pub mod provider_native;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCall {
     #[serde(default)]
@@ -216,6 +218,14 @@ pub enum ContentBlock {
     ToolReference {
         tool_use_id: String,
         tool_name: String,
+    },
+    /// A complete provider-native (server-side) tool item, e.g. an Anthropic
+    /// `server_tool_use` or `web_search_tool_result` block. The provider has
+    /// already run the tool; consumers store it verbatim as
+    /// [`ContentBlock::ProviderNative`] for replay and render it for display.
+    ProviderNative {
+        provider: String,
+        item: serde_json::Value,
     },
 }
 
@@ -729,6 +739,9 @@ impl std::fmt::Display for ConnectionPhase {
 pub enum StreamEvent {
     /// Text content delta
     TextDelta(String),
+    /// Correct a completed message using late provider metadata. Only replace
+    /// an exact trailing match, preserving earlier messages in the response.
+    TextSuffixReplace { old_text: String, new_text: String },
     /// An assistant text message ended within a provider response.
     TextDone,
     /// Tool use started
@@ -823,11 +836,48 @@ pub enum StreamEvent {
         tool_name: String,
         input: serde_json::Value,
     },
+    /// A complete provider-native (server-side) tool item, e.g. an Anthropic
+    /// `server_tool_use` or `web_search_tool_result` block. The provider has
+    /// already run the tool; consumers store it verbatim as
+    /// [`ContentBlock::ProviderNative`] for replay and render it for display.
+    ProviderNative {
+        provider: String,
+        item: serde_json::Value,
+    },
+}
+
+/// Apply a provider's late text correction only to an exact trailing match.
+/// Returns the replaced byte offset, or None for stale/mismatched snapshots.
+pub fn replace_text_suffix(text: &mut String, old_text: &str, new_text: &str) -> Option<usize> {
+    if old_text.is_empty() || !text.ends_with(old_text) {
+        return None;
+    }
+    let start = text.len() - old_text.len();
+    text.truncate(start);
+    text.push_str(new_text);
+    Some(start)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suffix_correction_preserves_unicode_prefix_and_rejects_stale_snapshots() {
+        let mut text = "先前 🦀. raw citation".to_string();
+        assert_eq!(
+            replace_text_suffix(&mut text, "raw citation", "[Source](https://a.example)"),
+            Some("先前 🦀. ".len())
+        );
+        assert_eq!(text, "先前 🦀. [Source](https://a.example)");
+        let before = text.clone();
+        assert_eq!(
+            replace_text_suffix(&mut text, "raw citation", "wrong"),
+            None
+        );
+        assert_eq!(replace_text_suffix(&mut text, "", "wrong"), None);
+        assert_eq!(text, before);
+    }
 
     fn text_of(message: &Message) -> &str {
         match message.content.first() {

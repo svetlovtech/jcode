@@ -1,0 +1,136 @@
+- generic:
+  - generic:
+    - generic [aria-hidden]:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - list:
+                - listitem:
+                  - link:
+                    - /url: /admin/dashboard
+                    - generic: КАВКАЗСКАЯ ТРОПА
+            - generic:
+              - generic:
+                - generic: Обзор
+                - generic:
+                  - list:
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard
+                        - generic: Панель управления
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard/user/account
+                        - generic: Аккаунт
+              - generic:
+                - generic: Системы
+                - generic:
+                  - list:
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: TG Guardian
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Почта
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: GPX Helper
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Garmin Extractor
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Elecache
+                    - listitem:
+                      - link:
+                        - /url: /admin/dashboard/trackcheck
+                        - generic: Проверка треков
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: OSM-мониторинг
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Личный кабинет
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Wannahike
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Trail Now
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: Hikerbox
+                    - generic:
+                      - listitem:
+                        - button [expanded]:
+                          - generic: Промокоды
+                        - generic:
+                          - list:
+                            - listitem:
+                              - link:
+                                - /url: /admin/dashboard/promo
+                                - generic: Промокоды
+                            - listitem:
+                              - link:
+                                - /url: /admin/dashboard/promo/campaigns
+                                - generic: Кампании
+                    - generic:
+                      - listitem:
+                        - button:
+                          - generic: EventStream
+            - button
+      - main:
+        - generic:
+          - button:
+            - generic: Toggle Sidebar
+          - button:
+            - generic: Поиск…
+            - generic: ⌘K
+          - generic:
+            - button
+            - button
+            - button:
+              - generic: A
+        - main:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=1]: Кампании промокодов
+                  - paragraph: "Поводы выпуска: имя и текст привилегий по умолчанию для новых кодов."
+                - generic:
+                  - button: Обновить
+                  - button: Новая кампания
+              - generic: Кампаний пока нет — создайте первую.
+    - region "Notifications alt+T"
+  - dialog [ref=f3e7]:
+    - heading "Новая кампания" [level=2] [ref=f3e9]
+    - generic [ref=f3e10]:
+      - generic [ref=f3e11]:
+        - text: Название
+        - textbox "Название" [active] [ref=f3e12]:
+          - /placeholder: Зима 2026
+      - generic [ref=f3e13]:
+        - text: Описание
+        - textbox "Описание" [ref=f3e14]:
+          - /placeholder: Для чего выпускаются коды
+      - generic [ref=f3e15]:
+        - text: Привилегии по умолчанию
+        - textbox "Привилегии по умолчанию" [ref=f3e16]:
+          - /placeholder: Скидка 10% на любой трек
+        - paragraph [ref=f3e17]: Подставляется в новые коды кампании, если не задан свой текст.
+      - generic [ref=f3e18]:
+        - button "Отмена" [ref=f3e19]
+        - button "Сохранить" [ref=f3e20]
+    - button "Close" [ref=f3e21]

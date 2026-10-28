@@ -1,4 +1,42 @@
-use super::strip_terminal_control_sequences;
+use super::{normalize_paste_newlines, strip_terminal_control_sequences};
+
+/// CR line breaks from bracketed paste must survive as newlines (the bug
+/// where pasted text collapsed into "one line of mush").
+#[test]
+fn converts_carriage_returns_to_newlines() {
+    for (input, expected) in [
+        ("a\r\nb\r\nc", "a\nb\nc"),
+        ("a\rb\rc", "a\nb\nc"),
+        // A lone trailing CR from a terminal that appends the Enter byte.
+        ("hello\r", "hello\n"),
+        // Mixed separators still collapse to single breaks.
+        ("a\r\n\rb", "a\n\nb"),
+    ] {
+        assert_eq!(
+            strip_terminal_control_sequences(input),
+            expected,
+            "input {input:?} should keep CR breaks as newlines"
+        );
+    }
+}
+
+#[test]
+fn normalize_paste_newlines_converts_and_trims_trailing_break() {
+    for (input, expected) in [
+        // No CR: borrowed untouched (including a trailing \n the user meant).
+        ("a\nb\n", "a\nb\n"),
+        ("a\r\nb\r\n", "a\nb"),
+        ("a\rb\r", "a\nb"),
+        ("\r\n", ""),
+        ("", ""),
+    ] {
+        assert_eq!(
+            normalize_paste_newlines(input),
+            expected,
+            "input {input:?} should normalize to {expected:?}"
+        );
+    }
+}
 
 /// Remnants of terminal reports must never reach the composer (#540).
 #[test]

@@ -176,7 +176,9 @@ fn test_token_badges_survive_full_terminal_draw() {
                         .unwrap_or_else(|| panic!("missing tool row: {rows:#?}"))
                         as u16;
                     let row = &rows[y as usize];
-                    assert!(row.contains("(6 lines)"), "{row}");
+                    // A standalone patch's summary lives on the inline diff
+                    // header, so only batch subcall rows still carry it.
+                    assert_eq!(row.contains("(6 lines)"), batch, "{row}");
                     assert!(row.trim_end().ends_with(&label), "{row}");
                     let x = (0..width)
                         .find(|&x| {
@@ -363,8 +365,8 @@ fn test_render_tool_message_batch_subcalls_show_individual_token_badges() {
                     ]
                 }),
                 intent: None, thought_signature: None, }),
-            timestamp: None,
-            tool_duration_ms: None,
+        timestamp: None,
+        tool_duration_ms: None,
         };
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);

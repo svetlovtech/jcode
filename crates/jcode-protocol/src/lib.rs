@@ -9,6 +9,32 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Selected model-provider OAuth identity for the telemetry notice handshake.
+/// Debug formatting must never disclose this personal information.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ProviderOAuthEmail(String);
+
+impl ProviderOAuthEmail {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ProviderOAuthEmail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProviderOAuthEmail([REDACTED])")
+    }
+}
+
 mod comm_format;
 mod notifications;
 
@@ -63,6 +89,15 @@ pub struct HistoryMessage {
     pub tool_calls: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_data: Option<ToolCall>,
+    /// Wall-clock time when the stored message was recorded (#1454). Tool
+    /// rows render it as the opt-in HH:MM:SS stamp; `None` (legacy servers,
+    /// non-tool rows) keeps the wire shape unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// How long the tool ran (#1453), carried beside the stamp so reloaded
+    /// transcripts match live rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,6 +305,10 @@ pub struct AgentInfo {
     /// the agent is actually doing work right now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_age_secs: Option<u64>,
+    /// Set when the stalled-worker watchdog flags this member: seconds it has
+    /// been running with no activity and no tool executing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled_secs: Option<u64>,
     /// Live activity (whether processing + current tool name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<SessionActivitySnapshot>,
@@ -329,6 +368,9 @@ pub struct AgentStatusSnapshot {
     /// or swarm task heartbeats), independent of lifecycle transitions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_age_secs: Option<u64>,
+    /// Seconds stalled, when the stalled-worker watchdog flags this member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_age_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -594,6 +636,7 @@ pub struct AwaitedMemberStatus {
 impl Request {
     pub fn id(&self) -> u64 {
         match self {
+            Request::RuntimeCommand { id, .. } => *id,
             Request::ConfigureTools { id, .. }
             | Request::ListTools { id }
             | Request::ToolResult { id, .. } => *id,
@@ -601,7 +644,7 @@ impl Request {
             Request::Cancel { id } => *id,
             Request::BackgroundTool { id } => *id,
             Request::SoftInterrupt { id, .. } => *id,
-            Request::CancelSoftInterrupts { id } => *id,
+            Request::CancelSoftInterrupts { id, .. } => *id,
             Request::Clear { id } => *id,
             Request::Rewind { id, .. } => *id,
             Request::RewindUndo { id } => *id,
@@ -615,6 +658,7 @@ impl Request {
             Request::GetModelCatalog { id, .. } => *id,
             Request::GetCompactedHistory { id, .. } => *id,
             Request::Reload { id, .. } => *id,
+            Request::UpgradeRuntime { id, .. } => *id,
             Request::ResumeSession { id, .. } => *id,
             Request::ResumeAllSessions { id } => *id,
             Request::NotifySession { id, .. } => *id,
@@ -626,7 +670,7 @@ impl Request {
             Request::RefreshModels { id } => *id,
             Request::SetModel { id, .. } => *id,
             Request::SetRoute { id, .. } => *id,
-            Request::SetSubagentModel { id, .. } => *id,
+            Request::SetSubagentModel { id, .. } | Request::SetAgentModel { id, .. } => *id,
             Request::RunSubagent { id, .. } => *id,
             Request::SetReasoningEffort { id, .. } => *id,
             Request::SetServiceTier { id, .. } => *id,
@@ -688,6 +732,7 @@ impl Request {
         matches!(
             self,
             Request::Ping { .. }
+                | Request::UpgradeRuntime { .. }
                 // Usage invalidation only touches process-wide caches, so a
                 // one-shot client can send it without subscribing to a session.
                 | Request::InvalidateOpenAiUsage { .. }

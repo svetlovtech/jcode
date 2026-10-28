@@ -401,7 +401,8 @@ pub fn build_contents_with_signature_policy(
                             ..Default::default()
                         });
                     }
-                    ContentBlock::OpenAICompaction { .. } | ContentBlock::ToolReference { .. } => {}
+                    ContentBlock::OpenAICompaction { .. } | ContentBlock::ToolReference { .. }
+                    | ContentBlock::ProviderNative { .. } => {}
                 }
             }
             if parts.is_empty() {
