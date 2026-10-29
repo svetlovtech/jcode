@@ -201,8 +201,7 @@ pub struct CompactionManager {
     embedding_history: VecDeque<Vec<f32>>,
 
     /// Local cache for semantic compaction embeddings keyed by truncated-text hash.
-    /// Stores both successful embeddings and failed lookups (
-one`) so repeated
+    /// Stores both successful embeddings and failed lookups (`None`) so repeated
     /// semantic scans do not redo the same work.
     semantic_embed_cache: HashMap<u64, (Option<Vec<f32>>, u64)>,
 
@@ -297,8 +296,7 @@ impl CompactionManager {
         self.active_chars.append_exact(content_char_count(content));
     }
 
-    /// Backward-compatible alias for 
-otify_message_added`.
+    /// Backward-compatible alias for `notify_message_added`.
     /// Accepts (and ignores) the message — callers that haven't been
     /// updated yet can still call `add_message(msg)`.
     pub fn add_message(&mut self, message: Message) {
@@ -1663,8 +1661,7 @@ otify_message_added`.
 pub struct EmergencyRecovery {
     /// Context usage fraction (1.0 == full budget) observed before recovery.
     pub pre_usage: f32,
-    /// Messages dropped by the hard compact, or 
-one` if it could not run.
+    /// Messages dropped by the hard compact, or `None` if it could not run.
     pub dropped: Option<usize>,
     /// Number of oversized tool results that were truncated as a fallback.
     pub truncated: usize,
@@ -1774,11 +1771,6 @@ async fn generate_compaction_artifact(
     let prompt = build_compaction_prompt(&messages, existing_summary.as_ref(), max_prompt_chars);
 
     // Generate summary using simple completion
-    let summary = provider
-        .complete_simple(
-            &prompt,
-            "You are a helpful assistant that summarizes conversations.",
-        )
     let (summary, usage) = provider
         .complete_simple_with_usage(
             &prompt,

@@ -482,8 +482,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Ambient(subcmd)) => {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;
         }
+        Some(Command::Cloud(CloudCommand::Sessions { action })) => {
+            commands::run_cloud_command(commands::CloudSubcommand::Sessions(
+                map_cloud_sessions_subcommand(action),
+            ))?;
+        }
         Some(Command::Cloud(subcmd)) => {
-            commands::run_cloud_command(map_cloud_subcommand(subcmd))?;
+            super::cloud_move::run_cli(subcmd)?;
         }
         Some(Command::Pair { list, revoke }) => {
             commands::run_pair_command(list, revoke)?;

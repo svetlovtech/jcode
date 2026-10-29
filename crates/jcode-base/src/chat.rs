@@ -1,7 +1,7 @@
 //! AABEE chat-service client for permission "ask" flows.
 //!
 //! Talks to the same REST surface as the pi Telegram bridge
-//! (`/api/chat-service/*`, Bearer auth): a blocking `question` call posts an
+//! (`/api/chat/*`, Bearer auth): a blocking `question` call posts an
 //! execution-permission card (kind "permission") and long-polls until the user
 //! answers or the timeout elapses. The server relays to Telegram.
 
@@ -99,7 +99,10 @@ impl ChatServiceClient {
 
         let response = self
             .http
-            .post(format!("{}/api/chat-service/{}", self.base_url, endpoint))
+            .post(format!(
+                "{}/api/chat/{}",
+                self.base_url, endpoint
+            ))
             .bearer_auth(&self.token)
             .multipart(form)
             .timeout(std::time::Duration::from_secs(120))
@@ -125,7 +128,7 @@ impl ChatServiceClient {
         }
         let response = self
             .http
-            .post(format!("{}/api/chat-service/question/stop", self.base_url))
+            .post(format!("{}/api/chat/question/stop", self.base_url))
             .bearer_auth(&self.token)
             .json(&serde_json::json!({
                 "session_id": session_id,
@@ -149,7 +152,7 @@ impl ChatServiceClient {
     pub async fn notify(&self, title: &str, body: &str) -> Result<()> {
         let response = self
             .http
-            .post(format!("{}/api/chat-service/notify", self.base_url))
+            .post(format!("{}/api/chat/notify", self.base_url))
             .bearer_auth(&self.token)
             .json(&serde_json::json!({ "title": title, "body": body }))
             .send()
@@ -194,7 +197,7 @@ impl ChatServiceClient {
 
         let response = self
             .http
-            .post(format!("{}/api/chat-service/question", self.base_url))
+            .post(format!("{}/api/chat/question", self.base_url))
             // Per-request timeout overrides the client-wide timeout so a
             // long ask (e.g. timeout_seconds: 3600 for PRD sessions) is not
             // cut off by the default [chat] timeout_secs budget.
@@ -238,10 +241,17 @@ pub struct InboxFileInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxListInfo {
+    /// Inbox identifier issued by the service; empty for the legacy format.
+    #[serde(default)]
+    pub inbox_id: String,
     #[serde(default, rename = "files_count")]
     pub count: u32,
     #[serde(default, deserialize_with = "deserialize_nullable_files")]
     pub files: Vec<InboxFileInfo>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Inboxes are one-shot: expires_at is created_at + 24h. Files must be
+    /// claimed (or re-listed) before that moment.
     #[serde(default)]
     pub expires_at: Option<String>,
 }
@@ -268,7 +278,7 @@ impl ChatServiceClient {
     pub async fn inbox_list(&self) -> Result<InboxListInfo> {
         let response = self
             .http
-            .get(format!("{}/api/chat-service/inbox", self.base_url))
+            .get(format!("{}/api/chat/inbox", self.base_url))
             .bearer_auth(&self.token)
             .send()
             .await
@@ -291,7 +301,7 @@ impl ChatServiceClient {
         let response = self
             .http
             .get(format!(
-                "{}/api/chat-service/inbox/files/{}",
+                "{}/api/chat/inbox/files/{}",
                 self.base_url, id
             ))
             .bearer_auth(&self.token)
@@ -344,7 +354,7 @@ impl ChatServiceClient {
     pub async fn inbox_claim(&self) -> Result<u32> {
         let response = self
             .http
-            .post(format!("{}/api/chat-service/inbox/claim", self.base_url))
+            .post(format!("{}/api/chat/inbox/claim", self.base_url))
             .bearer_auth(&self.token)
             .send()
             .await
@@ -386,7 +396,7 @@ mod tests {
             assert!(
                 request
                     .to_lowercase()
-                    .contains("post /api/chat-service/question")
+                    .contains("post /api/chat/question")
             );
             assert!(
                 request
@@ -454,5 +464,29 @@ mod tests {
                 .unwrap();
         assert_eq!(info.count, 0);
         assert!(info.files.is_empty());
+    }
+
+    /// The service now answers GET /api/chat/inbox with a one-shot inbox
+    /// envelope: {inbox_id, files_count, files[], created_at, expires_at}.
+    #[test]
+    fn inbox_listing_parses_one_shot_envelope() {
+        let info: InboxListInfo = serde_json::from_str(
+            r#"
+            {
+                "inbox_id": "ibx_123",
+                "files_count": 1,
+                "files": [{"file_id": "f1", "name": "a.txt", "mime_type": "text/plain", "size": 3, "uploaded_at": "2026-10-29T09:00:00Z"}],
+                "created_at": "2026-10-29T09:00:00Z",
+                "expires_at": "2026-10-30T09:00:00Z"
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(info.inbox_id, "ibx_123");
+        assert_eq!(info.count, 1);
+        assert_eq!(info.files.len(), 1);
+        assert_eq!(info.files[0].id, "f1");
+        assert_eq!(info.created_at.as_deref(), Some("2026-10-29T09:00:00Z"));
+        assert_eq!(info.expires_at.as_deref(), Some("2026-10-30T09:00:00Z"));
     }
 }

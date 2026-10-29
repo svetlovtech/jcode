@@ -63,7 +63,6 @@ pub(crate) fn set_unseen_changelog_entries_override_for_tests(entries: Option<Ve
     *guard = entries;
 }
 
-
 /// Keep an override in place only while its owning render test is in scope.
 /// Callers must hold the shared render-state test lock before creating this guard.
 #[cfg(test)]
@@ -90,7 +89,6 @@ pub(super) fn account_router_generation() -> u64 {
     }
     account_router::generation()
 }
-
 
 pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -188,7 +186,7 @@ fn format_gpt_name(short: &str) -> String {
 /// treated as acronyms (`glm` -> `GLM`), and parameter sizes are uppercased
 /// (`70b` -> `70B`). Placeholder labels with spaces/ellipses pass through.
 fn prettify_model_id(model: &str) -> String {
-    if model.contains(' ') || model.contains('Ã¢â‚¬Â¦') || model.contains('/') {
+    if model.contains(' ') || model.contains('…') || model.contains('/') {
         return model.to_string();
     }
 
@@ -336,9 +334,9 @@ fn auth_dot_color(state: AuthState) -> Color {
 #[cfg(test)]
 fn auth_dot_char(state: AuthState) -> &'static str {
     match state {
-        AuthState::Available => "Ã¢â€”Â",
-        AuthState::Expired => "Ã¢â€”Â",
-        AuthState::NotConfigured => "Ã¢â€”â€¹",
+        AuthState::Available => "●",
+        AuthState::Expired => "◐",
+        AuthState::NotConfigured => "○",
     }
 }
 
@@ -477,14 +475,14 @@ fn truncate_to_width(text: &str, width: usize) -> String {
         return String::new();
     }
     if width == 1 {
-        return "Ã¢â‚¬Â¦".to_string();
+        return "…".to_string();
     }
 
     let mut truncated = text
         .chars()
         .take(width.saturating_sub(1))
         .collect::<String>();
-    truncated.push('Ã¢â‚¬Â¦');
+    truncated.push('…');
     truncated
 }
 
@@ -572,8 +570,8 @@ fn build_persistent_header_with_auth(
     let session_name = app.session_display_name().unwrap_or_default();
     let server_name = app.server_display_name();
     // The client line is identified by its session name, so show that name's
-    // icon (e.g. "ram" -> Ã°Å¸ÂÂ). Previously a remote http/ws connection icon
-    // (Ã°Å¸Å’Â/Ã°Å¸â€Å’) replaced it entirely, which hid the name icon for every remote
+    // icon (e.g. "ram" -> 🐏). Previously a remote http/ws connection icon
+    // (🌐/🔌) replaced it entirely, which hid the name icon for every remote
     // client. Keep the connection icon as a separate trailing hint instead.
     let icon = crate::id::session_icon(&session_name);
     let connection_icon = connection_type_icon(app.connection_type().as_deref());
@@ -593,10 +591,10 @@ fn build_persistent_header_with_auth(
         status_items.push("client");
     }
     if server_update {
-        status_items.push("srvÃ¢â€ â€˜");
+        status_items.push("srv↑");
     }
     if client_update {
-        status_items.push("cliÃ¢â€ â€˜");
+        status_items.push("cli↑");
     }
     if let Some(badge) = crate::perf::profile().tier.badge() {
         status_items.push(badge);
@@ -647,7 +645,7 @@ fn build_persistent_header_with_auth(
         }
         if !status_items.is_empty() {
             spans.push(Span::styled(
-                format!(" Ã‚Â· {}", status_items.join(" Ã‚Â· ")),
+                format!(" · {}", status_items.join(" · ")),
                 Style::default().fg(dim_color()),
             ));
         }
@@ -666,7 +664,7 @@ fn build_persistent_header_with_auth(
             Style::default().fg(dim_color()),
         )];
         if let Some(version) = server_version_label.as_deref() {
-            let suffix = format!(" Ã‚Â· {}", version);
+            let suffix = format!(" · {}", version);
             if server_text.chars().count() + suffix.chars().count() <= w {
                 spans.push(Span::styled(suffix, version_style));
             }
@@ -684,7 +682,7 @@ fn build_persistent_header_with_auth(
             Style::default().fg(dim_color()),
         )];
         if let Some(version) = client_version_label.as_deref() {
-            let suffix = format!(" Ã‚Â· {}", version);
+            let suffix = format!(" · {}", version);
             if client_text.chars().count() + suffix.chars().count() <= w {
                 spans.push(Span::styled(suffix, version_style));
             }
@@ -696,7 +694,7 @@ fn build_persistent_header_with_auth(
         // layout down) when it lands a few dozen milliseconds later.
         lines.push(
             Line::from(Span::styled(
-                "client: connectingÃ¢â‚¬Â¦".to_string(),
+                "client: connecting…".to_string(),
                 Style::default().fg(dim_color()),
             ))
             .alignment(align),
@@ -718,7 +716,7 @@ fn build_persistent_header_with_auth(
         let trimmed = model.trim();
         trimmed.is_empty()
             || trimmed == "connected"
-            || trimmed.ends_with('Ã¢â‚¬Â¦')
+            || trimmed.ends_with('…')
             || trimmed.starts_with("connecting")
     };
     let provider_label = if model_is_placeholder {
@@ -737,7 +735,7 @@ fn build_persistent_header_with_auth(
     // wraps when the render area subtracts side margins.
     let fit_width = w.saturating_sub(4);
     if !model_is_placeholder && !nice_model.is_empty() {
-        let hint = "/model to switch Ã‚Â· ";
+        let hint = "/model to switch · ";
         if model_line_len + hint.chars().count() <= fit_width {
             model_line_len += hint.chars().count();
             model_spans.push(Span::styled(
@@ -747,7 +745,7 @@ fn build_persistent_header_with_auth(
         }
     }
     if !provider_label.is_empty() {
-        let prefix = format!("{} Ã‚Â· ", provider_label);
+        let prefix = format!("{} · ", provider_label);
         if model_line_len + prefix.chars().count() <= fit_width {
             model_line_len += prefix.chars().count();
             model_spans.push(Span::styled(prefix, Style::default().fg(dim_color())));
@@ -775,9 +773,9 @@ fn build_persistent_header_with_auth(
         let version_text = if is_running_stable_release() {
             let tag = jcode_build_meta::git_tag();
             if tag.is_empty() || tag.contains('-') {
-                format!("{} Ã‚Â· release", semver())
+                format!("{} · release", semver())
             } else {
-                format!("{} Ã‚Â· release {}", semver(), tag)
+                format!("{} · release {}", semver(), tag)
             }
         } else {
             semver().to_string()
@@ -823,14 +821,14 @@ fn build_header_lines_with_auth(
             app.startup_oauth_account_label().as_deref(),
         ) {
             Some(lines) if !lines.is_empty() => (
-                format!("Account router on {host} Ã‚Â· /account to manage Ã‚Â· /login to add"),
+                format!("Account router on {host} · /account to manage · /login to add"),
                 lines,
             ),
             _ => (format!("/login to authenticate on {host}"), Vec::new()),
         }
     } else {
         (
-            "Account router Ã‚Â· /account to manage Ã‚Â· /login to add credential".to_string(),
+            "Account router · /account to manage · /login to add credential".to_string(),
             account_router::lines(
                 auth,
                 active,
@@ -860,7 +858,7 @@ fn build_header_lines_with_auth(
                 if *count > 0 {
                     format!("{} ({} tools)", name, count)
                 } else {
-                    format!("{} (Ã¢â‚¬Â¦)", name)
+                    format!("{} (…)", name)
                 }
             })
             .collect();
@@ -918,7 +916,7 @@ fn build_header_lines_with_auth(
 /// Build the "Updates" rounded box (unseen release notes) so it can be
 /// rendered inside the top padding above the header. `max_lines` bounds the
 /// total height including the box borders; entries beyond the budget are
-/// collapsed into a "Ã¢â‚¬Â¦N more" line. Returns an empty vec when there are no
+/// collapsed into a "…N more" line. Returns an empty vec when there are no
 /// unseen entries or the budget/width is too small for a box.
 pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<'static>> {
     let w = width as usize;
@@ -942,14 +940,14 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
     let mut content: Vec<Line> = Vec::new();
     for entry in new_entries.iter().take(display_count) {
         content.push(Line::from(Span::styled(
-            format!("Ã¢â‚¬Â¢ {}", entry),
+            format!("• {}", entry),
             Style::default().fg(dim_color()),
         )));
     }
     if has_more {
         content.push(Line::from(Span::styled(
             format!(
-                "  Ã¢â‚¬Â¦{} more Ã‚Â· /changelog to see all",
+                "  …{} more · /changelog to see all",
                 new_entries.len() - display_count
             ),
             Style::default().fg(dim_color()),
@@ -1013,13 +1011,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::OnceLock;
 
-
     #[test]
     fn header_rows_clip_unicode_and_controls_without_losing_style() {
         let style = Style::default().fg(Color::Magenta);
         let source = vec![
             Line::from(vec![
-                Span::styled("Ã¨Â´Â¦Ã¥ÂÂ· Ã°Å¸â€˜Â©Ã¢â‚¬ÂÃ°Å¸â€™Â» e\u{301} ", style),
+                Span::styled("账号 👩‍💻 e\u{301} ", style),
                 Span::raw("/very/long/path\nwith\ttabs and a long account email@example.com"),
             ])
             .alignment(Alignment::Left),
@@ -1079,7 +1076,6 @@ mod tests {
             "a failed render test must not leak its changelog fixture"
         );
     }
-
 
     struct MockProvider;
 
@@ -1203,7 +1199,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("Ã°Å¸â€Â¥"),
+            Some("🔥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1219,7 +1215,7 @@ mod tests {
             .expect("client line");
 
         assert!(
-            server_line.contains("server: Blazing Ã°Å¸â€Â¥ Ã‚Â· v0.14.2-dev"),
+            server_line.contains("server: Blazing 🔥 · v0.14.2-dev"),
             "server line should carry the server version: {server_line}"
         );
         let client_version = compact_version_label(jcode_build_meta::version());
@@ -1228,7 +1224,7 @@ mod tests {
             "client line should keep the session name: {client_line}"
         );
         assert!(
-            client_line.contains(&format!("Ã‚Â· {}", client_version)),
+            client_line.contains(&format!("· {}", client_version)),
             "client line should carry the client version: {client_line}"
         );
     }
@@ -1260,7 +1256,7 @@ mod tests {
             "same-semver mismatch should keep the server git hash: {server_line}"
         );
         assert!(
-            client_line.contains(&format!("Ã‚Â· {}", jcode_build_meta::version())),
+            client_line.contains(&format!("· {}", jcode_build_meta::version())),
             "same-semver mismatch should keep the client git hash: {client_line}"
         );
     }
@@ -1270,7 +1266,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("Ã°Å¸â€Â¥"),
+            Some("🔥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1297,7 +1293,7 @@ mod tests {
         assert!(
             !lines
                 .iter()
-                .any(|line| line.contains("client:") && line.contains(" Ã‚Â· v")),
+                .any(|line| line.contains("client:") && line.contains(" · v")),
             "local mode client line should not carry a version label: {lines:?}"
         );
     }
@@ -1307,7 +1303,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("Ã°Å¸â€Â¥"),
+            Some("🔥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_ram_1705012345678"),
         );
@@ -1319,15 +1315,15 @@ mod tests {
             .find(|line| line.contains("client:"))
             .expect("client line");
 
-        // The session name's own icon (ram -> Ã°Å¸ÂÂ) must be present rather than
+        // The session name's own icon (ram -> 🐏) must be present rather than
         // being replaced by the connection icon.
         assert!(
-            client_line.contains("client: Ram Ã°Å¸ÂÂ"),
+            client_line.contains("client: Ram 🐏"),
             "client line should show the name icon: {client_line}"
         );
         // The connection icon is kept as a trailing hint, not a replacement.
         assert!(
-            client_line.contains('Ã°Å¸Å’Â'),
+            client_line.contains('🌐'),
             "client line should keep the connection hint icon: {client_line}"
         );
     }
@@ -1337,7 +1333,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("Ã°Å¸â€Â¥"),
+            Some("🔥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1350,11 +1346,11 @@ mod tests {
             .expect("client line");
 
         assert!(
-            client_line.contains("client: Fox Ã°Å¸Â¦Å "),
+            client_line.contains("client: Fox 🦊"),
             "client line should show the name icon: {client_line}"
         );
         assert!(
-            !client_line.contains('Ã°Å¸Å’Â') && !client_line.contains('Ã°Å¸â€Å’'),
+            !client_line.contains('🌐') && !client_line.contains('🔌'),
             "client line should not carry a connection hint when unknown: {client_line}"
         );
     }
@@ -1386,7 +1382,7 @@ mod tests {
             "Claude Fable 5"
         );
         // Placeholders and slashed ids pass through untouched.
-        assert_eq!(prettify_model_id("loading sessionÃ¢â‚¬Â¦"), "loading sessionÃ¢â‚¬Â¦");
+        assert_eq!(prettify_model_id("loading session…"), "loading session…");
         assert_eq!(
             prettify_model_id("deepseek/deepseek-chat"),
             "deepseek/deepseek-chat"
@@ -1454,8 +1450,8 @@ mod tests {
         );
         // Placeholders pass through untouched.
         assert_eq!(
-            header_model_display_name("loading sessionÃ¢â‚¬Â¦", ""),
-            "loading sessionÃ¢â‚¬Â¦"
+            header_model_display_name("loading session…", ""),
+            "loading session…"
         );
         assert_eq!(header_model_display_name("connected", ""), "Connected");
     }
@@ -1628,7 +1624,7 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("GPT-5.4"));
-        assert!(!rendered.contains("connecting to serverÃ¢â‚¬Â¦"));
+        assert!(!rendered.contains("connecting to server…"));
 
         if let Some(prev_model) = prev_model {
             crate::env::set_var("JCODE_MODEL", prev_model);
@@ -1646,7 +1642,7 @@ mod tests {
     fn build_header_lines_omits_placeholder_provider_label_when_unknown() {
         // Reads model/provider env-derived state: without the env lock, the
         // sibling test that sets JCODE_MODEL=gpt-5.4 mid-flight leaks into this
-        // render and the "loading sessionÃ¢â‚¬Â¦" placeholder never appears. The
+        // render and the "loading session…" placeholder never appears. The
         // startup-phase label is also only rendered when no model hint is
         // known, so neutralize JCODE_MODEL/JCODE_PROVIDER for the duration
         // ("unknown" also suppresses the shared test home's config
@@ -1680,7 +1676,7 @@ mod tests {
             crate::env::remove_var("JCODE_PROVIDER");
         }
 
-        assert!(rendered.contains("loading sessionÃ¢â‚¬Â¦"), "{rendered}");
+        assert!(rendered.contains("loading session…"), "{rendered}");
         assert!(!rendered.contains("(unknown)"));
         assert!(!rendered.contains("(remote)"));
     }
@@ -1700,7 +1696,7 @@ mod tests {
             .collect::<String>();
 
         assert!(
-            !rendered.contains("connecting to serverÃ¢â‚¬Â¦"),
+            !rendered.contains("connecting to server…"),
             "brief connecting placeholder should not render the secondary detail line"
         );
         assert!(!rendered.contains("(remote)"));

@@ -538,7 +538,7 @@ impl Sidecar {
         }
 
         if is_chatgpt_mode {
-            collect_openai_sse_text(response)
+            collect_openai_sse_text(response, model)
                 .await
                 .map_err(OpenAiSidecarError::other)
         } else {
@@ -622,7 +622,7 @@ impl Sidecar {
         .await
         .context("Failed to send request to Claude API")?;
 
-        Self::parse_claude_response(response).await
+        Self::parse_claude_response(response, &self.model).await
     }
 
     /// Direct API-key completion path (`x-api-key`).
@@ -658,11 +658,11 @@ impl Sidecar {
             .await
             .context("Failed to send request to Claude API")?;
 
-        Self::parse_claude_response(response).await
+        Self::parse_claude_response(response, &self.model).await
     }
 
     /// Shared response parsing for both Claude credential paths.
-    async fn parse_claude_response(response: reqwest::Response) -> Result<String> {
+    async fn parse_claude_response(response: reqwest::Response, model: &str) -> Result<String> {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -991,7 +991,7 @@ pub struct ExtractedMemory {
 ///
 /// Parses `data: <json>` lines and accumulates text deltas from
 /// `response.output_text.delta` events, stopping on completion/done.
-async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> {
+async fn collect_openai_sse_text(response: reqwest::Response, model: &str) -> Result<String> {
     use futures::StreamExt;
     let mut stream = response.bytes_stream();
     let mut text = String::new();
@@ -1112,6 +1112,8 @@ struct SseEvent {
     kind: String,
     delta: Option<String>,
     error: Option<serde_json::Value>,
+    #[serde(default)]
+    response: Option<serde_json::Value>,
 }
 
 // Claude API types
@@ -1207,8 +1209,7 @@ fn is_anthropic_oauth_forbidden(err: &anyhow::Error) -> bool {
 struct ClaudeMessagesResponse {
     model: Option<String>,
     content: Vec<ClaudeContentBlock>,
-    #[serde(rename = "usage")]
-    _usage: Option<ClaudeUsage>,
+    usage: Option<ClaudeUsage>,
 }
 
 #[derive(Deserialize)]
@@ -1222,10 +1223,14 @@ enum ClaudeContentBlock {
 
 #[derive(Deserialize)]
 struct ClaudeUsage {
-    #[serde(rename = "input_tokens")]
-    _input_tokens: u32,
-    #[serde(rename = "output_tokens")]
-    _output_tokens: u32,
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
 }
 
 #[cfg(test)]

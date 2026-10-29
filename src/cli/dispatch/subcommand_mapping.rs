@@ -26,14 +26,6 @@ pub(super) fn map_memory_subcommand(subcmd: MemoryCommand) -> commands::MemorySu
     }
 }
 
-/// Fork: cloud-synced sessions subcommand mapping.
-pub(super) fn map_cloud_subcommand(subcmd: CloudCommand) -> commands::CloudSubcommand {
-    match subcmd {
-        CloudCommand::Sessions { action } => {
-            commands::CloudSubcommand::Sessions(map_cloud_sessions_subcommand(action))
-        }
-    }
-}
 
 pub(super) fn map_ambient_subcommand(subcmd: AmbientCommand) -> commands::AmbientSubcommand {
     match subcmd {

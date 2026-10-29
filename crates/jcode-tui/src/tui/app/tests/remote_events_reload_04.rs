@@ -530,7 +530,7 @@ fn test_schedule_pending_remote_retry_respects_retry_limit() {
         retry_at: None,
     });
 
-    assert!(!app.schedule_pending_remote_retry("Ã¢Å¡Â  failed."));
+    assert!(!app.schedule_pending_remote_retry("⚠ failed."));
     assert!(app.rate_limit_pending_message.is_none());
     assert!(app.rate_limit_reset.is_none());
     assert!(
@@ -877,7 +877,7 @@ fn test_remote_tui_state_hides_brief_connecting_phase_without_cached_model() {
 
     assert_eq!(
         crate::tui::TuiState::provider_model(&app),
-        "connecting to serverÃ¢â‚¬Â¦"
+        "connecting to server…"
     );
     assert_eq!(crate::tui::TuiState::provider_name(&app), "");
 
@@ -925,7 +925,7 @@ fn test_remote_tui_state_shows_starting_server_phase_in_header() {
 
     assert_eq!(
         crate::tui::TuiState::provider_model(&app),
-        "starting serverÃ¢â‚¬Â¦"
+        "starting server…"
     );
 }
 
@@ -937,7 +937,7 @@ fn test_remote_tui_state_shows_loading_session_phase_in_header() {
 
         assert_eq!(
             crate::tui::TuiState::provider_model(&app),
-            "loading sessionÃ¢â‚¬Â¦"
+            "loading session…"
         );
     });
 }
@@ -952,7 +952,7 @@ fn test_remote_tui_state_shows_startup_elapsed_in_header() {
 
         assert_eq!(
             crate::tui::TuiState::provider_model(&app),
-            "connecting to serverÃ¢â‚¬Â¦ 5s"
+            "connecting to server… 5s"
         );
     });
 }
@@ -965,14 +965,14 @@ fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
 
         assert_eq!(
             crate::tui::TuiState::provider_model(&app),
-            "connecting to serverÃ¢â‚¬Â¦"
+            "connecting to server…"
         );
         assert_eq!(app.status_notice(), None);
 
         app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::LoadingSession);
         assert_eq!(
             crate::tui::TuiState::provider_model(&app),
-            "loading sessionÃ¢â‚¬Â¦"
+            "loading session…"
         );
         assert_eq!(app.status_notice(), None);
     });
@@ -985,14 +985,14 @@ fn test_remote_tui_state_shows_reconnecting_phase_in_header() {
 
     assert_eq!(
         crate::tui::TuiState::provider_model(&app),
-        "reconnecting (3)Ã¢â‚¬Â¦"
+        "reconnecting (3)…"
     );
 }
 
 #[test]
 fn test_remote_header_keeps_known_model_during_brief_loading_session_phase() {
     // Routine bootstrap: the model is already known (session stub / config
-    // hint), so a short LoadingSession phase must not flash "loading sessionÃ¢â‚¬Â¦"
+    // hint), so a short LoadingSession phase must not flash "loading session…"
     // over it. That pre-settle churn is exactly what made spawns look unstable.
     let mut app = App::new_for_remote(None);
     app.session.model = Some("claude-fable-5".to_string());
@@ -1006,7 +1006,7 @@ fn test_remote_header_keeps_known_model_during_brief_loading_session_phase() {
         Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
     assert_eq!(
         crate::tui::TuiState::provider_model(&app),
-        "loading sessionÃ¢â‚¬Â¦ 5s"
+        "loading session… 5s"
     );
 }
 

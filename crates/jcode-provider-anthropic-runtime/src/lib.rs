@@ -15,6 +15,7 @@
 //! Uses the Anthropic Messages API directly without the Python SDK.
 //! This provides better control and eliminates the Python dependency.
 
+mod native_web_search;
 mod reasoning_request;
 mod usage_recording;
 
@@ -1166,6 +1167,30 @@ impl AnthropicProvider {
         jcode_provider_anthropic::format_messages_with_tools(messages, is_oauth, api_tools)
     }
 
+    /// Like [`Self::format_messages`], additionally controlling how stored
+    /// provider-native Anthropic server tool blocks are replayed: verbatim when
+    /// the matching server tool is attached to this request (`native_replay`).
+    fn format_messages_native(
+        &self,
+        messages: &[Message],
+        is_oauth: bool,
+        api_tools: &[ApiTool],
+        native_replay: bool,
+    ) -> Vec<ApiMessage> {
+        jcode_provider_anthropic::format_messages_with_native(
+            messages,
+            is_oauth,
+            api_tools,
+            native_replay,
+        )
+    }
+
+    /// True when requests go to Anthropic's own Messages API rather than a
+    /// custom gateway, which may not implement server tools.
+    fn first_party_api(&self) -> bool {
+        self.direct_transport.api_url == API_URL
+    }
+
     /// Convert our ContentBlock to Anthropic API format
     #[cfg(test)]
     fn format_content_blocks(
@@ -1263,8 +1288,20 @@ impl Provider for AnthropicProvider {
         let api_model = strip_1m_suffix(&model).to_string();
 
         // Format request
-        let api_tools = self.format_tools(tools, is_oauth);
-        let api_messages = self.format_messages(messages, is_oauth, &api_tools);
+        let server_tools = native_web_search::server_tools_for_request(
+            // OAuth always targets api.anthropic.com, regardless of a gateway
+            // base URL configured for API-key use.
+            is_oauth || self.first_party_api(),
+            tools,
+        );
+        let tools = native_web_search::without_local_websearch(tools, &server_tools);
+        let api_tools = self.format_tools(&tools, is_oauth);
+        let api_messages = self.format_messages_native(
+            messages,
+            is_oauth,
+            &api_tools,
+            !server_tools.is_empty(),
+        );
         let (thinking, output_config, temperature) =
             self.build_reasoning_request_parts(&model, is_oauth);
 
@@ -1273,11 +1310,7 @@ impl Provider for AnthropicProvider {
             max_tokens: self.max_tokens_for(&model),
             system: build_system_param(system, is_oauth),
             messages: format_messages_with_identity(api_messages, is_oauth),
-            tools: if api_tools.is_empty() {
-                None
-            } else {
-                Some(api_tools)
-            },
+            tools: jcode_provider_anthropic::request_tools(api_tools, server_tools),
             metadata: if is_oauth {
                 Some(oauth_request_metadata(&self.oauth_session_id))
             } else {
@@ -1695,8 +1728,20 @@ impl Provider for AnthropicProvider {
         let api_model = strip_1m_suffix(&model).to_string();
 
         // Format request
-        let api_tools = self.format_tools(tools, is_oauth);
-        let api_messages = self.format_messages(messages, is_oauth, &api_tools);
+        let server_tools = native_web_search::server_tools_for_request(
+            // OAuth always targets api.anthropic.com, regardless of a gateway
+            // base URL configured for API-key use.
+            is_oauth || self.first_party_api(),
+            tools,
+        );
+        let tools = native_web_search::without_local_websearch(tools, &server_tools);
+        let api_tools = self.format_tools(&tools, is_oauth);
+        let api_messages = self.format_messages_native(
+            messages,
+            is_oauth,
+            &api_tools,
+            !server_tools.is_empty(),
+        );
         let (thinking, output_config, temperature) =
             self.build_reasoning_request_parts(&model, is_oauth);
 
@@ -1705,11 +1750,7 @@ impl Provider for AnthropicProvider {
             max_tokens: self.max_tokens_for(&model),
             system: build_system_param_split(system_static, system_dynamic, is_oauth),
             messages: format_messages_with_identity(api_messages, is_oauth),
-            tools: if api_tools.is_empty() {
-                None
-            } else {
-                Some(api_tools)
-            },
+            tools: jcode_provider_anthropic::request_tools(api_tools, server_tools),
             metadata: if is_oauth {
                 Some(oauth_request_metadata(&self.oauth_session_id))
             } else {

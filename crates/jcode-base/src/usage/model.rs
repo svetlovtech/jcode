@@ -155,8 +155,6 @@ pub struct ModelScopedUsageWindow {
 }
 
 /// API response structures
-#[derive(Deserialize, Debug)]
-
 /// Normalize a provider-supplied reset timestamp to RFC3339. Values arrive as
 /// RFC3339 strings or epoch numbers (seconds, or milliseconds when too large
 /// for seconds); protobuf int64 fields JSON-encode as decimal strings, so
@@ -180,6 +178,7 @@ pub(super) fn reset_timestamp_from_json_value(value: &serde_json::Value) -> Opti
     value.as_str().map(|text| text.to_string())
 }
 
+#[derive(Deserialize, Debug)]
 pub(super) struct UsageResponse {
     pub(super) five_hour: Option<UsageWindow>,
     pub(super) seven_day: Option<UsageWindow>,

@@ -349,10 +349,25 @@ fn find_crashed_via_pid_files() -> Option<Vec<(String, String)>> {
 
         match Session::load(&session_id) {
             Ok(mut session) => {
-                session.mark_crashed(Some(format!(
-                    "Process {} exited unexpectedly (no shutdown signal captured)",
-                    pid
-                )));
+                // Idle-vs-interrupted disposition (upstream #988, extended to
+                // the PID detector): losing the process is only a crash when
+                // it interrupts unfinished work. A leftover streaming marker
+                // proves the session was mid-turn when its owner died
+                // (StreamingGuard clears the marker on every exit path -
+                // normal return, error propagation, interrupt, panic - so
+                // only a killed process leaves one behind). No marker = idle
+                // = ordinary close, same as the disconnect path's idle rule.
+                // This stops daemon restarts stamping every owned idle
+                // session Crashed. Fail toward crash when the marker dir is
+                // unreadable: crash recovery is fail-noisy, never fail-silent.
+                if had_streaming_marker(&session_id) {
+                    session.mark_crashed(Some(format!(
+                        "Process {} exited unexpectedly (no shutdown signal captured)",
+                        pid
+                    )));
+                } else {
+                    session.mark_closed();
+                }
                 let _ = session.save();
                 let ts = session.last_active_at.unwrap_or(session.updated_at);
                 if ts <= cutoff {
@@ -376,6 +391,22 @@ fn find_crashed_via_pid_files() -> Option<Vec<(String, String)>> {
             .map(|(id, name, _)| (id, name))
             .collect(),
     )
+}
+
+/// True when a streaming marker file exists for this session - i.e. the
+/// session was mid-turn when its owner died. Any content counts (even a
+/// stale marker naming the dead owner): StreamingGuard removes the file
+/// on every orderly exit, so presence alone proves interruption. Missing
+/// marker dir or I/O error returns true (fail toward crash recovery, never
+/// silently close a session that may hold interrupted work).
+fn had_streaming_marker(session_id: &str) -> bool {
+    let Some(dir) = storage::streaming_pids_dir() else {
+        return true;
+    };
+    match std::fs::read_dir(&dir) {
+        Ok(_) => dir.join(session_id).exists(),
+        Err(_) => true,
+    }
 }
 
 /// Legacy fallback: scan the full sessions directory.

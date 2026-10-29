@@ -688,6 +688,55 @@ pub(super) async fn fetch_cursor_usage_report() -> Option<ProviderUsage> {
     })
 }
 
+pub(super) fn cursor_plan_usage_report(json: &serde_json::Value) -> ProviderUsage {
+    let plan = json
+        .get("planUsage")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let membership = json
+        .get("spendLimitUsage")
+        .filter(|usage| usage.get("limitType").and_then(|v| v.as_str()) == Some("team"))
+        .map(|_| "Team")
+        .or_else(|| json.get("membershipType").and_then(|v| v.as_str()))
+        .unwrap_or("Pro");
+    let mut chars = membership.chars();
+    let membership_title: String = match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Pro".to_string(),
+    };
+
+    let resets_at = json
+        .get("billingCycleEnd")
+        .and_then(reset_timestamp_from_json_value);
+
+    let mut limits = Vec::new();
+    for (name, key) in [
+        ("Included", "totalPercentUsed"),
+        ("Auto", "autoPercentUsed"),
+        ("API", "apiPercentUsed"),
+    ] {
+        let Some(percent) = plan.get(key).and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        limits.push(UsageLimit {
+            name: name.to_string(),
+            usage_percent: percent.clamp(0.0, 100.0) as f32,
+            resets_at: resets_at.clone(),
+        });
+    }
+
+    ProviderUsage {
+        provider_name: format!("Cursor {}", membership_title),
+        limits,
+        extra_info: Vec::new(),
+        hard_limit_reached: false,
+        openai_reset_credits: None,
+        anthropic_limit_reset: None,
+        error: None,
+        last_used_unix_secs: None,
+    }
+}
 pub(super) async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
     if !auth::copilot::has_copilot_credentials() {
         return None;
