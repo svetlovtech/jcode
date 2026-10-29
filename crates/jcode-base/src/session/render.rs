@@ -398,6 +398,7 @@ pub fn render_messages_and_images_with_compacted_history(
         };
         rendered.push(RenderedMessage {
             response_stats: None,
+            tool_duration_ms: None,
             role: "system".to_string(),
             content,
             tool_calls: Vec::new(),
@@ -408,7 +409,49 @@ pub fn render_messages_and_images_with_compacted_history(
         });
     }
 
+    // Error replay records are display-only: never turn provider diagnostics
+    // into assistant/user context. Merge them at their original turn boundary
+    // so a reconnect shows the failure beneath its wake, not at the latest turn.
+    let mut errors: Vec<_> = session
+        .replay_events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            super::StoredReplayEventKind::DisplayMessage { role, content, .. }
+                if role == "error" =>
+            {
+                Some((event.timestamp, content))
+            }
+            _ => None,
+        })
+        .filter(|(timestamp, _)| {
+            render_start_idx == 0
+                || session
+                    .messages
+                    .get(render_start_idx)
+                    .and_then(|msg| msg.timestamp)
+                    .is_none_or(|start| *timestamp >= start)
+        })
+        .collect();
+    errors.sort_by_key(|(timestamp, _)| *timestamp);
+    let mut errors = errors.into_iter().peekable();
+    let render_error = |content: &String| RenderedMessage {
+        response_stats: None,
+        tool_duration_ms: None,
+        role: "error".to_string(),
+        content: content.clone(),
+        tool_calls: Vec::new(),
+        tool_data: None,
+        stored_index: None,
+    };
     for (stored_index, msg) in session.messages.iter().enumerate().skip(render_start_idx) {
+        while errors
+            .peek()
+            .is_some_and(|(timestamp, _)| msg.timestamp.is_some_and(|next| *timestamp < next))
+        {
+            if let Some((_, content)) = errors.next() {
+                rendered.push(render_error(content));
+            }
+        }
         if is_internal_system_reminder(msg) {
             continue;
         }
@@ -429,6 +472,7 @@ pub fn render_messages_and_images_with_compacted_history(
         if let Some(summary) = auto_poke_user_message_display_summary(msg) {
             rendered.push(RenderedMessage {
                 response_stats: None,
+                tool_duration_ms: None,
                 role: "system".to_string(),
                 content: summary.to_string(),
                 tool_calls: Vec::new(),
@@ -506,6 +550,7 @@ pub fn render_messages_and_images_with_compacted_history(
                         reasoning.clear();
                         rendered.push(RenderedMessage {
                             response_stats: None,
+                            tool_duration_ms: None,
                             role: role.to_string(),
                             content: combined,
                             tool_calls: tool_calls.clone(),
@@ -529,6 +574,7 @@ pub fn render_messages_and_images_with_compacted_history(
 
                     rendered.push(RenderedMessage {
                         response_stats: None,
+                        tool_duration_ms: msg.tool_duration_ms,
                         role: "tool".to_string(),
                         content: content.clone(),
                         tool_calls: Vec::new(),
@@ -591,6 +637,7 @@ pub fn render_messages_and_images_with_compacted_history(
                         reasoning.clear();
                         rendered.push(RenderedMessage {
                             response_stats: None,
+                            tool_duration_ms: None,
                             role: role.to_string(),
                             content: combined,
                             tool_calls: std::mem::take(&mut tool_calls),
@@ -612,6 +659,7 @@ pub fn render_messages_and_images_with_compacted_history(
                     });
                     rendered.push(RenderedMessage {
                         response_stats: None,
+                        tool_duration_ms: None,
                         role: "tool".to_string(),
                         content: output,
                         tool_calls: Vec::new(),
@@ -632,6 +680,7 @@ pub fn render_messages_and_images_with_compacted_history(
             }
             rendered.push(RenderedMessage {
                 response_stats: None,
+                tool_duration_ms: None,
                 role: role.to_string(),
                 content: combined,
                 tool_calls,
@@ -652,6 +701,7 @@ pub fn render_messages_and_images_with_compacted_history(
         }
     }
 
+    rendered.extend(errors.map(|(_, content)| render_error(content)));
     response_stats::attach(&session.messages, &mut rendered);
     (rendered, images, compacted_info)
 }

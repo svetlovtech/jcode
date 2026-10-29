@@ -189,7 +189,13 @@ pub(crate) fn create_test_app() -> App {
     crate::tui::ui::clear_test_render_state_for_tests();
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    // Keep background-task semantics without allocating a host-sized worker
+    // pool per fixture (hosted machines can expose dozens of CPU cores).
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
     app.queue_mode = false;
@@ -203,7 +209,11 @@ fn create_named_provider_test_app(name: &'static str, model: &'static str) -> Ap
     crate::tui::ui::clear_test_render_state_for_tests();
 
     let provider: Arc<dyn Provider> = Arc::new(NamedMockProvider { name, model });
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
     app.queue_mode = false;
@@ -229,7 +239,11 @@ fn create_refresh_summary_test_app(summary: crate::provider::ModelCatalogRefresh
     crate::tui::ui::clear_test_render_state_for_tests();
 
     let provider: Arc<dyn Provider> = Arc::new(RefreshSummaryProvider { summary });
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
     app.queue_mode = false;
@@ -246,7 +260,11 @@ fn create_openrouter_spec_capture_test_app() -> (App, StdArc<StdMutex<Vec<String
     let provider: Arc<dyn Provider> = Arc::new(OpenRouterSpecCaptureProvider {
         set_model_calls: set_model_calls.clone(),
     });
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
     app.queue_mode = false;
@@ -576,7 +594,15 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
             estimated_input_tokens: 8_000,
         };
 
+        let before = app.display_messages.len();
         app.handle_turn_error(failover_error_message(&prompt));
+        let added = &app.display_messages[before..];
+        assert_eq!(added.len(), 2, "{added:?}");
+        assert_eq!(added[0].role, "error");
+        assert!(added[0].content.contains("OAuth usage exhausted"));
+        assert_eq!(added[1].role, "system");
+        assert!(added[1].content.starts_with("↪ Switching to OpenAI"));
+        assert!(!added[1].content.contains('\n'));
         assert!(app.pending_provider_failover.is_some());
         assert_eq!(active_provider.lock().unwrap().as_str(), "claude");
         assert!(!app.pending_turn);
@@ -607,6 +633,12 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
         let last = app.display_messages.last().expect("display message");
         assert!(!last.content.contains("cross_provider_failover"));
         assert!(last.content.lines().count() <= 2);
+        assert!(
+            !app.display_messages
+                .iter()
+                .any(|message| message.content.starts_with("↪ Switching to")),
+            "countdown line should be dropped once the switch happens"
+        );
     });
 }
 

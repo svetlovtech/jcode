@@ -269,10 +269,11 @@ fn is_object_typed(map: &Map<String, Value>) -> bool {
 
 /// Drop `required` names the same object does not declare (#655).
 fn prune_dangling_required(out: &mut Map<String, Value>) {
-    let Some(Value::Object(properties)) = out.get("properties") else {
-        return;
-    };
-    let defined: Vec<String> = properties.keys().cloned().collect();
+    let defined: Vec<String> = out
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
     if let Some(Value::Array(required)) = out.get_mut("required") {
         required.retain(|name| {
             name.as_str()
@@ -459,11 +460,12 @@ fn merge_all_of_branches(out: &mut Map<String, Value>) {
         return;
     };
 
-    let mut properties = out
-        .get("properties")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    // Only object-valued property declarations contribute to the union.
+    // An absent (or structurally invalid) declaration contributes no names.
+    let mut properties = match out.get("properties") {
+        Some(Value::Object(properties)) => properties.clone(),
+        _ => Map::new(),
+    };
     let mut required: Vec<String> = out
         .get("required")
         .and_then(Value::as_array)

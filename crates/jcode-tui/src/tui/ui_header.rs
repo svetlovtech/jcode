@@ -7,6 +7,33 @@ use crate::auth::{AuthState, AuthStatus};
 use crate::tui::color_support::rgb;
 use crate::tui::connection_type_icon;
 use ratatui::prelude::*;
+#[path = "ui_header/account_router.rs"]
+mod account_router;
+
+/// UI chrome is single-line. Budget the same trailing cell as the transcript
+/// preparer so even an exactly-full header cannot acquire a continuation row.
+fn fit_header_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let budget = usize::from(width.saturating_sub(1));
+    lines
+        .into_iter()
+        .map(|mut line| {
+            for span in &mut line.spans {
+                if span.content.chars().any(char::is_control) {
+                    span.content = span
+                        .content
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .collect::<String>()
+                        .into();
+                }
+            }
+            let mut fitted = jcode_tui_render::truncate_line_with_ellipsis_to_width(&line, budget);
+            fitted.style = line.style;
+            fitted.alignment = line.alignment;
+            fitted
+        })
+        .collect()
+}
 #[cfg(test)]
 use std::sync::OnceLock;
 
@@ -35,6 +62,35 @@ pub(crate) fn set_unseen_changelog_entries_override_for_tests(entries: Option<Ve
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = entries;
 }
+
+
+/// Keep an override in place only while its owning render test is in scope.
+/// Callers must hold the shared render-state test lock before creating this guard.
+#[cfg(test)]
+pub(crate) struct ChangelogEntriesOverrideGuard;
+
+#[cfg(test)]
+pub(crate) fn scoped_unseen_changelog_entries_override_for_tests(
+    entries: Vec<String>,
+) -> ChangelogEntriesOverrideGuard {
+    set_unseen_changelog_entries_override_for_tests(Some(entries));
+    ChangelogEntriesOverrideGuard
+}
+
+#[cfg(test)]
+impl Drop for ChangelogEntriesOverrideGuard {
+    fn drop(&mut self) {
+        set_unseen_changelog_entries_override_for_tests(None);
+    }
+}
+
+pub(super) fn account_router_generation() -> u64 {
+    if crate::tui::is_ssh_remote() {
+        return 0;
+    }
+    account_router::generation()
+}
+
 
 pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -132,7 +188,7 @@ fn format_gpt_name(short: &str) -> String {
 /// treated as acronyms (`glm` -> `GLM`), and parameter sizes are uppercased
 /// (`70b` -> `70B`). Placeholder labels with spaces/ellipses pass through.
 fn prettify_model_id(model: &str) -> String {
-    if model.contains(' ') || model.contains('…') || model.contains('/') {
+    if model.contains(' ') || model.contains('Ã¢â‚¬Â¦') || model.contains('/') {
         return model.to_string();
     }
 
@@ -277,11 +333,12 @@ fn auth_dot_color(state: AuthState) -> Color {
     }
 }
 
+#[cfg(test)]
 fn auth_dot_char(state: AuthState) -> &'static str {
     match state {
-        AuthState::Available => "●",
-        AuthState::Expired => "◐",
-        AuthState::NotConfigured => "○",
+        AuthState::Available => "Ã¢â€”Â",
+        AuthState::Expired => "Ã¢â€”Â",
+        AuthState::NotConfigured => "Ã¢â€”â€¹",
     }
 }
 
@@ -312,113 +369,6 @@ impl ActiveCredentialOverrides {
             _ => None,
         }
     }
-}
-
-/// Configured providers with their full labels, in display order.
-fn auth_full_specs(
-    auth: &AuthStatus,
-    active: ActiveCredentialOverrides,
-) -> Vec<(String, AuthState)> {
-    fn provider_label(name: &str, state: AuthState, method: Option<&str>) -> String {
-        match (state, method) {
-            (AuthState::NotConfigured, _) => name.to_string(),
-            (_, Some(method)) if !method.is_empty() => format!("{}({})", name, method),
-            _ => name.to_string(),
-        }
-    }
-
-    // The auth list is a credential *inventory* (what is configured), while
-    // the provider tag above reports the *active* route. When both credentials
-    // are configured, mark the active one with `*` so the two surfaces read as
-    // one consistent story ("oauth*+key" = both configured, OAuth in use)
-    // instead of an ambiguous "oauth+key" that looks like both are being used
-    // at once.
-    fn dual_method_label(
-        provider: jcode_provider_core::ActiveProvider,
-        auth: &AuthStatus,
-        active: ActiveCredentialOverrides,
-    ) -> Option<&'static str> {
-        use crate::auth::{ActiveCredential, resolve_dual_credential_auth};
-        let runtime_provider = std::env::var("JCODE_RUNTIME_PROVIDER").ok();
-        let resolved = resolve_dual_credential_auth(provider, auth, runtime_provider.as_deref())?;
-        // Prefer the app's authoritative answer over the env heuristic.
-        let active = active.get(provider).unwrap_or(resolved.active);
-        Some(match (resolved.has_oauth, resolved.has_api_key) {
-            (true, true) => match active {
-                ActiveCredential::OAuth => "oauth*+key",
-                ActiveCredential::ApiKey => "oauth+key*",
-            },
-            (true, false) => "oauth",
-            (false, true) => "key",
-            (false, false) => return None,
-        })
-    }
-
-    let anthropic_label = provider_label(
-        "anthropic",
-        auth.anthropic.state,
-        dual_method_label(jcode_provider_core::ActiveProvider::Claude, auth, active),
-    );
-
-    let openai_label = provider_label(
-        "openai",
-        auth.openai,
-        dual_method_label(jcode_provider_core::ActiveProvider::OpenAI, auth, active),
-    );
-
-    let gemini_label = if auth.gemini != AuthState::NotConfigured {
-        provider_label("gemini", auth.gemini, Some("oauth"))
-    } else {
-        provider_label("gemini", auth.gemini, None)
-    };
-
-    vec![
-        (anthropic_label, auth.anthropic.state),
-        ("openrouter".to_string(), auth.openrouter),
-        (openai_label, auth.openai),
-        (provider_label("cursor", auth.cursor, None), auth.cursor),
-        (provider_label("copilot", auth.copilot, None), auth.copilot),
-        (gemini_label, auth.gemini),
-        (
-            provider_label("antigravity", auth.antigravity, None),
-            auth.antigravity,
-        ),
-    ]
-}
-
-/// Vertical auth inventory: one line per provider. Configured providers get
-/// green/yellow dots; unconfigured ones get a dim hollow dot so they read as
-/// available-to-add without cluttering the `/login` heading.
-pub(super) fn build_auth_status_lines(
-    auth: &AuthStatus,
-    active: ActiveCredentialOverrides,
-) -> Vec<Line<'static>> {
-    let specs = auth_full_specs(auth, active);
-    // Only list providers the user actually has credentials for. When nothing
-    // is configured at all, fall back to the full list so the `/login` heading
-    // still shows what can be added.
-    let configured: Vec<_> = specs
-        .iter()
-        .filter(|(_, state)| *state != AuthState::NotConfigured)
-        .cloned()
-        .collect();
-    let shown = if configured.is_empty() {
-        specs
-    } else {
-        configured
-    };
-    shown
-        .into_iter()
-        .map(|(label, state)| {
-            Line::from(vec![
-                Span::styled(
-                    auth_dot_char(state),
-                    Style::default().fg(auth_dot_color(state)),
-                ),
-                Span::styled(format!(" {}", label), Style::default().fg(dim_color())),
-            ])
-        })
-        .collect()
 }
 
 fn header_provider_auth_tag(
@@ -527,14 +477,14 @@ fn truncate_to_width(text: &str, width: usize) -> String {
         return String::new();
     }
     if width == 1 {
-        return "…".to_string();
+        return "Ã¢â‚¬Â¦".to_string();
     }
 
     let mut truncated = text
         .chars()
         .take(width.saturating_sub(1))
         .collect::<String>();
-    truncated.push('…');
+    truncated.push('Ã¢â‚¬Â¦');
     truncated
 }
 
@@ -606,7 +556,10 @@ fn configured_auth_count(auth: &AuthStatus) -> usize {
 pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     let auth = app.auth_status();
     let active = ActiveCredentialOverrides::from_app(app);
-    build_persistent_header_with_auth(app, width, &auth, active)
+    fit_header_lines(
+        build_persistent_header_with_auth(app, width, &auth, active),
+        width,
+    )
 }
 
 fn build_persistent_header_with_auth(
@@ -619,8 +572,8 @@ fn build_persistent_header_with_auth(
     let session_name = app.session_display_name().unwrap_or_default();
     let server_name = app.server_display_name();
     // The client line is identified by its session name, so show that name's
-    // icon (e.g. "ram" -> 🐏). Previously a remote http/ws connection icon
-    // (🌐/🔌) replaced it entirely, which hid the name icon for every remote
+    // icon (e.g. "ram" -> Ã°Å¸ÂÂ). Previously a remote http/ws connection icon
+    // (Ã°Å¸Å’Â/Ã°Å¸â€Å’) replaced it entirely, which hid the name icon for every remote
     // client. Keep the connection icon as a separate trailing hint instead.
     let icon = crate::id::session_icon(&session_name);
     let connection_icon = connection_type_icon(app.connection_type().as_deref());
@@ -640,10 +593,10 @@ fn build_persistent_header_with_auth(
         status_items.push("client");
     }
     if server_update {
-        status_items.push("srv↑");
+        status_items.push("srvÃ¢â€ â€˜");
     }
     if client_update {
-        status_items.push("cli↑");
+        status_items.push("cliÃ¢â€ â€˜");
     }
     if let Some(badge) = crate::perf::profile().tier.badge() {
         status_items.push(badge);
@@ -694,7 +647,7 @@ fn build_persistent_header_with_auth(
         }
         if !status_items.is_empty() {
             spans.push(Span::styled(
-                format!(" · {}", status_items.join(" · ")),
+                format!(" Ã‚Â· {}", status_items.join(" Ã‚Â· ")),
                 Style::default().fg(dim_color()),
             ));
         }
@@ -713,7 +666,7 @@ fn build_persistent_header_with_auth(
             Style::default().fg(dim_color()),
         )];
         if let Some(version) = server_version_label.as_deref() {
-            let suffix = format!(" · {}", version);
+            let suffix = format!(" Ã‚Â· {}", version);
             if server_text.chars().count() + suffix.chars().count() <= w {
                 spans.push(Span::styled(suffix, version_style));
             }
@@ -731,7 +684,7 @@ fn build_persistent_header_with_auth(
             Style::default().fg(dim_color()),
         )];
         if let Some(version) = client_version_label.as_deref() {
-            let suffix = format!(" · {}", version);
+            let suffix = format!(" Ã‚Â· {}", version);
             if client_text.chars().count() + suffix.chars().count() <= w {
                 spans.push(Span::styled(suffix, version_style));
             }
@@ -743,7 +696,7 @@ fn build_persistent_header_with_auth(
         // layout down) when it lands a few dozen milliseconds later.
         lines.push(
             Line::from(Span::styled(
-                "client: connecting…".to_string(),
+                "client: connectingÃ¢â‚¬Â¦".to_string(),
                 Style::default().fg(dim_color()),
             ))
             .alignment(align),
@@ -765,7 +718,7 @@ fn build_persistent_header_with_auth(
         let trimmed = model.trim();
         trimmed.is_empty()
             || trimmed == "connected"
-            || trimmed.ends_with('…')
+            || trimmed.ends_with('Ã¢â‚¬Â¦')
             || trimmed.starts_with("connecting")
     };
     let provider_label = if model_is_placeholder {
@@ -784,7 +737,7 @@ fn build_persistent_header_with_auth(
     // wraps when the render area subtracts side margins.
     let fit_width = w.saturating_sub(4);
     if !model_is_placeholder && !nice_model.is_empty() {
-        let hint = "/model to switch · ";
+        let hint = "/model to switch Ã‚Â· ";
         if model_line_len + hint.chars().count() <= fit_width {
             model_line_len += hint.chars().count();
             model_spans.push(Span::styled(
@@ -794,7 +747,7 @@ fn build_persistent_header_with_auth(
         }
     }
     if !provider_label.is_empty() {
-        let prefix = format!("{} · ", provider_label);
+        let prefix = format!("{} Ã‚Â· ", provider_label);
         if model_line_len + prefix.chars().count() <= fit_width {
             model_line_len += prefix.chars().count();
             model_spans.push(Span::styled(prefix, Style::default().fg(dim_color())));
@@ -822,9 +775,9 @@ fn build_persistent_header_with_auth(
         let version_text = if is_running_stable_release() {
             let tag = jcode_build_meta::git_tag();
             if tag.is_empty() || tag.contains('-') {
-                format!("{} · release", semver())
+                format!("{} Ã‚Â· release", semver())
             } else {
-                format!("{} · release {}", semver(), tag)
+                format!("{} Ã‚Â· release {}", semver(), tag)
             }
         } else {
             semver().to_string()
@@ -842,7 +795,10 @@ fn build_persistent_header_with_auth(
 pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     let auth = app.auth_status();
     let active = ActiveCredentialOverrides::from_app(app);
-    build_header_lines_with_auth(app, width, &auth, active)
+    fit_header_lines(
+        build_header_lines_with_auth(app, width, &auth, active),
+        width,
+    )
 }
 
 fn build_header_lines_with_auth(
@@ -855,17 +811,32 @@ fn build_header_lines_with_auth(
     let align = ratatui::layout::Alignment::Left;
     let w = width as usize;
 
-    // Auth inventory: `/login` heading, then one provider per line (dim
-    // hollow dot for unconfigured providers).
+    // Local startup inventory uses saved metadata only. SSH must never present
+    // this machine's credentials as the remote server's inventory.
     let (login_heading, auth_lines) = if let Some(host) = crate::tui::ssh_remote_host() {
         // The native protocol reports the active route, not a complete remote
         // credential inventory. Do not render the laptop's (or an empty)
         // inventory as if it described providers configured on the server.
-        (format!("/login to authenticate on {host}"), Vec::new())
+        // Only the daemon's credential-free OAuth account report is shown.
+        match account_router::remote_lines(
+            &app.provider_name(),
+            app.startup_oauth_account_label().as_deref(),
+        ) {
+            Some(lines) if !lines.is_empty() => (
+                format!("Account router on {host} Ã‚Â· /account to manage Ã‚Â· /login to add"),
+                lines,
+            ),
+            _ => (format!("/login to authenticate on {host}"), Vec::new()),
+        }
     } else {
         (
-            "/login to add provider".to_string(),
-            build_auth_status_lines(auth, active),
+            "Account router Ã‚Â· /account to manage Ã‚Â· /login to add credential".to_string(),
+            account_router::lines(
+                auth,
+                active,
+                &app.provider_name(),
+                app.startup_oauth_account_label().as_deref(),
+            ),
         )
     };
     lines.push(
@@ -889,7 +860,7 @@ fn build_header_lines_with_auth(
                 if *count > 0 {
                     format!("{} ({} tools)", name, count)
                 } else {
-                    format!("{} (…)", name)
+                    format!("{} (Ã¢â‚¬Â¦)", name)
                 }
             })
             .collect();
@@ -947,7 +918,7 @@ fn build_header_lines_with_auth(
 /// Build the "Updates" rounded box (unseen release notes) so it can be
 /// rendered inside the top padding above the header. `max_lines` bounds the
 /// total height including the box borders; entries beyond the budget are
-/// collapsed into a "…N more" line. Returns an empty vec when there are no
+/// collapsed into a "Ã¢â‚¬Â¦N more" line. Returns an empty vec when there are no
 /// unseen entries or the budget/width is too small for a box.
 pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<'static>> {
     let w = width as usize;
@@ -971,14 +942,14 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
     let mut content: Vec<Line> = Vec::new();
     for entry in new_entries.iter().take(display_count) {
         content.push(Line::from(Span::styled(
-            format!("• {}", entry),
+            format!("Ã¢â‚¬Â¢ {}", entry),
             Style::default().fg(dim_color()),
         )));
     }
     if has_more {
         content.push(Line::from(Span::styled(
             format!(
-                "  …{} more · /changelog to see all",
+                "  Ã¢â‚¬Â¦{} more Ã‚Â· /changelog to see all",
                 new_entries.len() - display_count
             ),
             Style::default().fg(dim_color()),
@@ -1006,12 +977,28 @@ pub(in crate::tui) fn build_header_sections(
     app: &dyn TuiState,
     width: u16,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let start = std::time::Instant::now();
     let auth = app.auth_status();
+    let auth_ms = start.elapsed().as_millis();
     let active = ActiveCredentialOverrides::from_app(app);
-    (
+    let active_ms = start.elapsed().as_millis() - auth_ms;
+    let persistent = fit_header_lines(
         build_persistent_header_with_auth(app, width, &auth, active),
+        width,
+    );
+    let persistent_ms = start.elapsed().as_millis() - auth_ms - active_ms;
+    let secondary = fit_header_lines(
         build_header_lines_with_auth(app, width, &auth, active),
-    )
+        width,
+    );
+    let total_ms = start.elapsed().as_millis();
+    if total_ms >= 20 {
+        crate::logging::info(&format!(
+            "[TIMING] header_sections: total={total_ms}ms auth={auth_ms}ms active={active_ms}ms persistent={persistent_ms}ms secondary={}ms",
+            total_ms - auth_ms - active_ms - persistent_ms
+        ));
+    }
+    (persistent, secondary)
 }
 
 #[cfg(test)]
@@ -1025,6 +1012,74 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::OnceLock;
+
+
+    #[test]
+    fn header_rows_clip_unicode_and_controls_without_losing_style() {
+        let style = Style::default().fg(Color::Magenta);
+        let source = vec![
+            Line::from(vec![
+                Span::styled("Ã¨Â´Â¦Ã¥ÂÂ· Ã°Å¸â€˜Â©Ã¢â‚¬ÂÃ°Å¸â€™Â» e\u{301} ", style),
+                Span::raw("/very/long/path\nwith\ttabs and a long account email@example.com"),
+            ])
+            .alignment(Alignment::Left),
+        ];
+        for width in [0u16, 1, 2, 3, 8, 18, 40, 80] {
+            let fitted = fit_header_lines(source.clone(), width);
+            assert_eq!(fitted.len(), 1);
+            assert!(fitted[0].width() <= usize::from(width.saturating_sub(1)));
+            assert_eq!(fitted[0].alignment, Some(Alignment::Left));
+            assert!(
+                fitted[0]
+                    .spans
+                    .iter()
+                    .all(|span| !span.content.chars().any(char::is_control))
+            );
+            if width >= 8 {
+                assert_eq!(fitted[0].spans[0].style, style);
+            }
+        }
+    }
+
+    #[test]
+    fn startup_header_never_adds_wraparound_rows_at_narrow_widths() {
+        let app = create_test_app();
+        for width in [2u16, 8, 18, 32, 40, 60, 80, 120] {
+            let (mut lines, secondary) = build_header_sections(&app, width);
+            lines.extend(secondary);
+            for line in lines {
+                let budget = usize::from(width.saturating_sub(1));
+                assert!(line.width() <= budget, "width={width}: {line:?}");
+                let wrapped = jcode_tui_markdown::wrap_line(line, budget);
+                assert_eq!(
+                    wrapped.len(),
+                    1,
+                    "header must stay one visual row at width={width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changelog_override_is_cleared_after_a_render_test_panics() {
+        let _lock = crate::tui::ui::render_state_test_lock();
+        let panic = std::panic::catch_unwind(|| {
+            let _fixture = scoped_unseen_changelog_entries_override_for_tests(vec![
+                "temporary changelog entry".to_owned(),
+            ]);
+            assert_eq!(unseen_changelog_entries(), ["temporary changelog entry"]);
+            panic!("injected render failure");
+        });
+        assert!(panic.is_err());
+        assert!(
+            unseen_changelog_entries_override()
+                .lock()
+                .unwrap()
+                .is_none(),
+            "a failed render test must not leak its changelog fixture"
+        );
+    }
+
 
     struct MockProvider;
 
@@ -1148,7 +1203,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("🔥"),
+            Some("Ã°Å¸â€Â¥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1164,7 +1219,7 @@ mod tests {
             .expect("client line");
 
         assert!(
-            server_line.contains("server: Blazing 🔥 · v0.14.2-dev"),
+            server_line.contains("server: Blazing Ã°Å¸â€Â¥ Ã‚Â· v0.14.2-dev"),
             "server line should carry the server version: {server_line}"
         );
         let client_version = compact_version_label(jcode_build_meta::version());
@@ -1173,7 +1228,7 @@ mod tests {
             "client line should keep the session name: {client_line}"
         );
         assert!(
-            client_line.contains(&format!("· {}", client_version)),
+            client_line.contains(&format!("Ã‚Â· {}", client_version)),
             "client line should carry the client version: {client_line}"
         );
     }
@@ -1205,7 +1260,7 @@ mod tests {
             "same-semver mismatch should keep the server git hash: {server_line}"
         );
         assert!(
-            client_line.contains(&format!("· {}", jcode_build_meta::version())),
+            client_line.contains(&format!("Ã‚Â· {}", jcode_build_meta::version())),
             "same-semver mismatch should keep the client git hash: {client_line}"
         );
     }
@@ -1215,7 +1270,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("🔥"),
+            Some("Ã°Å¸â€Â¥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1242,7 +1297,7 @@ mod tests {
         assert!(
             !lines
                 .iter()
-                .any(|line| line.contains("client:") && line.contains(" · v")),
+                .any(|line| line.contains("client:") && line.contains(" Ã‚Â· v")),
             "local mode client line should not carry a version label: {lines:?}"
         );
     }
@@ -1252,7 +1307,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("🔥"),
+            Some("Ã°Å¸â€Â¥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_ram_1705012345678"),
         );
@@ -1264,15 +1319,15 @@ mod tests {
             .find(|line| line.contains("client:"))
             .expect("client line");
 
-        // The session name's own icon (ram -> 🐏) must be present rather than
+        // The session name's own icon (ram -> Ã°Å¸ÂÂ) must be present rather than
         // being replaced by the connection icon.
         assert!(
-            client_line.contains("client: Ram 🐏"),
+            client_line.contains("client: Ram Ã°Å¸ÂÂ"),
             "client line should show the name icon: {client_line}"
         );
         // The connection icon is kept as a trailing hint, not a replacement.
         assert!(
-            client_line.contains('🌐'),
+            client_line.contains('Ã°Å¸Å’Â'),
             "client line should keep the connection hint icon: {client_line}"
         );
     }
@@ -1282,7 +1337,7 @@ mod tests {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
-            Some("🔥"),
+            Some("Ã°Å¸â€Â¥"),
             Some("v0.14.2-dev (old1234)"),
             Some("session_fox_1705012345678"),
         );
@@ -1295,11 +1350,11 @@ mod tests {
             .expect("client line");
 
         assert!(
-            client_line.contains("client: Fox 🦊"),
+            client_line.contains("client: Fox Ã°Å¸Â¦Å "),
             "client line should show the name icon: {client_line}"
         );
         assert!(
-            !client_line.contains('🌐') && !client_line.contains('🔌'),
+            !client_line.contains('Ã°Å¸Å’Â') && !client_line.contains('Ã°Å¸â€Å’'),
             "client line should not carry a connection hint when unknown: {client_line}"
         );
     }
@@ -1331,7 +1386,7 @@ mod tests {
             "Claude Fable 5"
         );
         // Placeholders and slashed ids pass through untouched.
-        assert_eq!(prettify_model_id("loading session…"), "loading session…");
+        assert_eq!(prettify_model_id("loading sessionÃ¢â‚¬Â¦"), "loading sessionÃ¢â‚¬Â¦");
         assert_eq!(
             prettify_model_id("deepseek/deepseek-chat"),
             "deepseek/deepseek-chat"
@@ -1399,8 +1454,8 @@ mod tests {
         );
         // Placeholders pass through untouched.
         assert_eq!(
-            header_model_display_name("loading session…", ""),
-            "loading session…"
+            header_model_display_name("loading sessionÃ¢â‚¬Â¦", ""),
+            "loading sessionÃ¢â‚¬Â¦"
         );
         assert_eq!(header_model_display_name("connected", ""), "Connected");
     }
@@ -1483,16 +1538,6 @@ mod tests {
             header_provider_auth_tag("anthropic", &both, overrides),
             "api-key"
         );
-        let rendered = build_auth_status_lines(&both, overrides)
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(
-            rendered.contains("anthropic(oauth+key*)"),
-            "rendered: {rendered}"
-        );
-
         if let Some(value) = prev {
             crate::env::set_var("JCODE_RUNTIME_PROVIDER", value);
         }
@@ -1583,7 +1628,7 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("GPT-5.4"));
-        assert!(!rendered.contains("connecting to server…"));
+        assert!(!rendered.contains("connecting to serverÃ¢â‚¬Â¦"));
 
         if let Some(prev_model) = prev_model {
             crate::env::set_var("JCODE_MODEL", prev_model);
@@ -1601,7 +1646,7 @@ mod tests {
     fn build_header_lines_omits_placeholder_provider_label_when_unknown() {
         // Reads model/provider env-derived state: without the env lock, the
         // sibling test that sets JCODE_MODEL=gpt-5.4 mid-flight leaks into this
-        // render and the "loading session…" placeholder never appears. The
+        // render and the "loading sessionÃ¢â‚¬Â¦" placeholder never appears. The
         // startup-phase label is also only rendered when no model hint is
         // known, so neutralize JCODE_MODEL/JCODE_PROVIDER for the duration
         // ("unknown" also suppresses the shared test home's config
@@ -1635,7 +1680,7 @@ mod tests {
             crate::env::remove_var("JCODE_PROVIDER");
         }
 
-        assert!(rendered.contains("loading session…"), "{rendered}");
+        assert!(rendered.contains("loading sessionÃ¢â‚¬Â¦"), "{rendered}");
         assert!(!rendered.contains("(unknown)"));
         assert!(!rendered.contains("(remote)"));
     }
@@ -1655,100 +1700,10 @@ mod tests {
             .collect::<String>();
 
         assert!(
-            !rendered.contains("connecting to server…"),
+            !rendered.contains("connecting to serverÃ¢â‚¬Â¦"),
             "brief connecting placeholder should not render the secondary detail line"
         );
         assert!(!rendered.contains("(remote)"));
-    }
-
-    #[test]
-    fn auth_status_lines_show_all_providers_with_state_dots() {
-        let auth = AuthStatus {
-            anthropic: ProviderAuth {
-                state: AuthState::Expired,
-                has_oauth: true,
-                oauth_state: AuthState::Expired,
-                has_api_key: false,
-            },
-            openai: AuthState::Available,
-            openai_has_oauth: false,
-            openai_has_api_key: true,
-            ..AuthStatus::default()
-        };
-
-        let rendered = build_auth_status_lines(&auth, ActiveCredentialOverrides::default())
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(
-            rendered.contains("anthropic(oauth)"),
-            "rendered: {rendered}"
-        );
-        assert!(rendered.contains("openai(key)"), "rendered: {rendered}");
-        // Providers the user has no credentials for stay out of the header.
-        assert!(!rendered.contains("openrouter"), "rendered: {rendered}");
-        assert!(!rendered.contains("copilot"), "rendered: {rendered}");
-        assert!(!rendered.contains("○"), "rendered: {rendered}");
-    }
-
-    #[test]
-    fn auth_status_lines_list_all_providers_when_nothing_configured() {
-        let lines =
-            build_auth_status_lines(&AuthStatus::default(), ActiveCredentialOverrides::default());
-        assert!(
-            !lines.is_empty(),
-            "all providers should be listed: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn auth_status_line_marks_active_credential_when_both_configured() {
-        let _guard = crate::storage::lock_test_env();
-        let prev = std::env::var_os("JCODE_RUNTIME_PROVIDER");
-        let auth = AuthStatus {
-            anthropic: ProviderAuth {
-                state: AuthState::Available,
-                has_oauth: true,
-                oauth_state: AuthState::Available,
-                has_api_key: true,
-            },
-            ..AuthStatus::default()
-        };
-
-        let rendered_with = |runtime: Option<&str>| {
-            match runtime {
-                Some(value) => crate::env::set_var("JCODE_RUNTIME_PROVIDER", value),
-                None => crate::env::remove_var("JCODE_RUNTIME_PROVIDER"),
-            }
-            build_auth_status_lines(&auth, ActiveCredentialOverrides::default())
-                .iter()
-                .flat_map(|line| line.spans.iter())
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        };
-
-        // Auto prefers OAuth: the star must sit on oauth, matching the header
-        // provider tag's active-route answer.
-        let rendered = rendered_with(None);
-        assert!(
-            rendered.contains("anthropic(oauth*+key)"),
-            "rendered: {rendered}"
-        );
-
-        // Pinning the API key moves the star, keeping both surfaces consistent.
-        let rendered = rendered_with(Some("claude-api"));
-        assert!(
-            rendered.contains("anthropic(oauth+key*)"),
-            "rendered: {rendered}"
-        );
-
-        match prev {
-            Some(value) => crate::env::set_var("JCODE_RUNTIME_PROVIDER", value),
-            None => crate::env::remove_var("JCODE_RUNTIME_PROVIDER"),
-        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ fn browser_tool_description_text() -> &'static str {
     if browser_handoff_disabled() {
         return "Control the browser using direct actions. Check action='status' first; run setup only if not ready. Browser handoff is disabled for this process. Complete browser tasks with direct actions in the requested tab.";
     }
-    "Control the browser. Check action='status' first; run setup only if not ready. Use action='handoff' by default for browser tasks: the fast Jev browser agent owns the entire task in an explicit tab through an iterative observation/action/results loop until done or genuinely blocked. Supply a goal, tab_id, and optional trusted context with background and completion criteria. A hand_back with requested_help=script/text asks the main agent to supply exact executable script candidates or exact text_values and resume the same task. Navigation alone is not completion unless it satisfies the entire goal. Reserve direct actions for setup, tab discovery/creation, or when handoff cannot complete the task. list_tabs shows every window, including the user's already signed-in tabs; pass tab_id to work in one. requested_help=user_login means ask the user to sign in or finish 2FA in that tab, wait for them, then re-run the same handoff."
+    "Check action='status' first; setup only if not ready. Use action='handoff' by default for browser tasks with goal and tab_id, or url+new_tab=true to create and bind a fresh tab. Untargeted open creates a new tab; reuse its returned tab_id. Jev handles the entire task until complete or genuinely blocked; navigation alone is not completion. Direct actions: setup, tabs, blocked handoffs. list_tabs includes signed-in tabs. On requested_help=script/text, provide exact executable script candidates or exact text_values and resume. On requested_help=user_login, ask user to complete CAPTCHA in that tab, wait, then resume the handoff."
 }
 
 /// Opt-in process-local control for direct-only benchmark arms. Normal sessions
@@ -268,7 +268,7 @@ impl Tool for BrowserTool {
             ),
             (
                 "text_values",
-                json!({"type":"array", "maxItems":16, "items":{"type":"string", "maxLength":2000}, "description":"Exact non-sensitive text to type. Never passwords, OTPs, or payment credentials."}),
+                json!({"type":"array", "maxItems":16, "items":{"type":"string", "maxLength":2000}, "description":"Exact text to type. Never payment credentials."}),
             ),
             (
                 "candidates",
@@ -316,7 +316,10 @@ impl Tool for BrowserTool {
             ("x", json!({"type": "number"})),
             ("y", json!({"type": "number"})),
             ("wait", json!({"type": "boolean"})),
-            ("new_tab", json!({"type": "boolean"})),
+            (
+                "new_tab",
+                json!({"type": "boolean", "description": "Create/bind a tab with url. Open defaults true without tab_id. False reuses the current tab."}),
+            ),
             ("focus", json!({"type": "boolean"})),
             ("clear", json!({"type": "boolean"})),
             ("submit", json!({"type": "boolean"})),
@@ -390,7 +393,7 @@ impl Tool for BrowserTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: BrowserInput = serde_json::from_value(input)?;
+        let mut params: BrowserInput = serde_json::from_value(input)?;
         if params.action == "handoff" && browser_handoff_disabled() {
             anyhow::bail!(
                 "Browser handoff is disabled by JCODE_BROWSER_HANDOFF_DISABLED=1. Use direct browser actions instead."
@@ -401,7 +404,10 @@ impl Tool for BrowserTool {
         match params.action.as_str() {
             "status" => provider.status_for(params.browser.as_deref(), &ctx).await,
             "setup" => provider.setup_for(params.browser.as_deref()).await,
-            "handoff" => browser_fast::handoff(provider, &params, &ctx).await,
+            "handoff" => {
+                prepare_handoff_tab(provider, &mut params, &ctx).await?;
+                browser_fast::handoff(provider, &params, &ctx).await
+            }
             other => {
                 let setup_message = provider.ensure_ready_for(params.browser.as_deref()).await?;
                 let output = provider.execute(other, &params, &ctx).await?;
@@ -412,6 +418,52 @@ impl Tool for BrowserTool {
             }
         }
     }
+}
+
+/// Create and bind the task tab before Jev observes anything. Never carry an
+/// old tab/frame target into a newly created tab, even if the caller supplied it.
+async fn prepare_handoff_tab(
+    provider: &dyn BrowserProvider,
+    input: &mut BrowserInput,
+    ctx: &ToolContext,
+) -> Result<()> {
+    let create = input.new_tab == Some(true)
+        || (input.tab_id.is_none() && input.url.is_some() && input.new_tab != Some(false));
+    if !create {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        input
+            .goal
+            .as_deref()
+            .is_some_and(|goal| !goal.trim().is_empty()),
+        "handoff requires a non-empty goal before opening a task tab"
+    );
+    provider.ensure_ready_for(input.browser.as_deref()).await?;
+    let creation = BrowserInput {
+        action: "new_tab".into(),
+        browser: input.browser.clone(),
+        url: input.url.clone(),
+        window_id: input.window_id,
+        timeout_ms: input.timeout_ms,
+        ..Default::default()
+    };
+    let output = provider.execute("new_tab", &creation, ctx).await?;
+    bind_created_handoff_tab(input, output.metadata.as_ref())
+}
+
+fn bind_created_handoff_tab(input: &mut BrowserInput, result: Option<&Value>) -> Result<()> {
+    let result =
+        result.context("New browser tab returned no metadata; refusing to use an old tab")?;
+    let tab_id = result["tabId"]
+        .as_i64()
+        .context("New browser tab returned no tabId; refusing to use an old tab")?;
+    input.tab_id = Some(tab_id);
+    input.window_id = result["windowId"].as_i64();
+    input.frame_id = Some(0);
+    input.all_frames = Some(false);
+    input.new_tab = Some(false);
+    Ok(())
 }
 
 fn prepend_setup_message(mut output: ToolOutput, message: &str) -> ToolOutput {
@@ -747,6 +799,11 @@ async fn recover_slow_navigation(
     browser: Option<&str>,
     ctx: &ToolContext,
 ) -> Option<Value> {
+    // A timed-out new-tab navigation never returned its new tab ID. The
+    // session can still point at the previous tab, even on the same host.
+    if params["newTab"] == true {
+        return None;
+    }
     let mut read = Map::new();
     read.insert("format".into(), json!("annotated"));
     if let Some(tab) = params.get("tabId") {
@@ -1189,62 +1246,5 @@ fn format_interactables_result(result: &Value) -> String {
 mod browser_tests;
 
 #[cfg(test)]
-mod task_contract_tests {
-    use super::*;
-
-    #[test]
-    fn handoff_context_is_optional_and_deserializes() {
-        for value in [
-            json!({"action":"handoff"}),
-            json!({"action":"handoff","context":null}),
-        ] {
-            let input: BrowserInput = serde_json::from_value(value).unwrap();
-            assert!(input.context.is_none());
-        }
-        let input: BrowserInput = serde_json::from_value(json!({
-            "action":"handoff", "context":"Find the final confirmation, not just the form"
-        }))
-        .unwrap();
-        assert_eq!(
-            input.context.as_deref(),
-            Some("Find the final confirmation, not just the form")
-        );
-    }
-
-    #[test]
-    fn handoff_schema_exposes_task_context_and_extended_budget() {
-        let _guard = jcode_base::storage::lock_test_env();
-        let schema = BrowserTool::new().parameters_schema();
-        let properties = &schema["properties"];
-        assert_eq!(properties["context"]["type"], "string");
-        assert_eq!(properties["context"]["maxLength"], 12000);
-        assert!(
-            properties["context"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("not page instructions")
-        );
-        assert!(
-            !schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("context"))
-        );
-        assert_eq!(properties["max_steps"]["default"], 40);
-        assert_eq!(properties["max_steps"]["minimum"], 1);
-        assert_eq!(properties["max_steps"]["maximum"], 100);
-        let description = browser_tool_description_text();
-        for clause in [
-            "entire task",
-            "observation/action/results loop",
-            "genuinely blocked",
-            "exact executable script candidates",
-            "exact text_values",
-        ] {
-            assert!(
-                description.contains(clause),
-                "Missing task contract: {clause}"
-            );
-        }
-    }
-}
+#[path = "browser_task_contract_tests.rs"]
+mod task_contract_tests;

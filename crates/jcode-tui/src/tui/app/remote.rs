@@ -2,8 +2,9 @@
 
 use super::{
     App, DisplayMessage, MAX_TURN_HOLD_SECS, PendingReloadReconnectStatus, ProcessingStatus,
-    RemoteResumeActivity, SendAction, ctrl_bracket_fallback_to_esc, input, parse_rate_limit_error,
-    remote_notifications::present_swarm_notification, spawn_in_new_terminal,
+    RemoteResumeActivity, SendAction, auth::auth_muse_helpers, ctrl_bracket_fallback_to_esc, input,
+    parse_rate_limit_error, remote_notifications::present_swarm_notification,
+    spawn_in_new_terminal,
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
@@ -38,8 +39,8 @@ use queue_recovery::{
 #[allow(unused_imports)]
 pub(super) use reconnect::{
     ConnectOutcome, PostConnectOutcome, ReloadReconnectHints, RemoteRunState, connect_with_retry,
-    finalize_reload_reconnect, handle_post_connect, reload_handoff_active,
-    should_allow_reconnect_takeover, should_use_same_session_fast_path,
+    finalize_reload_reconnect, handle_post_connect, queue_reload_continuation_once,
+    reload_handoff_active, should_allow_reconnect_takeover, should_use_same_session_fast_path,
 };
 use reconnect::{format_disconnect_reason, reconnect_status_message};
 use session_persistence::{
@@ -88,6 +89,13 @@ pub(super) enum RemoteEventOutcome {
 }
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
+    if app.cloud_environment_idle_clear_due()
+        && let Err(error) = app.prepare_cloud_environment(remote).await
+    {
+        crate::logging::warn(&format!(
+            "Could not clear expired cloud resource tools: {error}"
+        ));
+    }
     app.refresh_terminal_title_metrics();
     crate::tui::ui::set_frame_input_attribution(crate::tui::ui::FrameInputAttribution {
         event: Some("tick".to_string()),
@@ -98,8 +106,23 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             .is_some_and(|state| state.kind == crate::tui::PickerKind::Model),
     });
     let mut needs_redraw = crate::tui::periodic_redraw_required(app);
+    needs_redraw |= app.poll_pending_startup_transcript();
+    if remote.has_loaded_history()
+        && let Err(error) = remote.poll_account_usage().await
+    {
+        crate::logging::warn(&format!("Failed to request daemon account usage: {error}"));
+    }
+    if app.model_catalog_after_history && remote.has_loaded_history() {
+        app.model_catalog_after_history = false;
+        if let Err(error) = remote.request_model_catalog().await {
+            crate::logging::warn(&format!(
+                "Failed to hydrate model routes after History: {error}"
+            ));
+        }
+    }
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
+    needs_redraw |= app.poll_cloud_job();
     if let Some((provider, account)) = app.usage_reset.invalidate_account.take() {
         let sent = match provider {
             super::usage_reset::Provider::OpenAi => remote.invalidate_openai_usage(account).await,
@@ -137,6 +160,17 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
     app.maybe_release_idle_heap();
+    needs_redraw |= app.poll_idle_hibernation();
+    if std::mem::take(&mut app.idle_hibernation.history_reload_needed) {
+        // Transcript-mode hibernation released the transcript; refetch it.
+        match remote.request_history().await {
+            Ok(_) => app.set_status_notice("Reloading transcript after hibernation…"),
+            Err(err) => {
+                crate::logging::warn(&format!("hibernation wake: history request failed: {err}"))
+            }
+        }
+        needs_redraw = true;
+    }
     // Surface the cold-cache transcript warning the moment the TTL expires
     // while idle, not only when the next request starts.
     needs_redraw |= app.maybe_push_idle_cold_cache_warning();
@@ -170,7 +204,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
 
     needs_redraw |= app.refresh_todos_view_if_needed();
     needs_redraw |= app.refresh_todo_card_if_needed();
+    needs_redraw |= app.refresh_completed_todo_report(false);
     needs_redraw |= app.refresh_pinned_todos_if_needed();
+    needs_redraw |= app.refresh_justrust_status();
     needs_redraw |= app.prune_irrelevant_background_tasks();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
     needs_redraw |= app.poll_model_picker_load();
@@ -218,6 +254,10 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     }
 
     if app.remote_model_switch_in_flight && app.pending_fallback_resend.is_some() {
+        return needs_redraw;
+    }
+
+    if app.cloud_handoff_blocks_work() {
         return needs_redraw;
     }
 
@@ -554,10 +594,12 @@ async fn apply_terminal_event<B: Backend>(
                                         app.context_limit = app.provider.context_window() as u64;
                                         app.context_warning_shown = false;
                                         let _ = remote.switch_anthropic_account(&label).await;
-                                        app.push_display_message(DisplayMessage::system(format!(
-                                            "Switched to Anthropic account `{}`.",
-                                            label
-                                        )));
+                                        app.push_display_message(DisplayMessage::system(
+                                            crate::tui::app::helpers::account_switch_notice(
+                                                "Anthropic",
+                                                &label,
+                                            ),
+                                        ));
                                         app.set_status_notice(format!(
                                             "Account: switched to {}",
                                             label
@@ -575,10 +617,11 @@ async fn apply_terminal_event<B: Backend>(
                                         app.context_limit = app.provider.context_window() as u64;
                                         app.context_warning_shown = false;
                                         let _ = remote.switch_openai_account(&label).await;
-                                        app.push_display_message(DisplayMessage::system(format!(
-                                            "Switched to OpenAI account `{}`.",
-                                            label
-                                        )));
+                                        app.push_display_message(DisplayMessage::system(
+                                            crate::tui::app::helpers::account_switch_notice(
+                                                "OpenAI", &label,
+                                            ),
+                                        ));
                                         app.set_status_notice(format!(
                                             "OpenAI account: switched to {}",
                                             label
@@ -723,7 +766,7 @@ pub(super) async fn handle_bus_event(
                 app.set_status_notice("Local login does not change SSH server credentials");
                 return true;
             }
-            let success = login.success && login.provider != "copilot_code";
+            let success = login.success && auth_muse_helpers::is_completed_login(&login);
             let provider_hint = auth_provider_hint_for_login_provider(&login.provider);
             let auth = auth_changed_event_for_login_provider(&login.provider);
             let prefer_strongest = success && app.onboarding_should_prefer_strongest_model();
@@ -961,7 +1004,17 @@ pub(super) async fn handle_remote_event<B: Backend>(
     event: RemoteRead,
 ) -> Result<(RemoteEventOutcome, bool)> {
     match event {
+        RemoteRead::Event(ServerEvent::ToolCall {
+            session_id,
+            call_id,
+            name,
+            input,
+        }) => {
+            app.cloud_environment_call(remote, session_id, call_id, name, input);
+            Ok((RemoteEventOutcome::Continue, false))
+        }
         RemoteRead::Disconnected(reason) => {
+            app.revoke_cloud_environment();
             if let RemoteDisconnectReason::Protocol(error) = &reason {
                 let detail = format_disconnect_reason(&reason);
                 crate::logging::error(&format!(
@@ -1007,7 +1060,9 @@ pub(super) async fn handle_remote_event<B: Backend>(
             let output = handle_debug_command(app, &command, remote).await;
             let _ = remote.send_client_debug_response(id, output).await;
             process_remote_followups(app, remote).await;
-            Ok((RemoteEventOutcome::Continue, false))
+            // A forced hibernation needs the regular completed-frame renderer,
+            // not a debug-only draw, and should not wait for a periodic tick.
+            Ok((RemoteEventOutcome::Continue, command.trim() == "hibernate"))
         }
         RemoteRead::Event(ServerEvent::Transcript { text, mode }) => {
             let mut needs_redraw = false;
@@ -1054,6 +1109,7 @@ pub(super) fn handle_disconnect(
     state: &mut RemoteRunState,
     reason: Option<RemoteDisconnectReason>,
 ) {
+    app.revoke_cloud_environment();
     let detail = if state.server_reload_in_progress {
         "server reload in progress".to_string()
     } else if let Some(reason) = reason.as_ref() {
@@ -1143,6 +1199,7 @@ pub(super) fn handle_disconnect(
 /// normal (slow) bootstrap completes on its own, short enough that a genuinely
 /// stuck session recovers in seconds instead of requiring a manual `/restart`.
 const REMOTE_HISTORY_RECOVERY_FIRST_DELAY: Duration = Duration::from_secs(6);
+const REMOTE_HISTORY_DELTA_RECOVERY_DELAY: Duration = Duration::from_secs(30);
 /// Spacing between subsequent re-requests after the first one.
 const REMOTE_HISTORY_RECOVERY_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 /// How many times we re-request history before giving up and telling the user
@@ -1200,6 +1257,15 @@ async fn recover_stuck_remote_history(app: &mut App, remote: &mut RemoteConnecti
     };
 
     if waited < REMOTE_HISTORY_RECOVERY_FIRST_DELAY {
+        return false;
+    }
+
+    // A Subscribe carrying a history base is still queued server-side (during
+    // a reconnect storm setup alone can take >10s). Requests are processed in
+    // order, so a GetHistory now would only arrive after that History anyway,
+    // and it would make the server send the full multi-MB transcript instead
+    // of the delta. Give the pending bootstrap much longer before re-requesting.
+    if app.advertised_history_base.is_some() && waited < REMOTE_HISTORY_DELTA_RECOVERY_DELAY {
         return false;
     }
 
@@ -1344,6 +1410,13 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
 
+    if app.prepare_cloud_environment(remote).await.is_err() {
+        app.revoke_cloud_environment();
+        return;
+    }
+    if app.cloud_handoff_blocks_work() {
+        return;
+    }
     if app.pending_provider_failover.is_some()
         || (app.remote_model_switch_in_flight && app.pending_fallback_resend.is_some())
     {
@@ -1363,56 +1436,10 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
 
-    // A headed fork stages its first prompt before launching the new client. We
-    // can send that prompt immediately after Subscribe, without waiting for the
-    // client to receive and render History: requests and events share one
-    // ordered socket, so the server finishes writing the Subscribe History
-    // response before it reads this Message request. Do not echo the user turn
-    // locally here because the still-in-flight History payload would clear it.
-    // Preserve the echo and apply it immediately after History instead.
-    //
-    // This removes the visible, intermittent pause between the fork window
-    // opening and its prompt starting, which was proportional to history payload
-    // transfer/render time for large parent sessions.
-    if !remote.has_loaded_history()
-        && app.submit_input_on_startup
-        && !app.is_processing
-        && !app.remote_model_switch_in_flight
-        && !app.auth_catalog_refresh_pending
-        && (!app.input.is_empty() || !app.pending_images.is_empty())
-    {
-        app.submit_input_on_startup = false;
-        app.startup_submit_deferred_reason = None;
-        let prepared = input::take_prepared_input(app);
-        app.pending_startup_prompt_echo = Some(prepared.raw_input.clone());
-        app.last_submitted_input = Some(prepared.raw_input);
-        crate::logging::info(&format!(
-            "Startup auto-submit sent behind ordered Subscribe: input_chars={} pending_images={}",
-            prepared.expanded.chars().count(),
-            prepared.images.len(),
-        ));
-        if let Err(error) = begin_remote_send(
-            app,
-            remote,
-            prepared.expanded,
-            prepared.images,
-            false,
-            None,
-            false,
-            0,
-        )
-        .await
-        {
-            crate::logging::warn(&format!("Early startup auto-submit failed: {error}"));
-            app.push_display_message(DisplayMessage::error(format!(
-                "Failed to submit startup prompt: {}",
-                error
-            )));
-            app.set_status_notice("Startup prompt failed");
-        }
-        return;
-    }
-
+    // Drain Subscribe's History before sending the staged startup prompt.
+    // Both directions can carry large image payloads: awaiting a prompt write
+    // here would prevent this event loop from reading History while the server
+    // is still writing it, deadlocking both peers on socket backpressure.
     if !remote.has_loaded_history() {
         note_startup_submit_deferred(app, "remote history not loaded yet");
         return;

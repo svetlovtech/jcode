@@ -3,11 +3,16 @@ pub mod acp;
 pub mod args;
 pub mod auth_import;
 pub mod auth_test;
+pub mod cloud_ephemeral;
+pub mod cloud_managed;
+pub mod cloud_move;
 pub mod commands;
+pub mod compatible_runtime;
 pub mod debug;
 /// Fork: `jcode session export` CLI handler (fork-only module).
 pub mod fork_session_export;
 pub mod dispatch;
+pub mod hibernate_wait;
 pub mod hot_exec;
 pub mod login;
 pub mod macos_notification_broker;

@@ -2,6 +2,113 @@ use super::*;
 use std::time::Duration;
 
 #[tokio::test]
+async fn cloud_session_switch_revokes_and_aborts_before_request() {
+    let mut remote = RemoteConnection::dummy();
+    let peer = remote.take_dummy_peer().unwrap();
+    let (reader, _writer) = peer.into_split();
+    let mut reader = BufReader::new(reader);
+    remote.session_id = Some("old".into());
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    remote.bind_cloud_authority(&live);
+    let callback = tokio::spawn(std::future::pending::<()>());
+    remote.track_cloud_callback(&callback);
+    remote.resume_session("new").await.unwrap();
+    assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(callback.await.unwrap_err().is_cancelled());
+    for kind in ["configure_tools", "resume_session"] {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["type"], kind);
+    }
+}
+
+#[tokio::test]
+async fn cloud_clear_revokes_before_new_conversation() {
+    let mut remote = RemoteConnection::dummy();
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    remote.bind_cloud_authority(&live);
+    remote.clear().await.unwrap();
+    assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn cloud_configuration_is_written_before_message() {
+    let mut remote = RemoteConnection::dummy();
+    let peer = remote.take_dummy_peer().unwrap();
+    let (reader, _writer) = peer.into_split();
+    let mut reader = BufReader::new(reader);
+    remote
+        .configure_cloud_tools(crate::protocol::SessionToolConfig::default())
+        .await
+        .unwrap();
+    remote.send_message("continue".into()).await.unwrap();
+    for kind in ["configure_tools", "message"] {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["type"], kind);
+    }
+}
+
+#[tokio::test]
+async fn cloud_expiry_revokes_without_midturn_protocol_write() {
+    let mut remote = RemoteConnection::dummy();
+    let peer = remote.take_dummy_peer().unwrap();
+    let (reader, _writer) = peer.into_split();
+    let mut reader = BufReader::new(reader);
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    RemoteConnection::cloud_expiry_revoke(live.clone(), tokio::time::Instant::now())
+        .await
+        .unwrap();
+    assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
+    let mut line = String::new();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), reader.read_line(&mut line))
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn account_usage_poll_is_immediate_then_throttled() {
+    let now = Instant::now();
+    assert!(account_usage_poll_due(None, now));
+    assert!(!account_usage_poll_due(Some(now), now));
+    assert!(!account_usage_poll_due(
+        Some(now),
+        now + Duration::from_secs(29)
+    ));
+    assert!(account_usage_poll_due(
+        Some(now),
+        now + Duration::from_secs(30)
+    ));
+}
+
+#[tokio::test]
+async fn account_usage_poll_sends_once_and_filters_control_done() {
+    let mut remote = RemoteConnection::dummy();
+    let peer = remote.take_dummy_peer().unwrap();
+    let (reader, _writer) = peer.into_split();
+    let mut reader = BufReader::new(reader);
+    remote.poll_account_usage().await.unwrap();
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(request["type"], "account_usage");
+    let id = request["id"].as_u64().unwrap();
+    let next_id = remote.next_request_id;
+    remote.poll_account_usage().await.unwrap();
+    assert_eq!(remote.next_request_id, next_id);
+    let mut stray = 0;
+    let done = serde_json::to_vec(&ServerEvent::Done { id }).unwrap();
+    assert!(matches!(
+        remote.classify_protocol_line(done, &mut stray),
+        LineOutcome::Skip
+    ));
+}
+
+#[tokio::test]
 async fn route_selection_wire_marks_only_automatic_failover() {
     let mut remote = RemoteConnection::dummy();
     let peer = remote.take_dummy_peer().unwrap();

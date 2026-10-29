@@ -141,9 +141,10 @@ use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
 #[cfg_attr(test, allow(unused_imports))]
 pub(crate) use messages::{
-    SWARM_AGENT_SNAPSHOT_TITLE, compact_swarm_await_summary, encode_swarm_agent_snapshot,
-    render_assistant_message, render_background_task_message, render_reasoning_message,
-    render_swarm_message, render_system_message, render_tool_message, render_usage_message,
+    SWARM_AGENT_SNAPSHOT_TITLE, TodoCardAgent, TodoCardBackgroundTask, compact_swarm_await_summary,
+    encode_swarm_agent_snapshot, render_assistant_message, render_background_task_message,
+    render_reasoning_message, render_swarm_message, render_system_message, render_tool_message,
+    render_usage_message,
 };
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
@@ -954,6 +955,7 @@ struct BodyCacheKey {
     /// Live swarm-member data renders beneath the tool call that spawned each
     /// member, so status/todo/tool-intent updates must invalidate the body.
     swarm_members_signature: u64,
+    latex_rendering: crate::config::LatexRenderingMode,
 }
 
 #[derive(Clone)]
@@ -1036,6 +1038,7 @@ impl BodyCacheState {
                     && entry.key.images_signature == key.images_signature
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
+                    && entry.key.latex_rendering == key.latex_rendering
             })
             .max_by_key(|entry| entry.msg_count)
             .map(|entry| (entry.prepared.clone(), entry.msg_count));
@@ -1057,6 +1060,7 @@ impl BodyCacheState {
                     && entry.key.images_signature == key.images_signature
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
+                    && entry.key.latex_rendering == key.latex_rendering
             })
             .max_by_key(|entry| entry.msg_count)
             .map(|entry| (entry.prepared.clone(), entry.msg_count));
@@ -1097,6 +1101,7 @@ impl BodyCacheState {
                     && entry.key.images_signature == key.images_signature
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
+                    && entry.key.latex_rendering == key.latex_rendering
             })
             .max_by_key(|(_, entry)| entry.msg_count)
             .map(|(idx, entry)| (false, idx, entry.msg_count));
@@ -1119,6 +1124,7 @@ impl BodyCacheState {
                     && entry.key.images_signature == key.images_signature
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
+                    && entry.key.latex_rendering == key.latex_rendering
             })
             .max_by_key(|(_, entry)| entry.msg_count)
             .map(|(idx, entry)| (true, idx, entry.msg_count));
@@ -1226,6 +1232,7 @@ struct FullPrepCacheKey {
     expanded_images_version: u64,
     /// Signature of live swarm member cards embedded beneath spawn tool calls.
     swarm_members_signature: u64,
+    latex_rendering: crate::config::LatexRenderingMode,
 }
 
 #[derive(Clone)]
@@ -1331,6 +1338,45 @@ static FULL_PREP_CACHE: OnceLock<Mutex<FullPrepCacheState>> = OnceLock::new();
 
 fn full_prep_cache() -> &'static Mutex<FullPrepCacheState> {
     FULL_PREP_CACHE.get_or_init(|| Mutex::new(FullPrepCacheState::default()))
+}
+
+/// Drop only reconstructible presentation data. Call after retaining a bounded
+/// terminal frame so idle repaints cannot immediately recreate these caches.
+pub(crate) fn release_idle_render_caches() {
+    jcode_tui_messages::clear_message_cache();
+    jcode_tui_markdown::clear_highlight_cache();
+    if let Ok(mut cache) = body_cache().lock() {
+        *cache = BodyCacheState::default();
+    }
+    if let Ok(mut cache) = full_prep_cache().lock() {
+        *cache = FullPrepCacheState::default();
+    }
+    if let Ok(mut cache) = file_diff_ui::file_diff_cache().lock() {
+        *cache = Default::default();
+    }
+    #[cfg(test)]
+    TEST_LAST_CHAT_FRAME.with(|slot| *slot.borrow_mut() = None);
+    #[cfg(not(test))]
+    if let Ok(mut frame) = last_chat_frame_state().lock() {
+        *frame = None;
+    }
+    clear_copy_viewport_snapshot();
+    clear_side_panel_render_caches();
+    inline_image_ui::clear_staged_payloads();
+    // Unlike clear_cache(), this retains on-disk image artifacts and registered
+    // diagrams. They are needed to reconstruct exactly the same view on wake.
+    crate::tui::mermaid::clear_image_state();
+}
+
+#[cfg(test)]
+pub(crate) fn idle_render_caches_empty() -> bool {
+    let body = body_cache().lock().unwrap();
+    let full = full_prep_cache().lock().unwrap();
+    body.entries.is_empty()
+        && body.oversized_entries.is_empty()
+        && full.entries.is_empty()
+        && full.oversized_entries.is_empty()
+        && last_chat_frame().is_none()
 }
 
 #[cfg(not(test))]
@@ -1529,6 +1575,11 @@ pub(crate) fn last_chat_frame() -> Option<Arc<PreparedChatFrame>> {
 /// lock, which serialized nothing between them and produced failures that
 /// appeared only under parallelism (same root cause as issue #593). Both now
 /// delegate here.
+///
+/// Lock hierarchy: tests needing both `storage::lock_test_env` and this lock
+/// must acquire the environment lock first. App construction resets render
+/// state while an environment-scoping helper may already hold that lock.
+/// Taking environment after render would deadlock against that reset.
 #[cfg(test)]
 pub(crate) fn render_state_test_lock() -> RenderStateTestGuard {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -1757,6 +1808,8 @@ mod draw_recovery;
 mod profile;
 #[path = "ui/selection_highlight.rs"]
 pub(crate) mod selection_highlight;
+#[path = "ui/todo_completion_flash.rs"]
+pub(crate) mod todo_completion_flash;
 #[path = "ui/url.rs"]
 mod url_regex_support;
 use self::copy_selection::{copy_point_from_snapshot, link_target_from_snapshot};
@@ -2336,6 +2389,26 @@ pub(crate) fn link_target_from_screen(column: u16, row: u16) -> Option<String> {
     link_target_from_snapshot(&snapshot, point)
 }
 
+/// Short OAuth link labels resolve against the source card, not a printed URL.
+pub(crate) fn oauth_login_link_message_from_screen(column: u16, row: u16) -> Option<usize> {
+    let point = copy_point_from_screen(column, row)?;
+    if point.pane != crate::tui::CopySelectionPane::Chat {
+        return None;
+    }
+    let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let text = snapshot.wrapped_plain_line(point.abs_line)?;
+    let label = "Open OpenAI sign-in";
+    let start = text.find(label)?;
+    let start = line_display_width(&text[..start]);
+    if point.column < start || point.column >= start + label.len() {
+        return None;
+    }
+    match &snapshot.data {
+        CopyViewportData::ChatFrame { prepared } => prepared.message_index_at_line(point.abs_line),
+        CopyViewportData::Dense { .. } => None,
+    }
+}
+
 /// If a screen click landed on an inline-image label line, return the image
 /// id so the caller can cycle that image's size. The label line is short and
 /// single purpose (there is no visible expand badge anymore), so the whole
@@ -2480,11 +2553,86 @@ pub(crate) fn debug_chat_image_regions_json() -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Conservatively detect overflow without rendering Markdown. This lets a cold
+/// reload skip preparing a wide transcript that would immediately be discarded
+/// to reserve the scrollbar column. Only count rows the body must emit.
+fn transcript_definitely_overflows(messages: &[DisplayMessage], available_rows: usize) -> bool {
+    let mut rows = 0usize;
+    for message in messages {
+        let role = message.effective_role();
+        // Tool results can be hidden (notably pinned todos). These three roles
+        // do not add the usual inter-message separator either.
+        if rows > 0 && messages::needs_message_separator(message) {
+            rows = rows.saturating_add(1);
+        }
+        rows = rows.saturating_add(match role {
+            // Voice/transcription normalization can remove source lines, but
+            // even an empty user prompt still emits its numbered first row.
+            "user" | "meta" | "error" => 1,
+            "spacer" => message
+                .content
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0)
+                .saturating_sub(1),
+            _ => 0,
+        });
+        if rows > available_rows {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     record_idle_animation_area(None);
+    if let Some(frozen) = app.hibernation_frame()
+        && frozen.area == frame.area()
+    {
+        frame.buffer_mut().clone_from(frozen);
+        if let Some(notice) = app.hibernation_notice() {
+            // Keep the transcript, draft and scroll exactly as last painted.
+            // The notice replaces only the status line row.
+            let area = frame.area();
+            let row = last_status_area()
+                .filter(|row| area.contains(row.as_position()) && row.bottom() <= area.bottom())
+                .unwrap_or_else(|| {
+                    Rect::new(
+                        area.x,
+                        area.bottom().saturating_sub(1),
+                        area.width,
+                        area.height.min(1),
+                    )
+                });
+            clear_area(frame, row);
+            frame.render_widget(
+                Paragraph::new(notice).style(Style::default().fg(dim_color())),
+                row,
+            );
+        }
+        // In particular do not send deferred Kitty deletions while the frozen
+        // screen still shows those images. Normal rendering drains them on wake.
+        if visual_debug::is_enabled() {
+            let area = frame.area();
+            let mut capture = FrameCaptureBuilder::new(area.width, area.height);
+            capture.state.status = "hibernated".to_string();
+            capture.state.input_len = app.input().len();
+            capture.state.input_preview = app.input().chars().take(200).collect();
+            capture.state.cursor_pos = app.cursor_pos();
+            capture.state.scroll_offset = app.scroll_offset();
+            capture.state.message_count = app.display_messages().len();
+            capture.rendered_text.status_line = app.hibernation_notice().unwrap_or("").to_string();
+            capture
+                .render_order
+                .push("frozen_hibernation_frame".to_string());
+            visual_debug::record_frame(capture.build());
+        }
+        return;
+    }
     // Suggestions are read many times while composing one frame. Bump the
     // epoch here so the memo is scoped to exactly this frame.
     app.advance_command_suggestions_epoch();
+    crate::tui::mermaid::begin_terminal_image_frame();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::tui::markdown::with_deferred_mermaid_render_context(|| draw_inner(frame, app))
     })) {
@@ -2497,10 +2645,10 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // can make distinct muted source grays converge to the same rendered ink.
     jcode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
-    // Cache eviction/clearing can outlive the last visible image. Carry Kitty
-    // deletion commands on any completed frame so terminal-side pixel storage
-    // is reclaimed even when no image widget renders again.
-    crate::tui::mermaid::render_pending_terminal_image_cleanup(frame.buffer_mut());
+    // Classic Kitty placements must follow all text writes. Unlike Unicode
+    // placeholders they survive scrolling, so finalize even an image-free frame.
+    // This also drains deferred cache-eviction deletions when no image remains.
+    crate::tui::mermaid::finish_terminal_image_frame(frame.buffer_mut());
 }
 fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     panel_image_preview::clear_regions();
@@ -2805,9 +2953,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // the bottom chrome and shoves the transcript up: reacting to raw
     // frame-by-frame dock visibility made the strip pop in and out and the
     // whole screen bounce (flicker).
+    let pinned_width = chat_area.width.saturating_sub(u16::from(
+        app.chat_native_scrollbar() && last_chat_scrollbar_visible(),
+    ));
+    let pinned_width = pinned_width.saturating_sub(left_aligned_content_inset(
+        pinned_width,
+        app.centered_mode(),
+    ));
+    let workers_in_todos = viewport::pinned_todos_show_workers(app, pinned_width);
     let swarm_strip_lines: Vec<Line<'static>> = if !swarm_page_active
         && app.inline_swarm_gallery_active()
-        && (app.swarm_panel_focused() || !super::info_widget::swarm_strip_stands_down_for_dock())
+        && (app.swarm_panel_focused()
+            || (!workers_in_todos && !super::info_widget::swarm_strip_stands_down_for_dock()))
     {
         let members = app.inline_swarm_members();
         if chat_area.width >= 24 {
@@ -2951,9 +3108,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let prepared_wide = prepare_at(wide_prepare_width);
         initial_content_height = prepared_wide.total_wrapped_lines().max(1) as u16;
         (prepared_wide, false)
-    } else if last_chat_scrollbar_visible() {
-        // Scrollbar was visible last frame: prepare the narrow (reserved-column)
-        // layout first. If it still overflows we keep it without touching wide.
+    } else if last_chat_scrollbar_visible()
+        || transcript_definitely_overflows(
+            app.display_messages(),
+            available_height.saturating_sub(stable_fixed_height) as usize,
+        )
+    {
+        // Prior visibility or the source-row lower bound suggests starting
+        // narrow. Still check the actual layout before keeping the scrollbar.
         let prepared_narrow = prepare_at(narrow_prepare_width);
         initial_content_height = prepared_narrow.total_wrapped_lines().max(1) as u16;
         if overflows(&prepared_narrow) {
@@ -3172,6 +3334,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     record_layout_snapshot(messages_area, diagram_area, diff_pane_area, Some(chunks[7]));
 
+    let mut chat_scrollbar: Option<NativeScrollbar> = None;
     let margins = if onboarding_welcome {
         onboarding::draw_onboarding_welcome(frame, app, messages_area);
         info_widget::Margins {
@@ -3215,13 +3378,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             ..Default::default()
         }
     } else {
-        draw_messages(
+        let (margins, scrollbar) = draw_messages(
             frame,
             app,
             messages_area,
             prepared.clone(),
             chat_scrollbar_visible,
-        )
+        );
+        chat_scrollbar = scrollbar;
+        margins
     };
 
     crate::tui::reset_pinned_diagram_debug_snapshot();
@@ -3391,6 +3556,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
         let widget_start = Instant::now();
         info_widget::render_all(frame, &placements, &widget_data);
+        // Merge docked widget borders into the shared scrollbar column, then
+        // highlight the thumb without erasing horizontal border connections.
+        if let Some(scrollbar) = chat_scrollbar
+            && placements
+                .iter()
+                .any(|placement| rects_overlap(placement.rect, scrollbar.area))
+        {
+            scrollbar.render_thumb_overlay(frame);
+        }
         widget_render_ms = Some(widget_start.elapsed().as_secs_f32() * 1000.0);
 
         // Optional visual overlay for placements
@@ -3488,90 +3662,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     );
 }
 
-pub(crate) fn split_native_scrollbar_area(area: Rect, enabled: bool) -> (Rect, Option<Rect>) {
-    if !enabled || area.width <= 1 {
-        return (area, None);
-    }
-
-    let content = Rect {
-        width: area.width.saturating_sub(1),
-        ..area
-    };
-    let scrollbar = Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(1)),
-        y: area.y,
-        width: 1,
-        height: area.height,
-    };
-    (content, Some(scrollbar))
-}
-
-pub(crate) fn native_scrollbar_visible(
-    enabled: bool,
-    total_lines: usize,
-    visible_height: usize,
-) -> bool {
-    enabled && visible_height > 0 && total_lines > visible_height
-}
-
-pub(crate) fn render_native_scrollbar(
-    frame: &mut Frame,
-    area: Rect,
-    scroll: usize,
-    total_lines: usize,
-    visible_height: usize,
-    focused: bool,
-) {
-    if area.width == 0
-        || area.height == 0
-        || !native_scrollbar_visible(true, total_lines, visible_height)
-    {
-        return;
-    }
-
-    let track_height = area.height as usize;
-    let thumb_height = if visible_height == 0 || total_lines == 0 {
-        1
-    } else if total_lines <= visible_height {
-        track_height
-    } else {
-        ((visible_height * track_height).div_ceil(total_lines)).clamp(1, track_height)
-    };
-    let max_thumb_offset = track_height.saturating_sub(thumb_height);
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let thumb_offset = if max_scroll == 0 {
-        0
-    } else {
-        scroll.min(max_scroll) * max_thumb_offset / max_scroll
-    };
-
-    let thumb_color = if focused {
-        rgb(188, 208, 240)
-    } else {
-        rgb(136, 148, 172)
-    };
-
-    let mut lines = Vec::with_capacity(track_height);
-    for row in 0..track_height {
-        let (glyph, color) = if row >= thumb_offset && row < thumb_offset + thumb_height {
-            let glyph = if thumb_height == 1 {
-                "•"
-            } else if row == thumb_offset {
-                "╷"
-            } else if row + 1 == thumb_offset + thumb_height {
-                "╵"
-            } else {
-                "│"
-            };
-            (glyph, thumb_color)
-        } else {
-            (" ", Color::Reset)
-        };
-        lines.push(Line::from(Span::styled(glyph, Style::default().fg(color))));
-    }
-
-    frame.render_widget(Paragraph::new(lines), area);
-}
+#[path = "ui/native_scrollbar.rs"]
+mod native_scrollbar;
+pub(crate) use native_scrollbar::{
+    NativeScrollbar, native_scrollbar_visible, render_native_scrollbar, split_native_scrollbar_area,
+};
+#[cfg(test)]
+use native_scrollbar::{native_scrollbar_thumb, native_scrollbar_thumb_color};
 
 #[cfg(test)]
 #[path = "ui_tests/mod.rs"]

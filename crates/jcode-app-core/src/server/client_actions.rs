@@ -33,52 +33,9 @@ fn derive_subagent_description(prompt: &str) -> String {
     }
 }
 
-fn build_input_shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new("cmd.exe");
-        cmd.arg("/C").arg(command);
-        cmd
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c").arg(command);
-        cmd
-    }
-}
-
-fn combine_input_shell_output(stdout: &[u8], stderr: &[u8]) -> (String, bool) {
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    let mut output = String::new();
-
-    if !stdout.is_empty() {
-        output.push_str(&stdout);
-    }
-    if !stderr.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("[stderr]\n");
-        output.push_str(&stderr);
-    }
-
-    let truncated = if output.len() > INPUT_SHELL_MAX_OUTPUT_LEN {
-        output = truncate_str(&output, INPUT_SHELL_MAX_OUTPUT_LEN).to_string();
-        if !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("… output truncated");
-        true
-    } else {
-        false
-    };
-
-    (output, truncated)
-}
-
+#[path = "input_shell_output.rs"]
+mod input_shell_output;
+use input_shell_output::{build_input_shell_command, combine_input_shell_output};
 pub(super) struct NotifySessionContext<'a> {
     pub sessions: &'a SessionAgents,
     pub soft_interrupt_queues: &'a SessionInterruptQueues,
@@ -423,12 +380,14 @@ pub(super) fn handle_run_subagent(
         let tool_name_for_exec = tool_name.clone();
         let result = match crate::runtime_activity::spawn(async move {
             registry.execute(&tool_name_for_exec, tool_input, ctx).await
-        })
-        .expect("subagent task inherits its admitted parent activity")
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => Err(anyhow::anyhow!("Tool task panicked: {}", error)),
+        }) {
+            Some(handle) => match handle.await {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!("Tool task panicked: {}", error)),
+            },
+            None => Err(anyhow::anyhow!(
+                "Tool task was not admitted because the runtime is shutting down"
+            )),
         };
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
@@ -840,6 +799,11 @@ fn clone_split_session(
     child.system_prompt = parent.system_prompt.clone();
     child.working_dir = parent.working_dir.clone();
     child.model = parent.model.clone();
+    // Keep the same provider account. Replayed provider-native blocks (Anthropic
+    // web search `encrypted_content`) are bound to the account that produced
+    // them, and another account rejects the whole request with a 400.
+    child.provider_key = parent.provider_key.clone();
+    child.route_api_method = parent.route_api_method.clone();
     child.status = crate::session::SessionStatus::Closed;
     // The parent agent keeps ownership of any in-flight request; tell the
     // forked agent so it treats the next prompt as fresh work instead of
@@ -868,7 +832,12 @@ fn create_transfer_child_session(
     parent: &Session,
     compaction: Option<crate::session::StoredCompactionState>,
 ) -> anyhow::Result<(String, String)> {
-    let todos = crate::todo::load_todos(parent_session_id).unwrap_or_default();
+    let mut todos = crate::todo::load_todos(parent_session_id).unwrap_or_default();
+    // Background tasks belong to the source session. A fresh session must
+    // reassess those results, not inherit foreign task IDs or their wakes.
+    for todo in &mut todos {
+        todo.waiting_on.clear();
+    }
     let mut child = Session::create(Some(parent_session_id.to_string()), None);
     child.messages.clear();
     child.compaction = compaction;

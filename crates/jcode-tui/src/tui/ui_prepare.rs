@@ -132,130 +132,12 @@ fn is_error_copy_content(content: &str) -> bool {
     trimmed.starts_with("Error:") || trimmed.starts_with("error:") || trimmed.starts_with("Failed:")
 }
 
-/// Build the image regions for an image/mermaid placeholder in `wrapped_lines`,
-/// where each placeholder "owns" the run of blank lines that follow it.
-///
-/// Done in a single reverse pass that precomputes, for every line, the length
-/// of the blank run starting at that line. The previous implementation scanned
-/// forward through the trailing blanks for every placeholder, which is O(L^2)
-/// when a message has many placeholders each followed by long blank runs.
-pub(super) fn compute_image_regions(
-    wrapped_lines: &[ratatui::text::Line<'static>],
-) -> Vec<ImageRegion> {
-    fn is_blank_line(line: &ratatui::text::Line<'static>) -> bool {
-        line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.is_empty())
-    }
-
-    let len = wrapped_lines.len();
-    // blank_run[i] = number of consecutive blank lines starting at index i.
-    let mut blank_run = vec![0usize; len + 1];
-    for idx in (0..len).rev() {
-        blank_run[idx] = if is_blank_line(&wrapped_lines[idx]) {
-            blank_run[idx + 1] + 1
-        } else {
-            0
-        };
-    }
-
-    let mut image_regions = Vec::new();
-    for (idx, line) in wrapped_lines.iter().enumerate() {
-        if let Some(hash) = super::super::mermaid::parse_image_placeholder(line) {
-            // The placeholder line plus the blank run immediately after it.
-            let height = (1 + blank_run[idx + 1]).min(u16::MAX as usize) as u16;
-            image_regions.push(ImageRegion {
-                abs_line_idx: idx,
-                end_line: idx + height as usize,
-                hash,
-                height,
-                // Mermaid crop regions don't know their rendered width here;
-                // 0 = treat the rows as fully occupied for layout purposes.
-                width: 0,
-                render: jcode_tui_messages::ImageRegionRender::Crop,
-            });
-        } else if let Some((hash, rows, cols)) =
-            super::super::mermaid::parse_inline_image_placeholder(line)
-        {
-            // Inline raster image anchored in the transcript body. The marker
-            // encodes its exact geometry; clamp to the blank run that actually
-            // follows so a wrapped/truncated placeholder can never claim
-            // non-blank lines below it.
-            let available = (1 + blank_run[idx + 1]).min(u16::MAX as usize) as u16;
-            let height = rows.max(1).min(available);
-            image_regions.push(ImageRegion {
-                abs_line_idx: idx,
-                end_line: idx + height as usize,
-                hash,
-                height,
-                width: cols,
-                render: jcode_tui_messages::ImageRegionRender::Fit,
-            });
-        }
-    }
-    image_regions
-}
-
-fn error_copy_target(content: &str, rendered_line_count: usize) -> Option<RawCopyTarget> {
-    copy_target_for_kind(CopyTargetKind::Error, content, rendered_line_count)
-}
-
-fn tool_output_copy_target(content: &str, rendered_line_count: usize) -> Option<RawCopyTarget> {
-    copy_target_for_kind(CopyTargetKind::ToolOutput, content, rendered_line_count)
-}
-
-fn copy_target_for_kind(
-    kind: CopyTargetKind,
-    content: &str,
-    rendered_line_count: usize,
-) -> Option<RawCopyTarget> {
-    let content = content.trim();
-    if content.is_empty() {
-        return None;
-    }
-
-    Some(RawCopyTarget {
-        kind,
-        content: content.to_string(),
-        start_raw_line: 0,
-        end_raw_line: rendered_line_count.max(1),
-        badge_raw_line: 0,
-    })
-}
-
-fn offset_copy_target(target: RawCopyTarget, line_offset: usize) -> RawCopyTarget {
-    RawCopyTarget {
-        kind: target.kind,
-        content: target.content,
-        start_raw_line: target.start_raw_line + line_offset,
-        end_raw_line: target.end_raw_line + line_offset,
-        badge_raw_line: target.badge_raw_line + line_offset,
-    }
-}
-
-fn assistant_message_copy_targets(
-    content: &str,
-    rendered_lines: &[Line<'static>],
-) -> Vec<RawCopyTarget> {
-    if is_error_copy_content(content) {
-        return error_copy_target(content, rendered_lines.len())
-            .into_iter()
-            .collect();
-    }
-
-    crate::tui::markdown::extract_copy_targets_from_rendered_lines(rendered_lines)
-}
-
-fn tool_message_copy_target(
-    msg: &DisplayMessage,
-    rendered_line_count: usize,
-) -> Option<RawCopyTarget> {
-    if is_error_copy_content(&msg.content) {
-        return error_copy_target(&msg.content, rendered_line_count);
-    }
-    if tools_ui::tool_output_looks_failed(&msg.content) {
-        return tool_output_copy_target(&msg.content, rendered_line_count);
-    }
-    None
-}
+#[path = "ui_prepare/copy_targets.rs"]
+mod copy_targets;
+pub(super) use copy_targets::{
+    assistant_message_copy_targets, compute_image_regions, error_copy_target, offset_copy_target,
+    tool_message_copy_target,
+};
 
 /// Build the inline "what changed" delta lines for a `todo` tool message, if it
 /// is a successful write. `messages` is the full transcript and `abs_idx` is the
@@ -604,10 +486,15 @@ pub(super) fn prepare_messages(
         height,
         diff_mode: app.diff_mode(),
         // Pinning changes which tool messages participate in the transcript.
+        // The live todo payload also owns the trailing blocker explanations.
         messages_version: app
             .display_messages_version()
             .wrapping_mul(2)
-            .wrapping_add(u64::from(crate::config::config().display.pin_todos)),
+            .wrapping_add(u64::from(crate::config::config().display.pin_todos))
+            .wrapping_mul(31)
+            .wrapping_add(super::hash_text_for_cache(
+                app.pinned_todos_payload().unwrap_or(""),
+            )),
         diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
         mermaid_aspect_bucket: crate::tui::mermaid::current_preferred_aspect_ratio_bucket(),
@@ -626,6 +513,7 @@ pub(super) fn prepare_messages(
         inline_images_visible: app.inline_images_visible(),
         expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
+        latex_rendering: crate::config::config().display.latex_rendering,
     };
 
     super::note_full_prep_request();
@@ -909,6 +797,10 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
         (PreparedSectionKind::BatchProgress, batch_progress_prepared),
         (PreparedSectionKind::Reasoning, reasoning_prepared),
         (PreparedSectionKind::Streaming, streaming_prepared),
+        (
+            PreparedSectionKind::TodoBlockers,
+            Arc::new(prepare_todo_blockers(app, width)),
+        ),
     ]);
     super::note_full_prep_phase_metrics(super::FullPrepPhaseMetrics {
         header_ms,
@@ -918,6 +810,16 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
         compose_ms: compose_start.elapsed().as_secs_f64() * 1000.0,
     });
     frame
+}
+
+fn prepare_todo_blockers(app: &dyn TuiState, width: u16) -> PreparedMessages {
+    wrap_lines(
+        messages::todo_blocker_notes(app.pinned_todos_payload()),
+        &[],
+        &[],
+        &[],
+        width,
+    )
 }
 
 /// TTL + cheap-signature cache for the prepared (built + wrapped) header.
@@ -973,6 +875,11 @@ pub(crate) fn invalidate_header_prep_cache() {
     if let Ok(mut cache) = header_prep_cache().lock() {
         *cache = None;
     }
+    // Prepared frames embed the header. Clearing only the header sub-cache
+    // leaves an exact full-frame hit displaying old account dots and quotas.
+    if let Ok(mut cache) = full_prep_cache().lock() {
+        *cache = FullPrepCacheState::default();
+    }
 }
 
 /// Hash of the header inputs that are cheap to read every frame. Anything
@@ -1007,6 +914,8 @@ fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
     // the header on the very next frame instead of waiting out the TTL, which
     // is what lets the TTL itself be sized for slow background drift.
     crate::auth::auth_status_generation().hash(&mut hasher);
+    header::account_router_generation().hash(&mut hasher);
+    app.startup_oauth_account_label().hash(&mut hasher);
     // The goal badge renders the focused side-panel page title when a goal
     // page is focused; keying on it keeps focus changes instant.
     if let Some(page) = app.side_panel().focused_page() {
@@ -1071,6 +980,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         images_signature: app.side_pane_images_signature(),
         expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
+        latex_rendering: crate::config::config().display.latex_rendering,
     };
     let msg_count = app.display_messages().len();
     let cache_lookup_start = Instant::now();
@@ -1347,9 +1257,7 @@ fn render_message_into(
     let align = default_message_alignment(role, centered);
 
     if (acc.body_has_content || !acc.lines.is_empty())
-        && role != "tool"
-        && role != "meta"
-        && role != "swarm"
+        && super::messages::needs_message_separator(msg)
     {
         acc.push_blank();
     }
@@ -1666,27 +1574,32 @@ fn render_message_into(
                 acc.copy_targets
                     .push(offset_copy_target(target, error_start_line));
             }
-            let raw_line = acc.raw_plain_lines.len();
-            acc.raw_plain_lines.push(msg.content.clone());
-            let raw_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
-            let prefix_width =
-                unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
-            acc.lines.push(
-                Line::from(vec![
-                    Span::styled(
-                        if centered { "✗ " } else { "  ✗ " },
-                        Style::default().fg(Color::Red),
-                    ),
-                    Span::styled(msg.content.clone(), Style::default().fg(Color::Red)),
-                ])
-                .alignment(align),
-            );
-            acc.line_raw_overrides.push(Some(WrappedLineMap {
-                raw_line,
-                start_col: 0,
-                end_col: raw_width,
-            }));
-            acc.line_copy_offsets.push(prefix_width);
+            // Multi-line diagnostics (cloud failures, error chains) keep one
+            // logical line per row instead of collapsing into a single row.
+            let prefix = if centered { "✗ " } else { "  ✗ " };
+            let continuation = if centered { "  " } else { "    " };
+            let prefix_width = unicode_width::UnicodeWidthStr::width(prefix);
+            for (index, text) in msg.content.lines().enumerate() {
+                let raw_line = acc.raw_plain_lines.len();
+                acc.raw_plain_lines.push(text.to_string());
+                let raw_width = unicode_width::UnicodeWidthStr::width(text);
+                acc.lines.push(
+                    Line::from(vec![
+                        Span::styled(
+                            if index == 0 { prefix } else { continuation },
+                            Style::default().fg(Color::Red),
+                        ),
+                        Span::styled(text.to_string(), Style::default().fg(Color::Red)),
+                    ])
+                    .alignment(align),
+                );
+                acc.line_raw_overrides.push(Some(WrappedLineMap {
+                    raw_line,
+                    start_col: 0,
+                    end_col: raw_width,
+                }));
+                acc.line_copy_offsets.push(prefix_width);
+            }
         }
         _ => {}
     }
@@ -2316,6 +2229,11 @@ pub(super) fn prepare_body(
     let display_width = width.saturating_sub(4) as usize;
 
     let messages = app.display_messages();
+    let images_start = Instant::now();
+    // Images anchored to transcript messages render inline right after the
+    // message that produced them (tool result or user prompt).
+    let anchored_images = super::inline_image_ui::resolve_anchored_items_cached(app);
+    let images_ms = images_start.elapsed().as_millis();
     let ctx = BodyRenderCtx {
         app,
         width,
@@ -2323,17 +2241,35 @@ pub(super) fn prepare_body(
         prompt_number_offset: app.compacted_hidden_user_prompts(),
         total_prompts: app.display_user_message_count(),
         pending_count: input_ui::pending_prompt_count(app),
-        // Images anchored to transcript messages render inline right after the
-        // message that produced them (tool result or user prompt).
-        anchored_images: super::inline_image_ui::resolve_anchored_items_cached(app),
+        anchored_images,
         inline_images_visible: app.inline_images_visible(),
         messages,
         swarm_members: app.swarm_members_for_transcript(),
     };
+    let ctx_ms = images_start.elapsed().as_millis() - images_ms;
 
+    let render_start = Instant::now();
     let mut acc = BodyAcc::default();
+    let mut role_ms: std::collections::BTreeMap<&str, (u128, usize)> = Default::default();
+    let mut slowest: (u128, usize, &str) = (0, 0, "");
+    let mut tool_ms: std::collections::BTreeMap<String, (u128, usize)> = Default::default();
     for (msg_idx, msg) in messages.iter().enumerate() {
+        let msg_start = Instant::now();
         render_message_into(&ctx, &mut acc, msg, msg_idx);
+        let us = msg_start.elapsed().as_micros();
+        if let Some(tool) = msg.tool_data.as_ref() {
+            let entry = tool_ms
+                .entry(tools_ui::canonical_tool_name(&tool.name).to_string())
+                .or_default();
+            entry.0 += us;
+            entry.1 += 1;
+        }
+        let entry = role_ms.entry(msg.effective_role()).or_default();
+        entry.0 += us;
+        entry.1 += 1;
+        if us > slowest.0 {
+            slowest = (us, msg_idx, msg.effective_role());
+        }
     }
 
     // Streaming output is appended after the message boundaries are recorded so
@@ -2363,6 +2299,8 @@ pub(super) fn prepare_body(
         }
     }
 
+    let render_ms = render_start.elapsed().as_millis();
+    let wrap_start = Instant::now();
     let mut prepared = wrap_lines_with_map(
         acc.lines,
         &acc.raw_plain_lines,
@@ -2375,6 +2313,32 @@ pub(super) fn prepare_body(
         &acc.copy_targets,
         &acc.segments,
     );
+    let wrap_ms = wrap_start.elapsed().as_millis();
+    if images_ms + ctx_ms + render_ms + wrap_ms >= 100 {
+        crate::logging::info(&format!(
+            "[TIMING] prepare_body: messages={}, images={images_ms}ms, ctx={ctx_ms}ms, render={render_ms}ms, wrap={wrap_ms}ms, wrapped_lines={}, by_role=[{}], by_tool=[{}], slowest={}us@{}({})",
+            messages.len(),
+            prepared.wrapped_lines.len(),
+            role_ms
+                .iter()
+                .map(|(role, (us, n))| format!("{role}:{}ms/{n}", us / 1000))
+                .collect::<Vec<_>>()
+                .join(" "),
+            {
+                let mut tools: Vec<_> = tool_ms.iter().collect();
+                tools.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+                tools
+                    .iter()
+                    .take(6)
+                    .map(|(tool, (us, n))| format!("{tool}:{}ms/{n}", us / 1000))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            },
+            slowest.0,
+            slowest.1,
+            slowest.2
+        ));
+    }
     stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
     prepared
 }

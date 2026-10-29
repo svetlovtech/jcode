@@ -353,11 +353,25 @@ impl Sidecar {
         let provider = self.provider.as_ref().context(
             "No active provider registered for sidecar; memory features require a logged-in provider",
         )?;
-        provider
-            .complete_simple(user_message, system)
+        let (text, usage) = provider
+            .complete_simple_with_usage(user_message, system)
             .await
-            .context("Sidecar completion via active provider failed")
-    }
+            .inspect_err(|error| {
+                crate::telemetry::record_simple_completion_failure_usage(
+                    None,
+                    crate::telemetry::UsageSource::Sidecar,
+                    error,
+                );
+            })
+            .context("Sidecar completion via active provider failed")?;
+        crate::telemetry::record_simple_completion_usage(
+            None,
+            provider.name(),
+            &provider.model(),
+            crate::telemetry::UsageSource::Sidecar,
+            usage,
+        );
+        Ok(text)    }
 
     /// Complete via OpenAI Responses API.
     ///
@@ -533,6 +547,7 @@ impl Sidecar {
                 .await
                 .context("Failed to parse OpenAI API response")
                 .map_err(OpenAiSidecarError::other)?;
+            record_openai_sidecar_usage(model, Some(&result));
             extract_openai_response_text(&result).map_err(OpenAiSidecarError::other)
         }
     }
@@ -663,6 +678,21 @@ impl Sidecar {
             .json()
             .await
             .context("Failed to parse Claude API response")?;
+
+        if let Some(usage) = result.usage.as_ref() {
+            crate::telemetry::record_provider_usage(
+                None,
+                "claude",
+                reported_sidecar_model(model, result.model.as_deref()),
+                crate::telemetry::UsageSource::Sidecar,
+                crate::telemetry::ProviderUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                },
+            );
+        }
 
         let text = result
             .content
@@ -988,6 +1018,7 @@ async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> 
                             }
                         }
                         "response.completed" | "response.incomplete" => {
+                            record_openai_sidecar_usage(model, event.response.as_ref());
                             return Ok(text);
                         }
                         "response.failed" | "error" => {
@@ -1006,6 +1037,50 @@ async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> 
     }
 
     Ok(text)
+}
+
+/// Parsed OpenAI Responses API `usage` object. OpenAI reports cached prompt
+/// tokens as a subset of `input_tokens` (`input_tokens_details.cached_tokens`),
+/// so the total stays `input + output`; cache reads are surfaced separately for
+/// pricing, the same convention the agent path uses for OpenAI providers.
+fn parse_openai_usage(usage: &serde_json::Value) -> Option<crate::telemetry::ProviderUsage> {
+    let input = usage.get("input_tokens").and_then(|v| v.as_u64());
+    let output = usage.get("output_tokens").and_then(|v| v.as_u64());
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    let cached = usage
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64());
+    Some(crate::telemetry::ProviderUsage {
+        input_tokens: input.unwrap_or(0),
+        output_tokens: output.unwrap_or(0),
+        cache_read_input_tokens: cached,
+        cache_creation_input_tokens: None,
+    })
+}
+
+fn reported_sidecar_model<'a>(requested: &'a str, reported: Option<&'a str>) -> &'a str {
+    reported
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(requested)
+}
+
+fn record_openai_sidecar_usage(model: &str, response: Option<&serde_json::Value>) {
+    if let Some(response) = response
+        && let Some(parsed) = response.get("usage").and_then(parse_openai_usage)
+    {
+        let model = reported_sidecar_model(model, response.get("model").and_then(|v| v.as_str()));
+        crate::telemetry::record_provider_usage(
+            None,
+            "openai",
+            model,
+            crate::telemetry::UsageSource::Sidecar,
+            parsed,
+        );
+    }
 }
 
 /// Extract text from a non-streaming OpenAI Responses API JSON response.
@@ -1130,6 +1205,7 @@ fn is_anthropic_oauth_forbidden(err: &anyhow::Error) -> bool {
 
 #[derive(Deserialize)]
 struct ClaudeMessagesResponse {
+    model: Option<String>,
     content: Vec<ClaudeContentBlock>,
     #[serde(rename = "usage")]
     _usage: Option<ClaudeUsage>,
@@ -1157,6 +1233,67 @@ mod tests {
     use super::*;
     use crate::auth::codex;
     use std::ffi::OsString;
+
+    #[test]
+    fn sidecar_model_prefers_reported_identity_with_requested_fallback() {
+        assert_eq!(
+            reported_sidecar_model("alias", Some("served-snapshot")),
+            "served-snapshot"
+        );
+        assert_eq!(
+            reported_sidecar_model("alias", Some(" served-snapshot ")),
+            "served-snapshot"
+        );
+        for reported in [None, Some(""), Some("  ")] {
+            assert_eq!(reported_sidecar_model("alias", reported), "alias");
+        }
+        let parsed: ClaudeMessagesResponse = serde_json::from_value(serde_json::json!({
+            "model": "claude-served-snapshot", "content": []
+        }))
+        .unwrap();
+        assert_eq!(parsed.model.as_deref(), Some("claude-served-snapshot"));
+    }
+
+    #[test]
+    fn parses_openai_responses_usage_with_cached_subset() {
+        let usage = serde_json::json!({
+            "input_tokens": 1200,
+            "input_tokens_details": {"cached_tokens": 900},
+            "output_tokens": 80,
+            "total_tokens": 1280
+        });
+        let parsed = parse_openai_usage(&usage).expect("usage parsed");
+        assert_eq!(parsed.input_tokens, 1200);
+        assert_eq!(parsed.output_tokens, 80);
+        assert_eq!(parsed.cache_read_input_tokens, Some(900));
+        assert_eq!(parsed.cache_creation_input_tokens, None);
+        assert!(parse_openai_usage(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn sse_completed_event_exposes_response_usage() {
+        let data = r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":3}}}"#;
+        let event: SseEvent = serde_json::from_str(data).expect("sse event");
+        let usage = event
+            .response
+            .as_ref()
+            .and_then(|r| r.get("usage"))
+            .and_then(parse_openai_usage)
+            .expect("usage");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn claude_response_usage_includes_cache_buckets() {
+        let body = r#"{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":2,"cache_read_input_tokens":400,"cache_creation_input_tokens":30}}"#;
+        let parsed: ClaudeMessagesResponse = serde_json::from_str(body).expect("claude response");
+        let usage = parsed.usage.expect("usage");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 2);
+        assert_eq!(usage.cache_read_input_tokens, Some(400));
+        assert_eq!(usage.cache_creation_input_tokens, Some(30));
+    }
 
     struct EnvVarGuard {
         key: &'static str,
