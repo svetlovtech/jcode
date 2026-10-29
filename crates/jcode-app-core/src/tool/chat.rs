@@ -754,7 +754,7 @@ mod tests {
     // the TUI render loop (covered by handle_client socket tests and
     // fork_ask_state seam tests respectively).
 
-    /// Serve /api/chat-service/* on a real TCP socket. For "question",
+    /// Serve /api/chat/* on a real TCP socket. For "question",
     /// replies `{"answer":"<tg answer>"}`; records every request line.
     /// For other endpoints replies 200 `{"stopped":true}`.
     async fn chat_service_stub()
@@ -776,7 +776,7 @@ mod tests {
                     let body = if first_line.contains("/question/") {
                         // stop endpoint
                         "{\"stopped\":true}".to_string()
-                    } else if first_line.contains("POST /api/chat-service/question") {
+                    } else if first_line.contains("POST /api/chat/question") {
                         "{\"answer\":\"из Telegram\"}".to_string()
                     } else {
                         "{}".to_string()

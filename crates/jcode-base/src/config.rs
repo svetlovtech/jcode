@@ -32,6 +32,9 @@ const CONFIG_CACHE_CHECK_INTERVAL: Duration = if cfg!(test) {
 #[test]
 fn kagi_websearch_documented_config_parses() {
     let docs = include_str!("../../../docs/kagi-web-search.md");
+    // Normalize line endings: git's text=auto plus core.autocrlf makes this
+    // file CRLF on Windows checkouts, so a literal LF fence split misses it.
+    let docs = docs.replace("\r\n", "\n");
     let example = docs
         .split("```toml\n")
         .nth(1)
