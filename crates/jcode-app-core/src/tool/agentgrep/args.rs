@@ -61,6 +61,7 @@ pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         paths_only: params.paths_only.unwrap_or(false),
         hidden: params.hidden.unwrap_or(false),
         no_ignore: params.no_ignore.unwrap_or(false),
+        no_follow: false,
         path: scope.root,
         glob: scope.glob,
     })
@@ -93,6 +94,7 @@ pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         max_files: params.max_files.unwrap_or(10),
         hidden: params.hidden.unwrap_or(false),
         no_ignore: params.no_ignore.unwrap_or(false),
+        no_follow: false,
         path: scope.root,
         glob: scope.glob,
     })

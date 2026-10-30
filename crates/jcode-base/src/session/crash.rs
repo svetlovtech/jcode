@@ -1,4 +1,4 @@
-use super::{Session, SessionStatus, active_pids_dir, session_exists};
+use super::{Session, SessionStatus, active_pids_dir, session_exists, session_path};
 use crate::id::extract_session_name;
 use crate::message::{ContentBlock, Role};
 use crate::storage;
@@ -349,10 +349,25 @@ fn find_crashed_via_pid_files() -> Option<Vec<(String, String)>> {
 
         match Session::load(&session_id) {
             Ok(mut session) => {
-                session.mark_crashed(Some(format!(
-                    "Process {} exited unexpectedly (no shutdown signal captured)",
-                    pid
-                )));
+                // Idle-vs-interrupted disposition (upstream #988, extended to
+                // the PID detector): losing the process is only a crash when
+                // it interrupts unfinished work. A leftover streaming marker
+                // proves the session was mid-turn when its owner died
+                // (StreamingGuard clears the marker on every exit path -
+                // normal return, error propagation, interrupt, panic - so
+                // only a killed process leaves one behind). No marker = idle
+                // = ordinary close, same as the disconnect path's idle rule.
+                // This stops daemon restarts stamping every owned idle
+                // session Crashed. Fail toward crash when the marker dir is
+                // unreadable: crash recovery is fail-noisy, never fail-silent.
+                if had_streaming_marker(&session_id) {
+                    session.mark_crashed(Some(format!(
+                        "Process {} exited unexpectedly (no shutdown signal captured)",
+                        pid
+                    )));
+                } else {
+                    session.mark_closed();
+                }
                 let _ = session.save();
                 let ts = session.last_active_at.unwrap_or(session.updated_at);
                 if ts <= cutoff {
@@ -376,6 +391,22 @@ fn find_crashed_via_pid_files() -> Option<Vec<(String, String)>> {
             .map(|(id, name, _)| (id, name))
             .collect(),
     )
+}
+
+/// True when a streaming marker file exists for this session - i.e. the
+/// session was mid-turn when its owner died. Any content counts (even a
+/// stale marker naming the dead owner): StreamingGuard removes the file
+/// on every orderly exit, so presence alone proves interruption. Missing
+/// marker dir or I/O error returns true (fail toward crash recovery, never
+/// silently close a session that may hold interrupted work).
+fn had_streaming_marker(session_id: &str) -> bool {
+    let Some(dir) = storage::streaming_pids_dir() else {
+        return true;
+    };
+    match std::fs::read_dir(&dir) {
+        Ok(_) => dir.join(session_id).exists(),
+        Err(_) => true,
+    }
 }
 
 /// Legacy fallback: scan the full sessions directory.
@@ -555,24 +586,22 @@ fn resolve_imported_snapshot_id(provider_id: &str) -> Option<String> {
 }
 
 /// Find a session by ID, memorable name, generated title, or custom rename.
-/// If the input doesn't load as a full session ID, scan recent session snapshots
-/// and return the newest matching short name/title.
+/// Existing exact snapshot IDs are resolved without reading their contents.
+/// The authoritative session load still validates snapshots and replays journals.
+/// Otherwise scan recent session snapshots for the newest matching name/title.
 /// Returns the full session ID if found.
 pub fn find_session_by_name_or_id(name_or_id: &str) -> Result<String> {
-    // Try loading directly first so stable imported IDs like `imported_codex_*`
-    // or other explicit session ids can be resumed without going through the
-    // short-name matcher.
-    match Session::load(name_or_id) {
-        Ok(_) => return Ok(name_or_id.to_string()),
-        Err(e) => {
-            if session_exists(name_or_id) {
-                anyhow::bail!(
-                    "Session '{}' exists but failed to load (possibly corrupt):\n  {}",
-                    name_or_id,
-                    e
-                );
-            }
-        }
+    // IDs are filename stems, never paths. Titles containing separators remain
+    // searchable, but cannot escape the sessions directory via exact lookup.
+    let is_stem = !name_or_id.is_empty()
+        && name_or_id != "."
+        && name_or_id != ".."
+        && !name_or_id.contains(['/', '\\', '\0']);
+    // Resolution is not validation. Reading a multi-MB snapshot here repeats
+    // startup metadata reads and server restore, and can trigger client-side
+    // backup recovery. Leave corruption detection to the authoritative load.
+    if is_stem && session_path(name_or_id)?.is_file() {
+        return Ok(name_or_id.to_string());
     }
 
     // A *bare* external provider id (e.g. an OpenCode `ses_...` or a Codex/Claude
@@ -580,7 +609,10 @@ pub fn find_session_by_name_or_id(name_or_id: &str) -> Result<String> {
     // `imported_<tool>_<id>` stem. Resolve to that snapshot before falling back to
     // re-importing from the external tool's storage, which fails outright once the
     // user has removed/reinstalled that tool (issue #336).
-    if let Some(imported_id) = resolve_imported_snapshot_id(name_or_id) {
+    if let Some(imported_id) = is_stem
+        .then(|| resolve_imported_snapshot_id(name_or_id))
+        .flatten()
+    {
         return Ok(imported_id);
     }
 
@@ -651,6 +683,26 @@ pub fn find_session_by_name_or_id(name_or_id: &str) -> Result<String> {
 mod batch_crash_tests {
     use super::*;
 
+    struct HomeGuard(Option<std::ffi::OsString>);
+
+    impl HomeGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("JCODE_HOME");
+            crate::env::set_var("JCODE_HOME", path);
+            Self(previous)
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.0 {
+                crate::env::set_var("JCODE_HOME", previous);
+            } else {
+                crate::env::remove_var("JCODE_HOME");
+            }
+        }
+    }
+
     #[test]
     fn test_crashed_sessions_info_struct() {
         let info = CrashedSessionsInfo {
@@ -662,6 +714,162 @@ mod batch_crash_tests {
         assert_eq!(info.session_ids.len(), 2);
         assert_eq!(info.display_names.len(), 2);
         assert_eq!(info.display_names[0], "fox");
+    }
+
+    #[test]
+    fn idle_dead_pid_without_streaming_marker_is_not_a_crash() {
+        // Upstream #988 extended to the PID detector: a dead owner PID with
+        // no leftover streaming marker means the session was idle — ordinary
+        // close, not crash. Daemon restarts must not stamp idle sessions.
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let dir = storage::streaming_pids_dir().expect("streaming dir");
+        std::fs::create_dir_all(&dir).expect("marker dir");
+        assert!(
+            !had_streaming_marker("session_idle_1"),
+            "no marker file means idle"
+        );
+
+        crate::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn leftover_streaming_marker_means_interrupted() {
+        // A marker file left behind (StreamingGuard clears it on every
+        // orderly exit) proves the owner died mid-turn — genuine crash.
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let dir = storage::streaming_pids_dir().expect("streaming dir");
+        std::fs::create_dir_all(&dir).expect("marker dir");
+        std::fs::write(dir.join("session_midturn_1"), "999999").expect("marker");
+        assert!(
+            had_streaming_marker("session_midturn_1"),
+            "leftover marker means interrupted"
+        );
+        assert!(
+            !had_streaming_marker("session_other_1"),
+            "other sessions unaffected"
+        );
+
+        crate::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn exact_resume_resolution_defers_corruption_to_authoritative_load() -> anyhow::Result<()> {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let _home = HomeGuard::set(temp.path());
+        std::fs::create_dir_all(temp.path().join("sessions"))?;
+        for id in ["session_corrupt_1770000000000", "imported_codex_corrupt"] {
+            let path = session_path(id)?;
+            std::fs::write(&path, b"not JSON")?;
+            assert_eq!(find_session_by_name_or_id(id)?, id);
+            assert!(
+                Session::load(id).is_err(),
+                "authoritative load must reject corruption"
+            );
+            assert_eq!(std::fs::read(&path)?, b"not JSON");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_resume_resolution_rejects_paths_and_directories() -> anyhow::Result<()> {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let _home = HomeGuard::set(temp.path());
+        std::fs::create_dir_all(temp.path().join("sessions"))?;
+        std::fs::write(temp.path().join("outside.json"), b"{}")?;
+        std::fs::create_dir(temp.path().join("sessions/session_directory_1770000000000"))?;
+        std::fs::create_dir(
+            temp.path()
+                .join("sessions/session_directory_1770000000000.json"),
+        )?;
+        for query in [
+            "../outside".to_string(),
+            temp.path().join("outside").to_string_lossy().into_owned(),
+            "..\\outside".to_string(),
+            "session_directory_1770000000000".to_string(),
+        ] {
+            assert!(
+                find_session_by_name_or_id(&query).is_err(),
+                "accepted {query:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_resume_resolution_preserves_journal_freshness() -> anyhow::Result<()> {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let _home = HomeGuard::set(temp.path());
+        let id = "session_resume_journal_1770000000000";
+        let mut session = Session::create_with_id(id.to_string(), None, None);
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "x".repeat(1024 * 1024),
+                cache_control: None,
+            }],
+        );
+        session.save()?;
+        let snapshot = std::fs::read(session_path(id)?)?;
+        session.custom_title = Some("Newest journal title".to_string());
+        session.status = SessionStatus::Closed;
+        session.save()?;
+        assert_eq!(std::fs::read(session_path(id)?)?, snapshot);
+        assert_eq!(find_session_by_name_or_id(id)?, id);
+        let loaded = Session::load(id)?;
+        assert_eq!(loaded.custom_title.as_deref(), Some("Newest journal title"));
+        assert!(matches!(loaded.status, SessionStatus::Closed));
+        let stub = Session::load_startup_stub(id)?;
+        assert_eq!(stub.custom_title, loaded.custom_title);
+        assert_eq!(find_session_by_name_or_id("Newest journal title")?, id);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "read-only real local corpus benchmark, requires JCODE_RESUME_BENCH_IDS"]
+    fn benchmark_exact_resume_resolution_real_corpus() -> anyhow::Result<()> {
+        // Run alone with --local and --ignored --nocapture. Never save, restore,
+        // clear caches, or call the full loader (which may recover a backup).
+        // This measures resolution helpers only, NOT end-to-end TUI startup.
+        let ids = std::env::var("JCODE_RESUME_BENCH_IDS")?;
+        for id in ids.split(',') {
+            let path = session_path(id)?;
+            let before = std::fs::metadata(&path)?;
+            let mut old_us = Vec::new();
+            let mut new_us = Vec::new();
+            for _ in 0..9 {
+                let start = std::time::Instant::now();
+                assert!(Session::load_startup_stub(id).is_ok());
+                old_us.push(start.elapsed().as_micros());
+                let start = std::time::Instant::now();
+                assert_eq!(find_session_by_name_or_id(id)?, id);
+                new_us.push(start.elapsed().as_micros());
+            }
+            let after = std::fs::metadata(&path)?;
+            assert_eq!(before.len(), after.len());
+            assert_eq!(before.modified()?, after.modified()?);
+            let first_baseline_us = old_us[0];
+            old_us.sort_unstable();
+            new_us.sort_unstable();
+            println!(
+                "resolution_helper id={id} bytes={} samples=9 baseline_stub_us_p50={} pmax={} exact_stat_us_p50={} pmax={} first_baseline_us={} cache=uncontrolled_no_eviction",
+                before.len(),
+                old_us[4],
+                old_us[8],
+                new_us[4],
+                new_us[8],
+                first_baseline_us
+            );
+        }
+        Ok(())
     }
 
     #[test]

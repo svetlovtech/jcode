@@ -1,5 +1,6 @@
 #[path = "key_handling/rewind.rs"]
 mod rewind;
+mod update;
 use rewind::*;
 
 use super::*;
@@ -7,73 +8,11 @@ use crate::tui::app as app_mod;
 use crate::tui::app::PendingRemoteRewindNotice;
 use crate::tui::core;
 
-pub(in crate::tui::app) fn handle_remote_char_input(app: &mut App, c: char) {
-    input::handle_text_input(app, &c.to_string());
-}
-
-pub(in crate::tui::app) async fn send_interleave_now(
-    app: &mut App,
-    content: String,
-    images: Vec<(String, String)>,
-    remote: &mut RemoteConnection,
-) {
-    if content.trim().is_empty() {
-        return;
-    }
-    // Fork: a pending ask_user prompt turns this interleave into the answer
-    // (Request::StdinResponse) so the blocking tool unblocks immediately.
-    if app.fork_ask.has_pending_prompt() {
-        app.fork_ask_ops()
-            .send_typed_answer(remote, content.trim())
-            .await;
-        return;
-    }
-
-    let msg_clone = content.clone();
-    match remote.soft_interrupt(content, images, false).await {
-        Err(e) => {
-            app.push_display_message(DisplayMessage::error(format!(
-                "Failed to send interleave: {}",
-                e
-            )));
-        }
-        Ok(request_id) => {
-            app.track_pending_soft_interrupt(request_id, msg_clone);
-            app.set_status_notice("⏭ Interleave sent");
-        }
-    }
-}
-
-pub(in crate::tui::app) async fn handle_remote_update_command(
-    app: &mut App,
-    remote: &mut RemoteConnection,
-) -> Result<()> {
-    if crate::tui::is_ssh_remote() {
-        app.set_status_notice("Update the client and SSH server separately, then reconnect");
-        return Ok(());
-    }
-    reload_stale_remote_server_before_update(app, remote).await?;
-
-    let session_id = app
-        .remote_session_id
-        .clone()
-        .unwrap_or_else(|| crate::id::new_id("ses"));
-    app.start_background_client_update(session_id);
-    Ok(())
-}
-
-pub(in crate::tui::app) async fn reload_stale_remote_server_before_update(
-    app: &mut App,
-    remote: &mut RemoteConnection,
-) -> Result<bool> {
-    if app.remote_server_has_update != Some(true) {
-        return Ok(false);
-    }
-
-    app.append_reload_message("Reloading stale server before checking for client updates...");
-    remote.reload().await?;
-    Ok(true)
-}
+#[cfg(test)]
+pub(in crate::tui::app) use update::reload_stale_remote_server_before_update;
+pub(in crate::tui::app) use update::{
+    handle_remote_char_input, handle_remote_update_command, send_interleave_now,
+};
 
 /// Step the remote session's speed tier (Standard -> Fast -> Ultrafast).
 async fn apply_remote_speed_direction(
@@ -81,9 +20,13 @@ async fn apply_remote_speed_direction(
     remote: &mut RemoteConnection,
     direction: i8,
 ) -> Result<()> {
-    use jcode_provider_core::service_tier::{speed_tier_ladder, step_speed_tier};
+    use jcode_provider_core::service_tier::{speed_tier_ladder_with_capabilities, step_speed_tier};
     let (provider_name, provider_model) = app.remote_effort_identity();
-    let ladder = speed_tier_ladder(provider_name.as_deref(), provider_model.as_deref());
+    let ladder = speed_tier_ladder_with_capabilities(
+        provider_name.as_deref(),
+        provider_model.as_deref(),
+        app.remote_available_service_tiers.as_deref(),
+    );
     let Some((index, next, at_end)) =
         step_speed_tier(&ladder, app.remote_service_tier.as_deref(), direction)
     else {
@@ -99,9 +42,23 @@ async fn apply_remote_speed_direction(
         ));
         return Ok(());
     }
-    app.set_status_notice(app_mod::speed_tier_notice(next, index, ladder.len(), None));
-    remote.set_service_tier(next).await?;
+    request_remote_service_tier(app, remote, next).await?;
     Ok(())
+}
+
+async fn request_remote_service_tier(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+    tier: &str,
+) -> Result<()> {
+    // A transient notice acknowledges input without claiming configuration or
+    // provider acceptance. The server acknowledgement replaces it, so fast
+    // round trips do not add a second transcript message.
+    app.set_status_notice(format!(
+        "Speed: {} requested (waiting for server)",
+        app_mod::service_tier_display_label(tier)
+    ));
+    remote.set_service_tier(tier).await
 }
 
 async fn apply_remote_effort_direction(
@@ -224,18 +181,13 @@ async fn handle_remote_key_internal(
     remote: &mut RemoteConnection,
     text_input: Option<String>,
 ) -> Result<()> {
+    app.wake_idle_hibernation();
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
-    if app.pending_provider_failover.is_some() && !app.is_processing {
-        if code == KeyCode::Esc {
-            app.cancel_pending_provider_failover("Provider auto-switch canceled");
-            return Ok(());
-        }
-        if !input::is_scroll_only_key(app, code, modifiers) {
-            app.cancel_pending_provider_failover("Provider auto-switch canceled");
-        }
+    if app.handle_key_during_provider_failover(code) {
+        return Ok(());
     }
 
     if app.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
@@ -543,7 +495,9 @@ async fn handle_remote_key_internal(
     }
     {
         use crate::tui::TuiState as _;
-        if app.swarm_panel_focused() && app.handle_swarm_panel_key(code, modifiers) {
+        if app.handle_swarm_agent_shortcut(code, modifiers)
+            || (app.swarm_panel_focused() && app.handle_swarm_panel_key(code, modifiers))
+        {
             return Ok(());
         }
     }
@@ -636,6 +590,10 @@ async fn handle_remote_key_internal(
             }
             KeyCode::Char('v') => {
                 app.paste_from_clipboard();
+                return Ok(());
+            }
+            KeyCode::Char('e') => {
+                input::handle_alt_key(app, KeyCode::Char('e'));
                 return Ok(());
             }
             _ => {}
@@ -1062,6 +1020,20 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
         return Ok(());
     }
     if !app.input.is_empty() {
+        let command = input::expand_paste_placeholders(app, &app.input)
+            .trim()
+            .to_string();
+        if !app_mod::commands_cloud::check_cloud_handoff_input(app, &command) {
+            return Ok(());
+        }
+        if app.cloud_handoff_blocks_work()
+            && app_mod::commands_cloud::parse_cloud_command(app.input.trim()).is_none()
+        {
+            app.set_status_notice(
+                "Cloud handoff pending. Use /cloud cancel before submitting more work.",
+            );
+            return Ok(());
+        }
         let prepared = input::take_prepared_input(app);
         let trimmed = prepared.expanded.trim();
 
@@ -1072,13 +1044,33 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             if crate::tui::is_ssh_remote()
                 && matches!(
                     app_mod::commands_cloud::parse_cloud_command(trimmed),
-                    Some(app_mod::commands_cloud::CloudCommand::Move { .. })
+                    Some(
+                        app_mod::commands_cloud::CloudCommand::Move { .. }
+                            | app_mod::commands_cloud::CloudCommand::MoveSelected { .. }
+                    )
                 )
             {
                 app.push_display_message(DisplayMessage::error(
                             "This session already runs on a remote host. Use /local to bring it back first.".to_string(),
                         ));
                 return Ok(());
+            }
+            if matches!(
+                app_mod::commands_cloud::parse_cloud_command(trimmed),
+                Some(
+                    app_mod::commands_cloud::CloudCommand::Move { .. }
+                        | app_mod::commands_cloud::CloudCommand::MoveSelected { .. }
+                )
+            ) {
+                // A fresh session is not on disk until its first message, and
+                // `jcode cloud move` loads it from disk. The daemon holds the
+                // model, effort and account, so ask it to write the file now.
+                if let Err(error) = remote.persist_session().await {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Could not save this session before moving it: {error}. Nothing moved."
+                    )));
+                    return Ok(());
+                }
             }
             app_mod::commands_cloud::handle_cloud_command(app, trimmed, &session_id);
             return Ok(());
@@ -1412,11 +1404,11 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             match mode.as_str() {
                 "on" => {
                     app_mod::auth::save_openai_fast_setting_local(app, true);
-                    remote.set_service_tier("priority").await?;
+                    request_remote_service_tier(app, remote, "priority").await?;
                 }
                 "off" => {
                     app_mod::auth::save_openai_fast_setting_local(app, false);
-                    remote.set_service_tier("off").await?;
+                    request_remote_service_tier(app, remote, "off").await?;
                 }
                 "status" => {
                     let default_tier = crate::config::Config::load().provider.openai_service_tier;
@@ -1494,7 +1486,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                     return Ok(());
                 }
             };
-            remote.set_service_tier(service_tier).await?;
+            request_remote_service_tier(app, remote, service_tier).await?;
             return Ok(());
         }
 

@@ -544,11 +544,7 @@ fn effort_display_label_with_root<'a>(effort: &'a str, root: Option<&str>) -> &'
         };
     }
     match effort {
-        "swarm" => swarm_label!("Swarm", "light fan-out"),
-        "swarm-deep" => swarm_label!(
-            "☢ Swarm Deep",
-            "task graph, WARNING: recursive agents / high token cost"
-        ),
+        "swarm" => swarm_label!("Swarm", "parallel agents"),
         "max" => "Max",
         "xhigh" => "xHigh",
         "high" => "High",
@@ -624,11 +620,14 @@ pub(super) fn fast_mode_success_message(
     let status = if enabled { "on" } else { "off" };
     if applies_next_request {
         format!(
-            "✓ Fast mode {} ({})\nApplies to the next request/turn. The current in-flight request keeps its existing tier.",
+            "✓ Fast mode configured {} ({})\nRequested for the next provider request, including later in this turn. The current in-flight request is unchanged. Provider acceptance is not yet confirmed.",
             status, label
         )
     } else {
-        format!("✓ Fast mode {} ({})", status, label)
+        format!(
+            "✓ Fast mode configured {} ({})\nRequested for the next provider request. Provider acceptance is not yet confirmed.",
+            status, label
+        )
     }
 }
 
@@ -671,6 +670,35 @@ pub(super) fn fast_mode_default_message(default_enabled: bool, default_label: &s
     )
 }
 
+/// Suffix for "Switched to model" notices: auth method plus the masked
+/// account email (e.g. `j***y@gmail.com`) when the route uses OAuth, so the
+/// account is recognizable without exposing the full address on screen.
+pub(crate) fn switched_model_account_suffix(
+    auth_label: Option<&str>,
+    oauth_email: Option<&str>,
+) -> String {
+    let email = oauth_email
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(mask_email);
+    match (auth_label, email) {
+        (Some(label), Some(email)) => format!(" (via {label} · {email})"),
+        (Some(label), None) => format!(" (via {label})"),
+        (None, Some(email)) => format!(" ({email})"),
+        (None, None) => String::new(),
+    }
+}
+
+/// Notice after switching the active saved account. The switch rebinds this
+/// session and becomes the default for new sessions, but other sessions that
+/// are already running keep the credentials they loaded.
+pub(super) fn account_switch_notice(provider: &str, label: &str) -> String {
+    format!(
+        "Switched {provider} account to `{label}` for this session and new sessions. \
+         Other running sessions keep their current account until they reload."
+    )
+}
+
 pub(super) fn mask_email(email: &str) -> String {
     let trimmed = email.trim();
     let Some((local, domain)) = trimmed.split_once('@') else {
@@ -697,6 +725,11 @@ pub(super) fn mask_email(email: &str) -> String {
 /// Spawn a new terminal window that resumes a jcode session.
 /// Returns Ok(true) if a terminal was successfully launched, Ok(false) if no terminal found.
 fn resume_invocation_args(session_id: &str, socket: Option<&str>) -> Vec<String> {
+    if let Some(lease) = crate::storage::read_session_lease(session_id)
+        && let Some(host) = lease.away_host
+    {
+        return remote_resume_invocation_args(session_id, &host, lease.repo_root.as_deref());
+    }
     let mut args = vec![
         "--fresh-spawn".to_string(),
         "--resume".to_string(),
@@ -706,6 +739,22 @@ fn resume_invocation_args(session_id: &str, socket: Option<&str>) -> Vec<String>
         args.push("--socket".to_string());
         args.push(socket.to_string());
     }
+    args
+}
+
+fn remote_resume_invocation_args(
+    session_id: &str,
+    host: &str,
+    working_dir: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec!["--fresh-spawn".into(), "--ssh".into(), host.into()];
+    if let Ok(binary) = std::env::var("JCODE_CLOUD_REMOTE_BINARY") {
+        args.extend(["--ssh-binary".into(), binary]);
+    }
+    if let Some(dir) = working_dir {
+        args.extend(["--remote-working-dir".into(), dir.into()]);
+    }
+    args.extend(["--resume".into(), session_id.into()]);
     args
 }
 
@@ -794,8 +843,14 @@ fn spawn_command_in_new_terminal(
         // tests is the libtest harness and would pop up a broken window.
         return Ok(false);
     }
-    let command = crate::terminal_launch::TerminalCommand::new(program, args.to_vec())
+    let mut command = crate::terminal_launch::TerminalCommand::new(program, args.to_vec())
         .title(title.to_string());
+    if args.iter().any(|arg| arg == "--ssh") {
+        // Resuming is an attachment, never a request to start another turn.
+        command = command
+            .spawn_env("JCODE_CLOUD_CONTINUE_MESSAGE", "")
+            .spawn_env("JCODE_CLOUD_HANDOFF_PREVIEW_SESSION", "");
+    }
     crate::terminal_launch::spawn_command_in_new_terminal(&command, cwd)
 }
 
@@ -1248,8 +1303,9 @@ pub(crate) fn prime_git_info(budget: Duration) {
 }
 
 /// Fetch a session's todos plus its goal-level assessments through the same
-/// stale-while-revalidate cache, so the info widget can render goal metadata
+/// stale-while-revalidate cache for consumers that need goal metadata
 /// (closed feedback loop and objectives) without extra disk reads per frame.
+#[cfg(test)]
 pub(super) fn gather_todos_and_goals_for_session(
     session_id: Option<&str>,
 ) -> (Vec<TodoItem>, Vec<crate::todo::TodoGoal>) {
@@ -1742,3 +1798,7 @@ pub(crate) fn porcelain_status_letter(index: u8, worktree: u8) -> char {
         _ => 'M',
     }
 }
+
+#[cfg(test)]
+#[path = "helpers/account_notice_tests.rs"]
+mod account_notice_tests;

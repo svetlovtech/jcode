@@ -477,7 +477,21 @@ pub fn parse_openai_response_event(
         }
     };
 
+    if matches!(
+        event.kind.as_str(),
+        "response.completed" | "response.incomplete"
+    ) && let Some(response) = event.response.as_ref()
+    {
+        jcode_logging::info(&format!(
+            "OPENAI_CACHE_RESPONSE: {}",
+            cache_response_evidence(response)
+        ));
+    }
+
     match event.kind.as_str() {
+        "response.created" => {
+            return event.response.as_ref().and_then(extract_service_tier);
+        }
         "response.output_text.delta" => {
             if let Some(delta) = event.delta {
                 *saw_text_delta = true;
@@ -492,6 +506,13 @@ pub fn parse_openai_response_event(
         }
         "response.reasoning.done" | "response.output_item.added" => {
             if let Some(item) = &event.item {
+                if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+                    return Some(StreamEvent::ProviderNative {
+                        provider: jcode_message_types::provider_native::PROVIDER_NATIVE_OPENAI
+                            .to_string(),
+                        item: item.clone(),
+                    });
+                }
                 if item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
                     return Some(StreamEvent::ThinkingStart);
                 }
@@ -601,6 +622,9 @@ pub fn parse_openai_response_event(
             return pending.pop_front();
         }
         "response.completed" => {
+            if let Some(tier) = event.response.as_ref().and_then(extract_service_tier) {
+                pending.push_back(tier);
+            }
             let stop_reason = event
                 .response
                 .as_ref()
@@ -629,6 +653,53 @@ pub fn parse_openai_response_event(
     }
 
     None
+}
+
+// Keep this explicitly allowlisted. Never log the response body: it can contain
+// user text, tool arguments, encrypted reasoning, and provider-private fields.
+fn cache_response_evidence(response: &Value) -> Value {
+    let identifier = |field: &str| {
+        response.get(field).and_then(Value::as_str).filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-._/".contains(&c))
+        })
+    };
+    let usage = response.get("usage");
+    let diagnostic = response.get("prompt_cache_diagnostics");
+    let allowed_diagnostic = |field: &str, allowed: &[&str]| {
+        diagnostic
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_str)
+            .filter(|value| allowed.contains(value))
+            .map(str::to_owned)
+    };
+    serde_json::json!({
+        "response_id_hash": response.get("id").and_then(Value::as_str)
+            .map(|id| jcode_provider_core::fingerprint::stable_hash_json(&Value::String(id.to_owned()))),
+        "model": identifier("model"),
+        "service_tier": identifier("service_tier"),
+        "input_tokens": usage.and_then(|value| value.get("input_tokens")).and_then(Value::as_u64),
+        "cached_tokens": usage.and_then(|value| extract_input_token_detail(value, "cached_tokens")),
+        "cache_write_tokens": usage.and_then(|value| extract_input_token_detail(value, "cache_write_tokens")),
+        "diagnostic_type": allowed_diagnostic("type", &["cache_hit", "cache_miss", "comparison_response_not_found", "unavailable"]),
+        "diagnostic_reason": allowed_diagnostic("reason", &[
+            "model_changed", "prompt_cache_key_changed", "service_tier_changed", "tools_changed",
+            "text_format_changed", "reasoning_effort_changed", "verbosity_changed", "context_compacted", "input_changed",
+        ]),
+        "comparison_reusable_tokens": diagnostic.and_then(|value| value.get("comparison_reusable_tokens")).and_then(Value::as_u64),
+        "cache_missed_tokens": diagnostic.and_then(|value| value.get("cache_missed_tokens")).and_then(Value::as_u64),
+    })
+}
+
+fn extract_service_tier(response: &Value) -> Option<StreamEvent> {
+    let tier = response.get("service_tier")?.as_str()?.trim();
+    (!tier.is_empty()).then(|| StreamEvent::ServiceTier {
+        tier: tier.to_string(),
+        requested: None,
+    })
 }
 
 fn extract_last_assistant_message_phase(response: &Value) -> Option<String> {
@@ -1005,7 +1076,8 @@ fn extract_input_token_detail(usage: &Value, field: &str) -> Option<u64> {
         .find_map(|key| usage.get(key)?.get(field)?.as_u64())
 }
 
-fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
+/// Extract provider counters without converting inclusive OpenAI input totals.
+pub fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
     let usage = response.get("usage")?;
     let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64());
     let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64());
@@ -1071,41 +1143,5 @@ mod stream_tool_tests;
 mod stream_citation_tests;
 
 #[cfg(test)]
-mod text_framing_tests {
-    use super::*;
-
-    #[test]
-    fn output_item_completion_frames_messages_not_reasoning_or_text_chunks() {
-        let mut saw_text = false;
-        let mut saw_thinking = false;
-        let mut tools = HashMap::new();
-        let mut completed = HashSet::new();
-        let mut pending = VecDeque::new();
-        let mut events = Vec::new();
-        for value in [
-            serde_json::json!({"type":"response.output_text.delta","delta":"The cause is "}),
-            serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}),
-            serde_json::json!({"type":"response.output_text.delta","delta":"the retry loop."}),
-            serde_json::json!({"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"The cause is the retry loop."}]}}),
-            // This message has no text delta. Per-message deduplication must
-            // allow fallback output even though the preceding message streamed.
-            serde_json::json!({"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"Second message"}]}}),
-            serde_json::json!({"type":"response.completed","response":{}}),
-        ] {
-            events.extend(parse_openai_response_event(
-                &value.to_string(),
-                &mut saw_text,
-                &mut saw_thinking,
-                &mut tools,
-                &mut completed,
-                &mut pending,
-            ));
-            events.extend(pending.drain(..));
-        }
-        assert!(matches!(events.as_slice(), [
-            StreamEvent::TextDelta(a), StreamEvent::ThinkingDelta(_), StreamEvent::TextDelta(b),
-            StreamEvent::TextDone, StreamEvent::TextDelta(c), StreamEvent::TextDone,
-            StreamEvent::MessageEnd { .. }
-        ] if a == "The cause is " && b == "the retry loop." && c == "Second message"));
-    }
-}
+#[path = "text_framing_tests.rs"]
+mod text_framing_tests;

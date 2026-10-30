@@ -5,6 +5,7 @@ use crate::tui::app as app_mod;
 use crate::tui::app::remote::input_dispatch::restore_pending_startup_prompt_echo;
 use crate::tui::app::remote::swarm_plan_core::RemoteSwarmPlanSnapshot;
 use crate::tui::app::remote::swarm_status_core::swarm_status_transition_notice;
+use crate::tui::app::{KvCacheMissReason, KvCacheMissSample};
 
 fn allow_runtime_identity_mismatch() -> bool {
     std::env::var_os("JCODE_ALLOW_SERVER_VERSION_MISMATCH").is_some()
@@ -127,6 +128,126 @@ fn should_defer_history_for_runtime_identity(
         client_detected_stale,
         allow_runtime_identity_mismatch(),
     )
+}
+
+#[cfg(test)]
+#[path = "kv_cache_miss_tests.rs"]
+mod kv_cache_miss_tests;
+
+fn handle_kv_cache_miss(
+    app: &mut App,
+    reason: &str,
+    missed_tokens: u64,
+    message: String,
+    notices_enabled: bool,
+) -> bool {
+    // TokenUsage normally records the local classification first. Do not
+    // duplicate that notice, but do not require a baseline after reconnect.
+    if let Some(turn_number) = app.kv_cache.kv_cache_turn_number {
+        let call_index = app.kv_cache.kv_cache_turn_call_index;
+        if let Some(sample) = app
+            .kv_cache
+            .kv_cache_miss_samples
+            .iter_mut()
+            .find(|sample| sample.turn_number == turn_number && sample.call_index == call_index)
+        {
+            // The daemon can have complete request fingerprints after a
+            // reconnect while the client only has provisional usage telemetry.
+            // Upgrade evidence in place without losing local turn/hit counters.
+            if notices_enabled
+                && matches!(reason, "low_read" | "zero_read")
+                && matches!(
+                    sample.reason,
+                    KvCacheMissReason::LowRead | KvCacheMissReason::ZeroRead
+                )
+                && message.contains("] [prefix unchanged]")
+            {
+                let marker = format!("turn {turn_number} call {call_index}:");
+                if let Some(idx) = app.display_messages.iter().rposition(|entry| {
+                    entry.role == "system"
+                        && entry.content.contains("KV cache miss [")
+                        && entry.content.contains(&marker)
+                        && !entry.content.contains("] [prefix unchanged]")
+                }) {
+                    let tagged = app.display_messages[idx].content.replacen(
+                        "] ",
+                        "] [prefix unchanged] ",
+                        1,
+                    );
+                    return app.replace_display_message_content(idx, tagged);
+                }
+            }
+            // TokenUsage can arrive before the daemon's native-compaction
+            // attribution. Correct that provisional local notice in place,
+            // rather than deduplicating away the more authoritative cause.
+            // Daily rollover is attributed by the daemon from its own request
+            // clock, so it likewise corrects a provisional local low-read.
+            let authoritative = match reason {
+                "compaction" => Some(KvCacheMissReason::Compaction),
+                "daily_rollover" => Some(KvCacheMissReason::DailyRollover),
+                // The daemon knows the account actually used after a failover.
+                "account_switch" => Some(KvCacheMissReason::AccountSwitch),
+                // Never retain a provisional unchanged-prefix tag when the
+                // daemon detected a real change in its request fingerprints.
+                "system_changed" => Some(KvCacheMissReason::HarnessSystemChanged),
+                "tools_changed" => Some(KvCacheMissReason::HarnessToolsChanged),
+                "prefix_changed" => Some(KvCacheMissReason::HarnessPrefixChanged),
+                _ => None,
+            };
+            if let Some(authoritative) = authoritative
+                && sample.reason != authoritative
+            {
+                sample.reason = authoritative;
+                sample.missed_tokens = missed_tokens;
+                if notices_enabled {
+                    let marker = format!("turn {turn_number} call {call_index}:");
+                    if let Some(idx) = app.display_messages.iter().rposition(|entry| {
+                        entry.role == "system"
+                            && entry.content.contains("KV cache miss [")
+                            && entry.content.contains(&marker)
+                    }) {
+                        return app.replace_display_message_content(idx, message);
+                    }
+                    app.push_kv_cache_notice(message);
+                    return true;
+                }
+            }
+            return false;
+        }
+        let reason = match reason {
+            "compaction" => KvCacheMissReason::Compaction,
+            "provider_switch" => KvCacheMissReason::ProviderSwitch,
+            "account_switch" => KvCacheMissReason::AccountSwitch,
+            "model_switch" => KvCacheMissReason::ModelSwitch,
+            "upstream_switch" => KvCacheMissReason::UpstreamSwitch,
+            "expired" => KvCacheMissReason::Expired,
+            "daily_rollover" => KvCacheMissReason::DailyRollover,
+            "system_changed" => KvCacheMissReason::HarnessSystemChanged,
+            "tools_changed" => KvCacheMissReason::HarnessToolsChanged,
+            "prefix_changed" => KvCacheMissReason::HarnessPrefixChanged,
+            "zero_read" => KvCacheMissReason::ZeroRead,
+            "low_read" => KvCacheMissReason::LowRead,
+            _ => KvCacheMissReason::Unknown,
+        };
+        app.kv_cache.kv_cache_miss_samples.push(KvCacheMissSample {
+            turn_number,
+            call_index,
+            missed_tokens,
+            reason,
+        });
+        let overflow = app
+            .kv_cache
+            .kv_cache_miss_samples
+            .len()
+            .saturating_sub(App::KV_CACHE_MAX_MISS_SAMPLES);
+        app.kv_cache.kv_cache_miss_samples.drain(..overflow);
+    }
+    if notices_enabled {
+        // Use the normal transcript insertion path for chronological insertion.
+        app.push_kv_cache_notice(message);
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -293,159 +414,39 @@ fn history_images_match_retained(
 }
 
 #[cfg(test)]
-mod history_dedup_tests {
-    use super::{
-        AppliedHistoryFingerprint, history_images_match_retained, history_payload_fingerprint,
-        should_skip_identical_history_payload,
-    };
-    use crate::protocol::HistoryMessage;
-    use crate::session::{RenderedImage, RenderedImageSource};
-
-    fn message(role: &str, content: &str) -> HistoryMessage {
-        HistoryMessage {
-            response_stats: None,
-            role: role.to_string(),
-            content: content.to_string(),
-            tool_calls: None,
-            tool_data: None,
-            timestamp: None,
-            tool_duration_ms: None,
-        }
-    }
-
-    fn image(data: &str) -> RenderedImage {
-        RenderedImage {
-            history_message_index: None,
-            media_type: "image/png".to_string(),
-            data: data.to_string(),
-            label: None,
-            source: RenderedImageSource::UserInput,
-            anchor: None,
-        }
-    }
-
-    #[test]
-    fn identical_payloads_fingerprint_equal() {
-        let a = vec![message("user", "hi"), message("assistant", "hello")];
-        let b = vec![message("user", "hi"), message("assistant", "hello")];
-        assert_eq!(
-            history_payload_fingerprint(&a),
-            history_payload_fingerprint(&b)
-        );
-    }
-
-    #[test]
-    fn fingerprint_changes_on_content_role_count_and_tool_data() {
-        let base = vec![message("user", "hi"), message("assistant", "hello")];
-        let fp = history_payload_fingerprint(&base);
-
-        let content = vec![message("user", "hi"), message("assistant", "hello!")];
-        assert_ne!(fp, history_payload_fingerprint(&content));
-
-        let role = vec![message("user", "hi"), message("system", "hello")];
-        assert_ne!(fp, history_payload_fingerprint(&role));
-
-        let count = vec![message("user", "hi")];
-        assert_ne!(fp, history_payload_fingerprint(&count));
-
-        let mut tool = base.clone();
-        tool[1].tool_data = Some(super::ToolCall {
-            id: "t1".to_string(),
-            name: "bash".to_string(),
-            input: serde_json::json!({"command": "ls"}),
-            intent: None,
-            thought_signature: None,
-        });
-        assert_ne!(fp, history_payload_fingerprint(&tool));
-
-        // Same tool call with different input must differ too.
-        let mut tool_other = tool.clone();
-        tool_other[1].tool_data.as_mut().unwrap().input = serde_json::json!({"command": "pwd"});
-        assert_ne!(
-            history_payload_fingerprint(&tool),
-            history_payload_fingerprint(&tool_other)
-        );
-    }
-
-    #[test]
-    fn skip_decision_requires_same_session_same_fingerprint_and_intact_display() {
-        let entry = AppliedHistoryFingerprint {
-            session_id: "ses_a".to_string(),
-            fingerprint: 42,
-        };
-
-        // Exact match with intact display and unchanged session -> skip.
-        assert!(should_skip_identical_history_payload(
-            false,
-            false,
-            Some(&entry),
-            "ses_a",
-            42
-        ));
-        // Session switch must always re-apply.
-        assert!(!should_skip_identical_history_payload(
-            true,
-            false,
-            Some(&entry),
-            "ses_a",
-            42
-        ));
-        // A cleared display must be repopulated even for an identical payload.
-        assert!(!should_skip_identical_history_payload(
-            false,
-            true,
-            Some(&entry),
-            "ses_a",
-            42
-        ));
-        // Different session id -> re-apply.
-        assert!(!should_skip_identical_history_payload(
-            false,
-            false,
-            Some(&entry),
-            "ses_b",
-            42
-        ));
-        // Different payload (e.g. rewind truncation) -> re-apply.
-        assert!(!should_skip_identical_history_payload(
-            false,
-            false,
-            Some(&entry),
-            "ses_a",
-            43
-        ));
-        // Nothing applied yet -> re-apply.
-        assert!(!should_skip_identical_history_payload(
-            false, false, None, "ses_a", 42
-        ));
-    }
-
-    #[test]
-    fn images_match_retained_compares_count_and_lengths() {
-        let retained = vec![image("aaaa"), image("bbbbbb")];
-        let same = vec![image("aaaa"), image("bbbbbb")];
-        assert!(history_images_match_retained(&same, &retained));
-        // Length-only comparison: equal lengths count as identical.
-        let same_len = vec![image("cccc"), image("dddddd")];
-        assert!(history_images_match_retained(&same_len, &retained));
-
-        assert!(!history_images_match_retained(&[], &retained));
-        let fewer = vec![image("aaaa")];
-        assert!(!history_images_match_retained(&fewer, &retained));
-        let diff_len = vec![image("aaaa"), image("bbbbb")];
-        assert!(!history_images_match_retained(&diff_len, &retained));
-        let mut diff_meta = vec![image("aaaa"), image("bbbbbb")];
-        diff_meta[0].media_type = "image/jpeg".to_string();
-        assert!(!history_images_match_retained(&diff_meta, &retained));
-        assert!(history_images_match_retained(&[], &[]));
-    }
-}
+#[path = "server_events/history_dedup_tests.rs"]
+mod history_dedup_tests;
 
 pub(in crate::tui::app) fn handle_server_event(
     app: &mut App,
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    // Pure presence/catalog/telemetry traffic must not defeat a 30-minute idle
+    // period. Every other event may mutate the transcript or start active work.
+    if !matches!(
+        &event,
+        ServerEvent::Pong { .. }
+            | ServerEvent::Ack { .. }
+            | ServerEvent::SwarmStatus { .. }
+            | ServerEvent::SidePanelState { .. }
+            | ServerEvent::AccountUsage { .. }
+            | ServerEvent::ModelUsageUpdated { .. }
+            | ServerEvent::AvailableModelsUpdated { .. }
+            | ServerEvent::MemoryActivity { .. }
+            | ServerEvent::McpStatus { .. }
+    ) {
+        let reason = match &event {
+            ServerEvent::History { .. } => "server_history",
+            ServerEvent::SidePaneImages { .. } => "server_images",
+            ServerEvent::SwarmPlan { .. } => "server_swarm_plan",
+            ServerEvent::Notification { .. } => "server_notification",
+            ServerEvent::ModelChanged { .. } => "server_model_changed",
+            ServerEvent::AgentModelsChanged { .. } => "server_agent_models_changed",
+            _ => "server_event",
+        };
+        app.wake_idle_hibernation_for(reason);
+    }
     if let ServerEvent::Done { id } = &event
         && app.usage_reset.invalidate_requests.remove(id).is_some()
     {
@@ -493,6 +494,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 | ServerEvent::StatusDetail { .. }
         );
     if externally_started_turn_event {
+        app.streaming.response_output.reset();
         crate::logging::info(
             "Adopting externally started turn: stream event received while idle with no current_message_id",
         );
@@ -536,12 +538,16 @@ pub(in crate::tui::app) fn handle_server_event(
 
     match event {
         ServerEvent::TextDelta { text } => {
+            if !text.is_empty() {
+                app.usage_reset.openai_quota_rejected = false;
+            }
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
                 app.insert_thought_line(thought_line);
                 return eager_stream_redraw;
             }
+            app.streaming.response_output.text(&text);
             let mut needs_redraw = false;
             if matches!(
                 app.status,
@@ -562,6 +568,7 @@ pub(in crate::tui::app) fn handle_server_event(
             eager_stream_redraw && needs_redraw
         }
         ServerEvent::TextReplace { text } => {
+            app.streaming.response_output.replace_text(&text);
             let ops = app.stream_buffer.flush();
             app.apply_stream_ops(ops);
             app.replace_streaming_text(text);
@@ -616,6 +623,8 @@ pub(in crate::tui::app) fn handle_server_event(
             eager_stream_redraw
         }
         ServerEvent::ToolStart { id, name } => {
+            app.streaming.response_output.tool();
+            app.usage_reset.openai_quota_rejected = false;
             // Tool-call JSON is provider-generated output and is included in output-token
             // usage. Keep the TPS timer running until the server reports ToolExec; actual
             // tool execution time is excluded after that point.
@@ -638,9 +647,21 @@ pub(in crate::tui::app) fn handle_server_event(
         }
         ServerEvent::ToolInput { id, delta } => {
             remote.handle_tool_input(id.as_deref(), &delta);
+            if let Some(id) = id.as_deref() {
+                let input = remote.get_tool_input(id);
+                if !input.is_null()
+                    && let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id)
+                {
+                    tc.input = input;
+                    tc.refresh_intent_from_input();
+                }
+            }
             false
         }
         ServerEvent::ToolExec { id, name } => {
+            // A reconnect can resume during execution, without replaying the
+            // ToolStart event that normally marks this response as tool work.
+            app.streaming.response_output.tool();
             // Provider output generation for this tool call is complete, but final usage
             // snapshots often arrive later. Keep collecting deltas while excluding tool
             // runtime from the elapsed TPS denominator.
@@ -696,6 +717,18 @@ pub(in crate::tui::app) fn handle_server_event(
             app.batch_progress = Some(progress);
             false
         }
+        ServerEvent::KvCacheMiss {
+            reason,
+            missed_tokens,
+            message,
+            ..
+        } => handle_kv_cache_miss(
+            app,
+            &reason,
+            missed_tokens,
+            message,
+            crate::config::config().features.kv_cache_miss_notices,
+        ),
         ServerEvent::TokenUsage {
             input,
             output,
@@ -833,16 +866,21 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.streaming.streaming_cache_read_tokens.unwrap_or(0),
                     app.streaming.streaming_cache_creation_tokens.unwrap_or(0),
                 );
-                if let Some(baseline) = app.kv_cache.kv_cache_baseline.as_mut() {
-                    // Store the effective prompt (input + read + creation): for
-                    // split-accounting providers bare `input` is only the
-                    // uncached remainder, while the whole effective prompt is
-                    // what gets resent when the cache goes cold.
-                    baseline.input_tokens = effective_prompt_tokens;
+                let reusable_tokens = crate::compaction::reusable_cache_tokens_from_usage(
+                    &app.kv_cache_provider_name(),
+                    input,
+                    app.streaming.streaming_cache_read_tokens,
+                    app.streaming.streaming_cache_creation_tokens,
+                );
+                if let Some(baseline) = app.kv_cache.kv_cache_baseline.as_mut()
+                    && baseline.cache_generation == app.kv_cache.cache_generation
+                {
+                    // Late snapshots refine the written boundary, not the
+                    // uncached tail. Never recreate an invalidated baseline.
+                    baseline.input_tokens = reusable_tokens;
                     baseline.completed_at = Instant::now();
+                    app.token_accounting.cache_next_optimal_input_tokens = Some(reusable_tokens);
                 }
-                app.token_accounting.cache_next_optimal_input_tokens =
-                    Some(effective_prompt_tokens);
                 app.last_api_completed = Some(Instant::now());
                 app.last_api_completed_provider = Some(<App as TuiState>::provider_name(app));
                 app.last_api_completed_model = Some(<App as TuiState>::provider_model(app));
@@ -924,8 +962,52 @@ pub(in crate::tui::app) fn handle_server_event(
             app.status_detail = Some(detail);
             eager_stream_redraw
         }
+        ServerEvent::ServiceTierReported { requested, tier } => {
+            // `auto` is an unresolved routing policy, not the tier ultimately
+            // used for a response. It can precede a resolved `default` report
+            // on every request. Do not turn that into a mismatch, replace a
+            // resolved report, or consume an explicit confirmation request.
+            if tier == "auto" {
+                return false;
+            }
+            // An older in-flight response must not confirm a newly requested tier.
+            if app_mod::service_tier_display_label(requested.as_deref().unwrap_or("default"))
+                != app_mod::service_tier_display_label(
+                    app.remote_service_tier.as_deref().unwrap_or("default"),
+                )
+            {
+                return false;
+            }
+            let report = (requested.clone(), tier.clone());
+            let pending = std::mem::take(&mut app.remote_service_tier_confirmation_pending);
+            if app.remote_reported_service_tier.as_ref() == Some(&report) && !pending {
+                return false;
+            }
+            app.remote_reported_service_tier = Some(report);
+            let requested_label = requested.as_deref().unwrap_or("default");
+            let matches = requested_label == tier
+                || (matches!(requested_label, "priority" | "fast")
+                    && matches!(tier.as_str(), "priority" | "fast"))
+                || (matches!(requested_label, "off" | "auto" | "default")
+                    && matches!(tier.as_str(), "default" | "standard"));
+            // Keep the badge current on every report, but only interrupt the
+            // transcript when confirming an explicit speed change.
+            if pending {
+                let message = if matches {
+                    format!("Provider reports service tier: {tier}.")
+                } else {
+                    format!(
+                        "Requested {requested_label}, but provider reports {tier}. Requested speed is not confirmed."
+                    )
+                };
+                app.push_display_message(DisplayMessage::system(message.clone()));
+                app.set_status_notice(message);
+            }
+            true
+        }
         ServerEvent::TextDone => false,
-        ServerEvent::MessageEnd { .. } => {
+        ServerEvent::MessageEnd { stop_reason } => {
+            app.streaming.response_output.finish(stop_reason.as_deref());
             app.pause_streaming_tps(true);
             app.stream_message_ended = true;
             true
@@ -1171,7 +1253,9 @@ pub(in crate::tui::app) fn handle_server_event(
                     "client_turn_completed",
                     std::time::Duration::from_secs(30),
                 );
-                auto_poked = app.schedule_turn_end_followups();
+                auto_poked = app.schedule_turn_end_followups_after_response(
+                    app.streaming.response_output.has_final_response(),
+                );
                 if !auto_poked {
                     app.clear_visible_turn_started();
                     if app.queued_messages.is_empty() {
@@ -1327,6 +1411,27 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
+            // Account quota exhaustion (e.g. OpenAI `usage_limit_reached`):
+            // the error line above is the whole explanation. Offer the next
+            // pool account as one line and skip retry/poke chatter, since
+            // resending to the spent account can never succeed.
+            if !is_failover_prompt
+                && jcode_provider_core::classify_failover_error_message(&message)
+                    .should_mark_provider_unavailable()
+                && !crate::tui::app::commands::is_auto_poke_connectivity_error(&message)
+                && app.offer_fallback_after_error_with_payload(
+                    &message,
+                    failed_fallback_payload.clone(),
+                )
+            {
+                app.clear_pending_remote_retry();
+                crate::tui::app::commands::disable_auto_poke(app);
+                app.overnight_auto_poke = None;
+                if app.pending_provider_failover.is_none() {
+                    app.restore_failed_input_to_box();
+                }
+                return false;
+            }
             if crate::provider::parse_failover_prompt_message(&message).is_some() {
                 // The server already exhausted the same-provider account pool.
                 // Decode the control payload instead of printing its JSON, and
@@ -1361,12 +1466,24 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
                 return false;
             }
-            // Connectivity failures (DNS, connection reset, no route, transient
-            // TLS, timeouts) are always transient: the request never reached the
-            // provider. Hold the turn and resume when the network recovers,
-            // regardless of the pending message's auto_retry flag. This must run
-            // before the non-retryable auto-poke check so a transient disconnect
-            // is never misclassified as a permanent failure that stops auto-poke.
+            // Stream-idle failures follow an accepted request. The provider
+            // owns transport retries and fallback already. A network probe
+            // cannot fix these and must not restart that entire retry budget.
+            let lower_message = message.to_ascii_lowercase();
+            let is_stream_idle_timeout = lower_message
+                .contains("stream read timeout: no data received")
+                || lower_message.contains("timed out waiting for next websocket activity")
+                || lower_message.contains("did not complete within");
+            if is_stream_idle_timeout {
+                app.pause_exhausted_auto_resume(
+                    "Stopped automatic retries: the provider stream stalled after the request was accepted. Your message is back in the input box. Retry manually, reduce the conversation with /compact, or choose another route with /model.".to_string(),
+                    "Paused: provider stream stopped responding",
+                );
+                app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
+                return false;
+            }
+            // Connection-establishment failures can recover when the network
+            // returns. Keep these separate from accepted but stalled streams.
             let is_connectivity_error =
                 crate::tui::app::commands::is_auto_poke_connectivity_error(&message)
                     || crate::network_retry::classify_message(&message).is_some();
@@ -1470,7 +1587,11 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::SessionId { session_id } => {
+            if app.remote_session_id.as_deref() != Some(session_id.as_str()) {
+                app.remote_available_service_tiers = None;
+            }
             remote.set_session_id(session_id.clone());
+            app.cloud_environment_session_changed(&session_id);
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
             app.note_client_focus(true);
@@ -1524,6 +1645,7 @@ pub(in crate::tui::app) fn handle_server_event(
             }
         }
         ServerEvent::Reloading { .. } => {
+            app.scheduled_reload_recoveries.clear();
             app.append_reload_message("🔄 Server reload initiated...");
             // In-process server reloads (self-dev build-reload) keep the same
             // server PID and never disconnect this client, so the reconnect-time
@@ -1566,8 +1688,10 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::History {
-            messages,
-            images,
+            mut messages,
+            messages_base_count,
+            images_unchanged,
+            mut images,
             session_id,
             provider_name,
             provider_model,
@@ -1594,16 +1718,77 @@ pub(in crate::tui::app) fn handle_server_event(
             upstream_provider,
             resolved_credential,
             provider_oauth_email,
+            provider_oauth_account_label,
             reasoning_effort,
             service_tier,
+            available_service_tiers,
             compaction_mode,
             activity,
             token_usage_totals,
             side_panel,
             ..
         } => {
+            if let Some(base_count) = messages_base_count {
+                // Delta History: the server verified our advertised prefix and
+                // sent only the messages after it. Rebuild the full list so the
+                // rest of this handler (fingerprints, replace) is unchanged.
+                let Some((prefix, prefix_images)) =
+                    app.take_history_base_prefix(&session_id, base_count)
+                else {
+                    if remote.has_loaded_history()
+                        && app.remote_session_id.as_deref() == Some(session_id.as_str())
+                    {
+                        // A full History (e.g. a watchdog re-request) already
+                        // won the race; this late delta carries nothing new.
+                        return false;
+                    }
+                    crate::logging::warn(&format!(
+                        "Delta History for {} (base={}) without a matching local prefix; requesting full history",
+                        session_id, base_count
+                    ));
+                    app.idle_hibernation.history_reload_needed = true;
+                    return true;
+                };
+                if images_unchanged {
+                    match prefix_images {
+                        Some(local) => images = local,
+                        None => {
+                            app.idle_hibernation.history_reload_needed = true;
+                            return true;
+                        }
+                    }
+                }
+                let tail = std::mem::take(&mut messages);
+                messages.reserve(prefix.len() + tail.len());
+                messages.extend(
+                    prefix
+                        .into_iter()
+                        .map(|msg| crate::protocol::HistoryMessage {
+                            response_stats: None,
+                            role: msg.role,
+                            content: msg.content,
+                            tool_calls: (!msg.tool_calls.is_empty()).then_some(msg.tool_calls),
+                            tool_data: msg.tool_data,
+                            timestamp: None,
+                            tool_duration_ms: None,
+                        }),
+                );
+                messages.extend(tail);
+                crate::logging::info(&format!(
+                    "Applied delta History for {}: base={}, total={}",
+                    session_id,
+                    base_count,
+                    messages.len()
+                ));
+            } else {
+                app.advertised_history_base = None;
+            }
+            let history_handler_start = Instant::now();
+            let mut history_lap = Instant::now();
+            let mut history_laps: Vec<(&'static str, u128)> = Vec::new();
             let prev_session_id = app.remote_session_id.clone();
             app.remote_provider_oauth_email = provider_oauth_email.clone();
+            app.remote_provider_oauth_account_label = provider_oauth_account_label;
             if resolved_credential == Some(jcode_provider_core::ResolvedCredential::Oauth)
                 && let Some(email) = provider_oauth_email
                 && let Some(provider) = provider_name.as_deref()
@@ -1687,10 +1872,17 @@ pub(in crate::tui::app) fn handle_server_event(
             }
 
             remote.set_session_id(session_id.clone());
+            app.cloud_environment_session_changed(&session_id);
             app.remote_session_id = Some(session_id.clone());
+            history_laps.push(("pre_set_session", history_lap.elapsed().as_millis()));
+            history_lap = Instant::now();
             crate::set_current_session(&session_id);
             app.note_client_focus(true);
             let session_changed = prev_session_id.as_deref() != Some(session_id.as_str());
+            if session_changed {
+                app.remote_available_service_tiers = None;
+                app.usage_reset.openai_quota_rejected = false;
+            }
             // The initial Subscribe snapshot predates an early startup Message
             // sent on the same ordered connection. Adopting its session id must
             // not make that in-flight request idle or discard its retry payload.
@@ -1784,7 +1976,12 @@ pub(in crate::tui::app) fn handle_server_event(
                 available_models,
                 available_model_routes,
             );
+            history_laps.push(("pre_catalog_replace", history_lap.elapsed().as_millis()));
+            history_lap = Instant::now();
             let catalog_outcome = app.replace_remote_model_catalog_snapshot(model_catalog_snapshot);
+            if let Some(tiers) = available_service_tiers {
+                app.remote_available_service_tiers = Some(tiers);
+            }
             // History is authoritative from here on: a later ModelChanged is a
             // real switch and must announce itself.
             app.remote_session_facts_provisional = false;
@@ -1814,9 +2011,22 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             app.remote_service_tier = service_tier;
             app.remote_compaction_mode = Some(compaction_mode);
+            history_laps.push(("pre_header_hint", history_lap.elapsed().as_millis()));
+            history_lap = Instant::now();
             app.persist_remote_header_hint();
-            app.set_side_panel_snapshot(side_panel);
-            if history_images_match_retained(&images, &app.remote_side_pane_images) {
+            // Catalog-only History carries no server identity. Classify it before
+            // applying optional snapshots so its empty defaults cannot erase
+            // restored panels or their retained images. Session switches and
+            // full same-session History remain authoritative, including empties.
+            let carries_server_identity =
+                server_name.is_some() || server_version.is_some() || is_canary.is_some();
+            let authoritative = session_changed || carries_server_identity;
+            if authoritative || !side_panel.pages.is_empty() {
+                app.set_side_panel_snapshot(side_panel);
+            }
+            if !authoritative && images.is_empty() {
+                // A catalog refresh does not carry an image snapshot.
+            } else if history_images_match_retained(&images, &app.remote_side_pane_images) {
                 // The already-retained image set is identical (count + per-image
                 // byte length + metadata). Drop the incoming copy immediately so
                 // two full base64 payloads are never alive side by side.
@@ -1832,6 +2042,8 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.invalidate_side_pane_images_signature();
             }
             if catalog_outcome.catalog_changed {
+                history_laps.push(("pre_catalog_persist", history_lap.elapsed().as_millis()));
+                history_lap = Instant::now();
                 app.persist_remote_model_catalog_cache();
             }
             // `/model` may have been opened while the initial session catalog
@@ -1845,9 +2057,6 @@ pub(in crate::tui::app) fn handle_server_event(
             // header and the Overview session row flickered (`peak hare` ->
             // `hare`). Only overwrite what the event actually carries; a real
             // session switch still resets everything.
-            let carries_server_identity =
-                server_name.is_some() || server_version.is_some() || is_canary.is_some();
-            let authoritative = session_changed || carries_server_identity;
             if authoritative || !skills.is_empty() {
                 app.remote_skills = skills;
                 app.invalidate_command_candidates_cache();
@@ -1954,6 +2163,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.remote_resume_activity = None;
                 }
             }
+            history_laps.push(("pre_bootstrap_log", history_lap.elapsed().as_millis()));
             if should_apply_history_payload {
                 crate::logging::info(&format!(
                     "[TIMING] remote bootstrap: history after {}ms (session={}, resumed={}, messages={}, mcp_servers={}, model={})",
@@ -1963,6 +2173,15 @@ pub(in crate::tui::app) fn handle_server_event(
                     history_message_count,
                     history_mcp_count,
                     history_model.as_deref().unwrap_or("<none>")
+                ));
+                crate::logging::info(&format!(
+                    "[TIMING] history handler laps: {} total={}ms",
+                    history_laps
+                        .iter()
+                        .map(|(name, ms)| format!("{name}={ms}ms"))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    history_handler_start.elapsed().as_millis()
                 ));
                 remote.mark_history_loaded();
                 // History arrived: cancel the "stuck on loading session…"
@@ -2141,36 +2360,25 @@ pub(in crate::tui::app) fn handle_server_event(
             if let Some(reload_recovery) = reload_recovery
                 && !app.display_messages.is_empty()
             {
-                let continuation_message = reload_recovery.continuation_message;
                 crate::logging::info(&format!(
                     "History payload requested reload recovery continuation: session={} was_interrupted={:?}",
                     session_id, was_interrupted
                 ));
-                if let Some(notice) = reload_recovery.reconnect_notice
-                    && !app.reload_info.iter().any(|existing| existing == &notice)
+                if let Some(notice) = reload_recovery.reconnect_notice.as_ref()
+                    && !app.reload_info.iter().any(|existing| existing == notice)
                 {
-                    app.reload_info.push(notice);
+                    app.reload_info.push(notice.clone());
                 }
-                let already_queued = app
-                    .hidden_queued_system_messages
-                    .iter()
-                    .any(|queued| queued == &continuation_message)
-                    || app
-                        .rate_limit_pending_message
-                        .as_ref()
-                        .and_then(|pending| pending.system_reminder.as_ref())
-                        .is_some_and(|queued| queued == &continuation_message);
-                if already_queued {
+                if !queue_reload_continuation_once(
+                    app,
+                    &session_id,
+                    reload_recovery,
+                    "Reload complete - continuing because a recovery directive was pending.",
+                ) {
                     crate::logging::info(&format!(
-                        "History payload reload recovery continuation already queued/in-flight: session={}",
+                        "History payload reload recovery continuation already scheduled: session={}",
                         session_id
                     ));
-                } else {
-                    app.push_display_message(DisplayMessage::system(
-                        "Reload complete - continuing because a recovery directive was pending."
-                            .to_string(),
-                    ));
-                    app.hidden_queued_system_messages.push(continuation_message);
                 }
             } else if pending_reload_reconnect_status.is_some() {
                 let message = match was_interrupted {
@@ -2288,6 +2496,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     }
                 }
                 app.remote_swarm_members = members;
+                app.remote_swarm_members_received_at = Some(std::time::Instant::now());
                 persist_swarm_status_snapshot(app);
             } else {
                 app.remote_swarm_members.clear();
@@ -2384,6 +2593,7 @@ pub(in crate::tui::app) fn handle_server_event(
             error,
             resolved_credential,
             provider_oauth_email,
+            provider_oauth_account_label,
             reasoning_effort,
             context_window,
             ..
@@ -2411,7 +2621,21 @@ pub(in crate::tui::app) fn handle_server_event(
                 ));
                 app.set_status_notice("Model switch failed");
             } else {
+                // ModelChanged predates capability metadata. Fetch the typed
+                // History catalog after a successful model/account switch.
+                app.model_catalog_after_history = true;
+                if app.remote_provider_model.as_deref() != Some(model.as_str())
+                    || app.remote_provider_oauth_email != provider_oauth_email
+                    || app.remote_resolved_credential != resolved_credential
+                    || provider_name
+                        .as_ref()
+                        .is_some_and(|name| app.remote_provider_name.as_ref() != Some(name))
+                {
+                    app.remote_available_service_tiers = None;
+                    app.usage_reset.openai_quota_rejected = false;
+                }
                 app.remote_provider_oauth_email = provider_oauth_email;
+                app.remote_provider_oauth_account_label = provider_oauth_account_label;
                 // The server also re-sends ModelChanged on resume so the client
                 // learns the server-resolved context window. That is not a
                 // user-visible switch, so only announce an actual model change.
@@ -2439,9 +2663,19 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.invalidate_model_picker_cache();
                 app.persist_remote_header_hint();
                 if model_actually_changed && !app.auth_catalog_refresh_pending {
+                    let is_oauth = app.remote_resolved_credential
+                        == Some(jcode_provider_core::ResolvedCredential::Oauth);
+                    let suffix = crate::tui::app::helpers::switched_model_account_suffix(
+                        app.remote_resolved_credential
+                            .map(|credential| credential.auth_method_label()),
+                        app.remote_provider_oauth_email
+                            .as_ref()
+                            .filter(|_| is_oauth)
+                            .map(|email| email.as_str()),
+                    );
                     app.push_display_message(DisplayMessage::system(format!(
-                        "✓ Switched to model: {}",
-                        model
+                        "✓ Switched to model: {}{}",
+                        model, suffix
                     )));
                 }
                 if model_actually_changed {
@@ -2449,6 +2683,13 @@ pub(in crate::tui::app) fn handle_server_event(
                 }
             }
             false
+        }
+        ServerEvent::AccountUsage {
+            anthropic, openai, ..
+        } => {
+            crate::usage::set_remote_account_usage(anthropic, openai);
+            crate::tui::ui::prepare::invalidate_header_prep_cache();
+            true
         }
         ServerEvent::ModelUsageUpdated { route } => {
             for cached in &mut app.remote_model_options {
@@ -2468,6 +2709,9 @@ pub(in crate::tui::app) fn handle_server_event(
             available_models,
             available_model_routes,
         } => {
+            // Prefetch can hydrate account capabilities after initial History.
+            // This legacy event has no tiers, so request authoritative metadata.
+            app.model_catalog_after_history = true;
             let model_catalog_snapshot = jcode_provider_core::ModelCatalogSnapshot::new(
                 provider_name,
                 provider_model,
@@ -2541,30 +2785,45 @@ pub(in crate::tui::app) fn handle_server_event(
         ServerEvent::ServiceTierChanged {
             service_tier,
             error,
+            pending,
             ..
         } => {
-            if let Some(err) = error {
+            if pending {
+                app.push_display_message(DisplayMessage::system(
+                    "Speed change requested. Waiting for session configuration access.",
+                ));
+                app.set_status_notice("Speed: change requested (waiting)");
+            } else if let Some(err) = error {
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to set fast mode: {}",
                     err
                 )));
             } else {
+                let tier_changed = app.remote_service_tier != service_tier;
                 app.remote_service_tier = service_tier.clone();
+                if tier_changed {
+                    app.remote_reported_service_tier = None;
+                    app.remote_service_tier_confirmation_pending = true;
+                }
                 let enabled = app_mod::service_tier_is_fast(service_tier.as_deref());
                 let label = service_tier
                     .as_deref()
                     .map(app_mod::service_tier_display_label)
                     .unwrap_or("Standard");
                 let applies_next_request = app.is_processing;
-                app.push_display_message(DisplayMessage::system(
-                    app_mod::fast_mode_success_message(enabled, label, applies_next_request),
-                ));
+                // Duplicate acknowledgements should not flood the transcript or
+                // discard a provider confirmation for the unchanged tier.
+                if tier_changed {
+                    app.push_display_message(DisplayMessage::system(
+                        app_mod::fast_mode_success_message(enabled, label, applies_next_request),
+                    ));
+                }
                 app.set_status_notice(app_mod::fast_mode_status_notice(
                     service_tier.as_deref(),
                     applies_next_request,
                 ));
             }
-            false
+            true
         }
         ServerEvent::TransportChanged {
             transport, error, ..

@@ -10,6 +10,10 @@ const COMPACTED_HISTORY_LOAD_SCROLL_THRESHOLD: usize = 2;
 const COMPACTED_HISTORY_MARKER_PREFIX: &str = "Earlier conversation compacted - ";
 const OVERNIGHT_CARD_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+#[path = "state_ui_reminder_tests.rs"]
+mod reminder_tests;
+
 fn display_message_from_stored_message(
     message: &crate::session::StoredMessage,
 ) -> Option<DisplayMessage> {
@@ -104,6 +108,9 @@ impl App {
         if is_background_task_lifecycle_message(&message.content) {
             return;
         }
+        if message.role == "tool" && message.duration_secs.is_none() {
+            message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content);
+        }
         compact_display_message_tool_data(&mut message);
         // Keep Ctrl+L's spacer as a clear boundary when new content arrives.
         // The renderer packs only the content after it while following the tail,
@@ -137,6 +144,11 @@ impl App {
 
     pub(super) fn replace_display_messages(&mut self, mut messages: Vec<DisplayMessage>) {
         messages.retain(|message| !is_background_task_lifecycle_message(&message.content));
+        for message in &mut messages {
+            if message.role == "tool" && message.duration_secs.is_none() {
+                message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content);
+            }
+        }
         compact_display_messages_for_storage(&mut messages);
         self.display_messages = messages;
         self.attempt_committed_assistant_messages = 0;
@@ -175,6 +187,18 @@ impl App {
         }
     }
 
+    pub(super) fn set_latest_tool_duration(&mut self, tool_call_id: &str, seconds: f32) {
+        if let Some(message) = self.display_messages.iter_mut().rev().find(|message| {
+            message
+                .tool_data
+                .as_ref()
+                .is_some_and(|tool| tool.id == tool_call_id)
+        }) {
+            message.duration_secs = Some(seconds);
+            self.bump_display_messages_version();
+        }
+    }
+
     pub(super) fn replace_latest_tool_display_message(
         &mut self,
         tool_call_id: &str,
@@ -202,6 +226,87 @@ impl App {
 
     pub(super) fn background_task_rows_ref(&self) -> &[crate::tui::BackgroundTaskRow] {
         &self.background_task_rows
+    }
+
+    /// User-only blockers and live waits suppress all automatic continuations.
+    /// Disk state survives a TUI reload and overrides stale retained UI rows.
+    pub(super) fn todo_is_paused_for_auto_followup(&self, todo: &crate::todo::TodoItem) -> bool {
+        crate::todo::todo_completely_blocked(todo)
+            || crate::todo::todo_has_external_blocker(todo)
+            || crate::todo::todo_waits_on_running_task(todo, |task_id| {
+                self.running_todo_await_dependency(task_id)
+                    || self.running_todo_background_dependency(task_id).is_some()
+            })
+    }
+
+    pub(super) fn running_todo_await_dependency(&self, task_id: &str) -> bool {
+        let session_id = self
+            .remote_session_id
+            .as_deref()
+            .unwrap_or(&self.session.id);
+        crate::todo::await_dependency::running(&crate::storage::runtime_dir(), task_id, session_id)
+    }
+
+    pub(super) fn running_todo_background_dependency(
+        &self,
+        task_id: &str,
+    ) -> Option<crate::background::TaskStatusFile> {
+        let session_id = self
+            .remote_session_id
+            .as_deref()
+            .unwrap_or(&self.session.id);
+        if std::path::Path::new(task_id)
+            .file_name()
+            .and_then(|s| s.to_str())
+            != Some(task_id)
+        {
+            return None;
+        }
+        if self.background_task_rows.iter().any(|row| {
+            row.task_id == task_id && row.status != crate::tui::BackgroundTaskRowStatus::Running
+        }) {
+            return None;
+        }
+        let bytes = match std::fs::read(crate::background::global().status_path_for(task_id)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                crate::logging::warn(&format!(
+                    "Cannot read background dependency status: {error}"
+                ));
+                return None;
+            }
+        };
+        let status: crate::background::TaskStatusFile = match serde_json::from_slice(&bytes) {
+            Ok(status) => status,
+            Err(error) => {
+                crate::logging::warn(&format!("Invalid background dependency status: {error}"));
+                return None;
+            }
+        };
+        // UI rows are history, not proof that an owner survived a crash.
+        let owner = if status.detached {
+            status.pid
+        } else {
+            status.owner_pid.or(status.pid)
+        };
+        if owner.is_none_or(|pid| {
+            pid == 0 || pid > i32::MAX as u32 || !crate::platform::is_process_running(pid)
+        }) {
+            return None;
+        }
+        (status.task_id == task_id
+            && status.session_id == session_id
+            && status.status == crate::bus::BackgroundTaskStatus::Running)
+            .then_some(status)
+    }
+
+    pub(super) fn all_open_todos_are_paused(&self) -> bool {
+        let open = super::commands::incomplete_poke_todos(self);
+        !open.is_empty()
+            && open
+                .iter()
+                .all(|todo| self.todo_is_paused_for_auto_followup(todo))
     }
 
     fn retain_latest_background_tasks(&mut self) {

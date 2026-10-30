@@ -100,6 +100,41 @@ fn make_session_with_flags(
 }
 
 #[test]
+fn cloud_session_picker_renders_host_and_preserves_resume_target() {
+    let mut session = make_session(
+        "session_cloud_1770000000000",
+        "cloud",
+        false,
+        SessionStatus::Closed,
+    );
+    session.server_name = Some("cloud: dev-cloud".into());
+    session.server_icon = Some("☁".into());
+    let target = session.resume_target.clone();
+    let mut picker = SessionPicker::new_grouped(
+        vec![ServerGroup {
+            name: "cloud: dev-cloud".into(),
+            icon: "☁".into(),
+            version: String::new(),
+            git_hash: String::new(),
+            is_running: false,
+            sessions: vec![session],
+        }],
+        vec![],
+    );
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| picker.render(frame)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("cloud: dev-cloud"));
+    assert_eq!(picker.selection_or_current_targets(), vec![target]);
+}
+
+#[test]
 fn standalone_resume_renders_before_list_load_finishes() {
     let mut picker = SessionPicker::loading();
     let (_sender, receiver) = std::sync::mpsc::channel::<SessionListUpdate>();
@@ -1120,6 +1155,65 @@ fn test_space_selects_multiple_sessions_and_enter_returns_them() {
 }
 
 #[test]
+fn saved_placement_expiry_keeps_bookmarks_in_saved_filter() {
+    let mut saved = make_session(
+        "expired_saved_placement",
+        "saved",
+        false,
+        SessionStatus::Closed,
+    );
+    saved.saved = true;
+    saved.last_message_time = Utc::now() - ChronoDuration::days(8);
+    let normal = make_session(
+        "recent_normal_placement",
+        "normal",
+        false,
+        SessionStatus::Closed,
+    );
+    let mut picker = SessionPicker::new(vec![saved, normal]);
+    assert!(
+        !picker
+            .items
+            .iter()
+            .any(|item| matches!(item, PickerItem::SavedHeader { .. }))
+    );
+    let ids: Vec<_> = picker
+        .visible_session_iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["recent_normal_placement", "expired_saved_placement"]
+    );
+    picker.filter_mode = SessionFilterMode::Saved;
+    picker.rebuild_items();
+    assert_eq!(picker.visible_sessions.len(), 1);
+    assert_eq!(
+        picker.selected_session().unwrap().id,
+        "expired_saved_placement"
+    );
+    assert!(picker.selected_session().unwrap().saved);
+}
+
+#[test]
+fn saved_placement_recent_bookmark_still_gets_header() {
+    let mut saved = make_session(
+        "recent_saved_placement",
+        "saved",
+        false,
+        SessionStatus::Closed,
+    );
+    saved.saved = true;
+    let picker = SessionPicker::new(vec![saved]);
+    assert!(
+        picker
+            .items
+            .iter()
+            .any(|item| matches!(item, PickerItem::SavedHeader { session_count: 1 }))
+    );
+}
+
+#[test]
 fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
     let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
     saved.saved = true;
@@ -1257,6 +1351,20 @@ fn onboarding_banner_is_action_only() {
     picker.activate_onboarding_banner(vec![Line::from("welcome")]);
 
     assert_eq!(picker.visible_session_count(), 0);
+    assert!(picker.onboarding_review_recent_project_highlighted());
+}
+
+#[test]
+fn onboarding_banner_space_submits_like_enter() {
+    let mut picker = SessionPicker::new(Vec::new());
+    picker.activate_onboarding_banner(vec![Line::from("welcome")]);
+    let action = picker
+        .handle_overlay_key(KeyCode::Char(' '), KeyModifiers::empty())
+        .expect("space");
+    assert!(matches!(
+        action,
+        OverlayAction::Selected(PickerResult::ReviewRecentProject)
+    ));
     assert!(picker.onboarding_review_recent_project_highlighted());
 }
 
@@ -1852,9 +1960,23 @@ fn test_preview_is_left_aligned_independently_of_chat_markdown_context() {
 
 #[test]
 fn test_preview_structured_messages_stay_left_aligned() {
+    // The todo tool card is only shown inline when todos are not pinned.
+    let _env_lock = crate::storage::lock_test_env();
+    crate::env::set_var("JCODE_PIN_TODOS", "0");
+    crate::config::invalidate_config_cache();
+    struct RestorePin;
+    impl Drop for RestorePin {
+        fn drop(&mut self) {
+            crate::env::remove_var("JCODE_PIN_TODOS");
+            crate::config::invalidate_config_cache();
+        }
+    }
+    let _restore = RestorePin;
     let todos = serde_json::json!([{
+        // Finished lists intentionally collapse to status dots. Keep an active
+        // item so this test exercises alignment of the structured card body.
         "id": "alignment", "content": "Verify structured preview alignment",
-        "status": "completed", "priority": "high", "confidence": "verified"
+        "status": "in_progress", "priority": "high", "confidence": "verified"
     }]);
     let mut session = make_session(
         "structured_alignment",
@@ -1905,7 +2027,8 @@ fn test_preview_structured_messages_stay_left_aligned() {
                 "Verify structured preview alignment",
                 "Reviewing the weak points",
                 "Check structured preview alignment",
-                "All alignment checks passed",
+                // Successful background notices render as one compact line.
+                "Background task alignment-task",
             ] {
                 let line = cache
                     .wrapped_lines
@@ -2019,7 +2142,7 @@ fn test_preview_sticky_prompt_header_survives_async_preview_load() {
     // Simulate an in-flight background load for the selected session: empty
     // preview + a pending load whose id matches. Keep the sender alive so the
     // receiver reports `Empty` (still loading) rather than `Disconnected`.
-    let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<PreviewMessage>>>();
+    let (tx, rx) = std::sync::mpsc::channel::<Option<LoadedSessionPreview>>();
     picker.pending_preview_load = Some(PendingSessionPreviewLoad {
         session_id: "async_sticky".to_string(),
         receiver: rx,
@@ -2044,6 +2167,14 @@ fn test_preview_sticky_prompt_header_survives_async_preview_load() {
         "auto-scroll should stay armed while the preview is still loading"
     );
 
+    // The initial session-list refresh can arrive while the transcript is
+    // loading. It must preserve the pending bottom scroll for this selection.
+    picker.reseed_grouped(Vec::new(), vec![session]);
+    assert!(
+        picker.auto_scroll_preview,
+        "refresh must preserve the pending jump to the transcript bottom"
+    );
+
     // The background load completes: deliver the real transcript exactly the way
     // `poll_preview_load` would (drop the channel + populate the preview).
     drop(tx);
@@ -2058,6 +2189,22 @@ fn test_preview_sticky_prompt_header_survives_async_preview_load() {
         "preview should auto-scroll to the bottom once content loads, got {}",
         picker.scroll_offset
     );
+
+    assert!(picker.preview_max_scroll > 0);
+    assert_eq!(
+        picker.scroll_offset, picker.preview_max_scroll,
+        "loaded transcript must open at the exact bottom"
+    );
+    assert!(!picker.auto_scroll_preview);
+
+    // Subsequent refreshes must not pull a user who scrolled back to the bottom.
+    assert!(picker.scroll_preview_up(3));
+    let user_offset = picker.scroll_offset;
+    let loaded_session = picker.selected_session().unwrap().clone();
+    picker.reseed_grouped(Vec::new(), vec![loaded_session]);
+    let _ = render(&mut picker);
+    assert_eq!(picker.scroll_offset, user_offset);
+    assert!(!picker.auto_scroll_preview);
 
     let preview_inner_x = (w as f32 * 0.40) as u16 + 1;
     let header_row: String = (preview_inner_x..w.saturating_sub(1))
@@ -2609,108 +2756,5 @@ fn onboarding_start_label_marks_home_directory() {
     );
 }
 
-#[test]
-fn test_resume_prefers_current_project_filter_when_it_has_sessions() {
-    let mut here = make_session("here", "here", false, SessionStatus::Closed);
-    here.working_dir = Some("/work/project".to_string());
-    let mut sub = make_session("sub", "sub", false, SessionStatus::Closed);
-    sub.working_dir = Some("/work/project/crates/a".to_string());
-    let mut other = make_session("other", "other", false, SessionStatus::Closed);
-    other.working_dir = Some("/work/other".to_string());
-
-    let mut picker = SessionPicker::new(vec![here, sub, other]);
-    picker.set_current_dir(Some("/work/project".to_string()));
-    picker.prefer_current_dir_filter();
-
-    assert_eq!(picker.filter_mode, SessionFilterMode::CurrentDir);
-    let ids: Vec<_> = picker
-        .visible_session_iter()
-        .map(|session| session.id.clone())
-        .collect();
-    assert_eq!(ids.len(), 2, "{ids:?}");
-    assert!(!ids.contains(&"other".to_string()));
-
-    // Once the user picks a filter, reloads must not snap it back.
-    while picker.filter_mode != SessionFilterMode::All {
-        picker.cycle_filter_mode();
-    }
-    picker.prefer_current_dir_filter();
-    assert_eq!(picker.filter_mode, SessionFilterMode::All);
-}
-
-#[test]
-fn test_resume_keeps_all_filter_when_current_project_has_no_sessions() {
-    let mut other = make_session("other", "other", false, SessionStatus::Closed);
-    other.working_dir = Some("/work/other".to_string());
-
-    let mut picker = SessionPicker::new(vec![other]);
-    picker.set_current_dir(Some("/work/project".to_string()));
-    picker.prefer_current_dir_filter();
-
-    assert_eq!(picker.filter_mode, SessionFilterMode::All);
-    assert_eq!(picker.visible_sessions.len(), 1);
-}
-
-#[test]
-fn test_current_dir_matches_sibling_git_worktree() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let main = root.path().join("repo");
-    let wt_git = main.join(".git/worktrees/feature");
-    std::fs::create_dir_all(&wt_git).expect("worktree gitdir");
-    std::fs::write(wt_git.join("commondir"), "../..\n").expect("commondir");
-    let worktree = root.path().join("repo-feature");
-    std::fs::create_dir_all(worktree.join("src")).expect("worktree dir");
-    std::fs::write(
-        worktree.join(".git"),
-        format!("gitdir: {}\n", wt_git.display()),
-    )
-    .expect(".git file");
-    let unrelated = root.path().join("unrelated");
-    std::fs::create_dir_all(&unrelated).expect("unrelated dir");
-
-    let mut in_worktree = make_session("wt", "wt", false, SessionStatus::Closed);
-    in_worktree.working_dir = Some(worktree.join("src").display().to_string());
-    let mut elsewhere = make_session("elsewhere", "elsewhere", false, SessionStatus::Closed);
-    elsewhere.working_dir = Some(unrelated.display().to_string());
-
-    let mut picker = SessionPicker::new(vec![in_worktree.clone(), elsewhere.clone()]);
-    picker.set_current_dir(Some(main.display().to_string()));
-
-    assert!(picker.session_in_current_dir(&in_worktree));
-    assert!(!picker.session_in_current_dir(&elsewhere));
-}
-
-#[test]
-fn test_compact_dir_keeps_whole_trailing_components() {
-    use super::render::compact_dir;
-    assert_eq!(compact_dir("/srv/app"), "/srv/app");
-    assert_eq!(
-        compact_dir("/srv/relatorios/sherlocker-formula-20261010/worktrees/base"),
-        "…/worktrees/base"
-    );
-    assert_eq!(
-        compact_dir("/srv/a/an-extremely-long-single-directory-name-here"),
-        "…/an-extremely-long-single-…"
-    );
-}
-
-#[test]
-fn test_resume_project_scope_is_off_by_default() {
-    assert!(
-        !crate::config::Config::default()
-            .display
-            .resume_project_scope
-    );
-    let mut here = make_session("here", "here", false, SessionStatus::Closed);
-    here.working_dir = Some("/work/project".to_string());
-    let mut other = make_session("other", "other", false, SessionStatus::Closed);
-    other.working_dir = Some("/work/other".to_string());
-
-    let mut picker = SessionPicker::new(vec![here, other]);
-    picker.set_current_dir(Some("/work/project".to_string()));
-    if !crate::config::config().display.resume_project_scope {
-        picker.apply_resume_project_scope_default();
-        assert_eq!(picker.filter_mode, SessionFilterMode::All);
-        assert_eq!(picker.visible_sessions.len(), 2);
-    }
-}
+#[path = "session_picker_scope_tests.rs"]
+mod project_scope;

@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+#[path = "agent_tests/cache_session_affinity.rs"]
+mod cache_session_affinity;
+
 #[path = "agent_tests/tool_streaming.rs"]
 mod tool_streaming;
 
@@ -46,8 +49,10 @@ async fn user_response_capability_updates_locked_tool_surface() {
             .any(|d| d.name == "user_response")
     );
     assert!(agent.locked_tools.is_some());
+    assert!(!agent.tool_names().await.iter().any(|n| n == "applet"));
     agent.set_desktop_response_capability(true).await;
     assert!(agent.locked_tools.is_none());
+    assert!(agent.tool_names().await.iter().any(|n| n == "applet"));
     assert!(
         agent
             .tool_definitions()
@@ -62,6 +67,7 @@ async fn user_response_capability_updates_locked_tool_surface() {
     );
     agent.set_desktop_response_capability(false).await;
     assert!(agent.locked_tools.is_none());
+    assert!(!agent.tool_names().await.iter().any(|n| n == "applet"));
     assert!(
         !agent
             .tool_definitions()
@@ -609,6 +615,50 @@ impl Provider for NativeCompactionStreamProvider {
     }
 }
 
+#[tokio::test]
+async fn context_limit_recovery_announces_measured_token_counts() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeCompactionStreamProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    for idx in 0..40 {
+        agent.add_message(
+            if idx % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            vec![ContentBlock::Text {
+                text: format!("message {idx} {}", "x".repeat(4_000)),
+                cache_control: None,
+            }],
+        );
+    }
+
+    assert!(agent.try_auto_compact_after_context_limit("maximum context length exceeded"));
+    match agent.take_recovery_compaction_event() {
+        ServerEvent::Compaction {
+            trigger,
+            pre_tokens,
+            post_tokens,
+            tokens_saved,
+            messages_dropped,
+            ..
+        } => {
+            assert_eq!(trigger, "auto_recovery");
+            let pre = pre_tokens.expect("recovery must report a pre-compaction count");
+            let post = post_tokens.expect("recovery must report a post-compaction count");
+            assert!(
+                post < pre,
+                "recovery should shrink the context ({pre} -> {post})"
+            );
+            assert_eq!(tokens_saved, Some(pre - post));
+            assert!(messages_dropped.is_some_and(|count| count > 0));
+        }
+        other => panic!("expected compaction event, got {other:?}"),
+    }
+}
+
 #[test]
 fn tool_output_to_content_blocks_preserves_labeled_images() {
     let output = ToolOutput::new("Image ready").with_labeled_image(
@@ -820,6 +870,8 @@ async fn run_turn_streaming_mpsc_emits_native_compaction_for_client_cache_reset(
         if let ServerEvent::Compaction {
             trigger,
             pre_tokens,
+            post_tokens,
+            tokens_saved,
             messages_compacted,
             ..
         } = event
@@ -830,6 +882,12 @@ async fn run_turn_streaming_mpsc_emits_native_compaction_for_client_cache_reset(
                 Some(80_000),
                 "remote compaction must forward the provider's pre-compaction count"
             );
+            let post = post_tokens.expect("native compaction must report an estimated post count");
+            assert!(
+                post < 80_000,
+                "post count should reflect the compacted context"
+            );
+            assert_eq!(tokens_saved, Some(80_000 - post));
             assert!(
                 messages_compacted.is_some_and(|count| count > 0),
                 "native compaction should report a non-empty compacted prefix"
@@ -936,6 +994,93 @@ async fn run_turn_streaming_mpsc_emits_model_changed_on_midstream_switch() {
         Some("claude-opus-4-8"),
         "expected a ModelChanged event resyncing to the served model"
     );
+}
+
+struct MidStreamAccountSwitchProvider {
+    switched: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Provider for MidStreamAccountSwitchProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.switched
+            .store(true, std::sync::atomic::Ordering::Release);
+        MidStreamModelSwitchProvider {
+            model: std::sync::Mutex::new(self.model()),
+            switch_to: self.model(),
+        }
+        .complete(messages, tools, system, resume_session_id)
+        .await
+    }
+
+    fn name(&self) -> &str {
+        "claude"
+    }
+
+    fn model(&self) -> String {
+        "same-model".to_string()
+    }
+
+    fn oauth_account_label(&self) -> Option<String> {
+        Some(
+            if self.switched.load(std::sync::atomic::Ordering::Acquire) {
+                "personal"
+            } else {
+                "work"
+            }
+            .to_string(),
+        )
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            switched: std::sync::atomic::AtomicBool::new(
+                self.switched.load(std::sync::atomic::Ordering::Acquire),
+            ),
+        })
+    }
+}
+
+#[tokio::test]
+async fn run_turn_streaming_mpsc_emits_account_only_change_without_email() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(MidStreamAccountSwitchProvider {
+        switched: std::sync::atomic::AtomicBool::new(false),
+    });
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    agent.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "test".to_string(),
+            cache_control: None,
+        }],
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.run_turn_streaming_mpsc(tx).await.unwrap();
+    let mut labels = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let ServerEvent::ModelChanged {
+            model,
+            provider_oauth_account_label,
+            provider_oauth_email,
+            error,
+            ..
+        } = event
+        {
+            assert_eq!(model, "same-model");
+            assert!(provider_oauth_email.is_none());
+            assert!(error.is_none());
+            labels.push(provider_oauth_account_label);
+        }
+    }
+    assert_eq!(labels, vec![Some("personal".to_string())]);
 }
 
 #[tokio::test]
@@ -1363,7 +1508,6 @@ fn seed_transient_session_state(agent: &mut Agent) {
     agent.tool_output_scan_index = 7;
     agent.last_upstream_provider = Some("upstream_old".to_string());
     agent.last_connection_type = Some("websocket".to_string());
-    agent.current_turn_system_reminder = Some("reminder".to_string());
     agent.last_usage = TokenUsage {
         input_tokens: 11,
         output_tokens: 17,
@@ -1401,7 +1545,6 @@ async fn clear_resets_runtime_interrupt_and_queue_state() {
     assert_eq!(agent.tool_output_scan_index, 0);
     assert!(agent.last_upstream_provider.is_none());
     assert!(agent.last_connection_type.is_none());
-    assert!(agent.current_turn_system_reminder.is_none());
     assert_eq!(agent.last_usage.input_tokens, 0);
     assert_eq!(agent.last_usage.output_tokens, 0);
     assert!(agent.locked_tools.is_none());
@@ -1443,7 +1586,6 @@ async fn restore_session_resets_runtime_interrupt_and_queue_state() {
     assert_eq!(agent.tool_output_scan_index, 0);
     assert!(agent.last_upstream_provider.is_none());
     assert!(agent.last_connection_type.is_none());
-    assert!(agent.current_turn_system_reminder.is_none());
     assert_eq!(agent.last_usage.input_tokens, 0);
     assert_eq!(agent.last_usage.output_tokens, 0);
     assert!(agent.locked_tools.is_none());
@@ -1811,16 +1953,33 @@ impl crate::tool::Tool for VerboseFakeMcpTool {
 }
 
 async fn register_fake_deferred_mcp_surface(registry: &Registry) {
-    for name in ["mcp_search", "mcp_call"] {
-        registry
-            .register(
-                name.to_string(),
-                Arc::new(FakeMcpTool {
-                    name: name.to_string(),
-                }) as Arc<dyn crate::tool::Tool>,
-            )
-            .await;
-    }
+    let manager = Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::with_config(Default::default()),
+    ));
+    registry
+        .register(
+            "mcp".into(),
+            Arc::new(
+                crate::tool::mcp::McpManagementTool::new(manager.clone())
+                    .with_registry(registry.clone()),
+            ),
+        )
+        .await;
+    registry
+        .register(
+            "mcp_search".into(),
+            Arc::new(
+                crate::tool::mcp::McpSearchTool::new(manager.clone())
+                    .with_registry(registry.clone()),
+            ),
+        )
+        .await;
+    registry
+        .register(
+            "mcp_call".into(),
+            Arc::new(crate::tool::mcp::McpCallTool::new(manager).with_registry(registry.clone())),
+        )
+        .await;
 }
 
 async fn agent_with_fake_mcp_surface(mode: crate::config::McpToolsMode, _threshold: usize) -> Agent {
@@ -1865,8 +2024,12 @@ async fn mcp_exposure_modes_select_eager_or_fixed_definitions() {
         .map(|tool| tool.name)
         .collect();
     assert!(!deferred_names.iter().any(|name| name.starts_with("mcp__")));
-    assert!(deferred_names.iter().any(|name| name == "mcp_search"));
-    assert!(deferred_names.iter().any(|name| name == "mcp_call"));
+    assert!(deferred_names.iter().any(|name| name == "mcp"));
+    assert!(
+        !deferred_names
+            .iter()
+            .any(|name| name == "mcp_search" || name == "mcp_call")
+    );
 
     // `auto` never exposes per-server definitions on providers without
     // native deferred loading, even for a tiny catalog: any later change to
@@ -1879,9 +2042,12 @@ async fn mcp_exposure_modes_select_eager_or_fixed_definitions() {
         .into_iter()
         .map(|tool| tool.name)
         .collect();
-    assert!(!auto_small_names.iter().any(|name| name.starts_with("mcp__")));
-    assert!(auto_small_names.iter().any(|name| name == "mcp_search"));
-    assert!(auto_small_names.iter().any(|name| name == "mcp_call"));
+    assert!(
+        !auto_small_names
+            .iter()
+            .any(|name| name.starts_with("mcp__"))
+    );
+    assert!(auto_small_names.iter().any(|name| name == "mcp"));
 
     let mut auto_deferred = agent_with_fake_mcp_surface(crate::config::McpToolsMode::Auto, 1).await;
     let auto_deferred_names: Vec<String> = auto_deferred
@@ -1895,8 +2061,7 @@ async fn mcp_exposure_modes_select_eager_or_fixed_definitions() {
             .iter()
             .any(|name| name.starts_with("mcp__"))
     );
-    assert!(auto_deferred_names.iter().any(|name| name == "mcp_search"));
-    assert!(auto_deferred_names.iter().any(|name| name == "mcp_call"));
+    assert!(auto_deferred_names.iter().any(|name| name == "mcp"));
     let stable_auto_names: Vec<String> = auto_deferred
         .tool_definitions()
         .await
@@ -1956,8 +2121,7 @@ async fn auto_mode_never_changes_the_tool_list_for_late_mcp_tools() {
     agent.mcp_tools_mode = crate::config::McpToolsMode::Auto;
 
     let before = agent.tool_definitions().await;
-    assert!(before.iter().any(|tool| tool.name == "mcp_search"));
-    assert!(before.iter().any(|tool| tool.name == "mcp_call"));
+    assert!(before.iter().any(|tool| tool.name == "mcp"));
     agent
         .registry
         .register(
@@ -2516,6 +2680,9 @@ async fn stranded_tool_use_stop_continues_instead_of_ending_the_turn() {
         "the recovered turn must deliver the model's real completion, got {text:?}"
     );
 }
+
+#[path = "agent_tests/system_prompt_reminder.rs"]
+mod system_prompt_reminder;
 
 #[derive(Clone, Default)]
 struct FableGuardrailProvider {

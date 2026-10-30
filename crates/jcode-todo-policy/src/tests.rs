@@ -1,5 +1,18 @@
 use super::*;
 
+#[test]
+fn background_dependencies_block_only_for_running_ids() {
+    let todo = TodoItem {
+        completely_blocked: None,
+        external_blocker: None,
+        waiting_on: vec!["task-a".into()],
+        ..Default::default()
+    };
+    assert!(!todo_waits_on_running_task(&todo, |_| false));
+    assert!(!todo_waits_on_running_task(&todo, |id| id == "other"));
+    assert!(todo_waits_on_running_task(&todo, |id| id == "task-a"));
+}
+
 fn intent_observation(state: Option<IntentUnderstanding>) -> GateObservation {
     GateObservation {
         kind: GateObservationKind::IntentUnderstanding,
@@ -600,7 +613,12 @@ fn todo(content: &str, status: &str, group: Option<&str>) -> TodoItem {
         completion_confidence: None,
         confidence_history: Vec::new(),
         blocked_by: Vec::new(),
+        completely_blocked: None,
+        external_blocker: None,
+        waiting_on: Vec::new(),
         assigned_to: None,
+        stage: None,
+        details: None,
     }
 }
 

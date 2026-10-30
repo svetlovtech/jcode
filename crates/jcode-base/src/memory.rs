@@ -168,6 +168,19 @@ impl MemoryEntryEmbeddingExt for MemoryEntry {
     }
 }
 
+/// Stable on-disk location of a project's memory file, derived from the
+/// project directory path. Used by the cloud move paths to ship project
+/// memory alongside a relocated session.
+pub fn project_memory_file(project_dir: &std::path::Path) -> Result<PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    project_dir.hash(&mut hasher);
+    let project_hash = format!("{:016x}", hasher.finish());
+    let memory_dir = storage::jcode_dir()?.join("memory").join("projects");
+    Ok(memory_dir.join(format!("{}.json", project_hash)))
+}
+
 #[derive(Debug, Clone)]
 pub struct MemoryManager {
     project_dir: Option<PathBuf>,

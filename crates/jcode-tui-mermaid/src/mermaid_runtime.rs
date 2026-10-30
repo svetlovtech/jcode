@@ -80,6 +80,75 @@ fn detect_multiplexer_from_env() -> Multiplexer {
     )
 }
 
+/// Adjust a detected protocol for multiplexer limitations.
+///
+/// Zellij supports classic Kitty placements, not Unicode placeholders. Our
+/// custom renderer handles that distinction, so Kitty need not be downgraded
+/// unless explicitly disabled for an older Zellij build or configuration.
+pub(super) fn adjust_protocol_for_multiplexer(
+    protocol: ProtocolType,
+    multiplexer: Multiplexer,
+    zellij_kitty_enabled: bool,
+) -> ProtocolType {
+    if protocol == ProtocolType::Kitty
+        && multiplexer == Multiplexer::Zellij
+        && !zellij_kitty_enabled
+    {
+        ProtocolType::Halfblocks
+    } else {
+        protocol
+    }
+}
+
+fn zellij_kitty_images_enabled() -> bool {
+    std::env::var("JCODE_ZELLIJ_KITTY_IMAGES")
+        .ok()
+        .as_deref()
+        .and_then(parse_env_bool)
+        .unwrap_or(true)
+}
+
+pub(super) fn use_classic_kitty() -> bool {
+    #[cfg(test)]
+    {
+        TEST_CLASSIC_KITTY.with(|value| value.get())
+    }
+    #[cfg(not(test))]
+    {
+        detect_multiplexer_from_env() == Multiplexer::Zellij
+    }
+}
+
+#[cfg(test)]
+thread_local! { static TEST_CLASSIC_KITTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+pub(super) fn with_classic_kitty_for_test<T>(f: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CLASSIC_KITTY.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_CLASSIC_KITTY.with(|value| value.replace(true)));
+    f()
+}
+
+fn apply_multiplexer_protocol_limits(picker: &mut Picker, multiplexer: Multiplexer) {
+    let current = picker.protocol_type();
+    let adjusted =
+        adjust_protocol_for_multiplexer(current, multiplexer, zellij_kitty_images_enabled());
+    if adjusted != current {
+        crate::log_info(&format!(
+            "Image protocol {:?} disabled inside {}; using {:?}. Unset JCODE_ZELLIJ_KITTY_IMAGES to use classic Kitty placements",
+            current,
+            multiplexer.label(),
+            adjusted
+        ));
+        picker.set_protocol_type(adjusted);
+    }
+}
+
 fn tmux_reports_native_sixel(sixel_support: &str, client_termfeatures: &str) -> bool {
     sixel_support.trim() == "1"
         && client_termfeatures
@@ -875,6 +944,29 @@ mod tests {
         assert!(!tmux_reports_native_sixel("0", "sixel"));
         assert!(!tmux_reports_native_sixel("1", "256,clipboard,mouse"));
         assert!(!tmux_reports_native_sixel("1", "sixel-overwrite"));
+    }
+
+    #[test]
+    fn zellij_preserves_classic_kitty_unless_explicitly_disabled() {
+        assert_eq!(
+            adjust_protocol_for_multiplexer(ProtocolType::Kitty, Multiplexer::Zellij, false),
+            ProtocolType::Halfblocks
+        );
+        assert_eq!(
+            adjust_protocol_for_multiplexer(ProtocolType::Kitty, Multiplexer::Zellij, true),
+            ProtocolType::Kitty
+        );
+        // Zellij's Sixel passthrough and other multiplexers are untouched.
+        assert_eq!(
+            adjust_protocol_for_multiplexer(ProtocolType::Sixel, Multiplexer::Zellij, false),
+            ProtocolType::Sixel
+        );
+        for mux in [Multiplexer::None, Multiplexer::Tmux, Multiplexer::Herdr] {
+            assert_eq!(
+                adjust_protocol_for_multiplexer(ProtocolType::Kitty, mux, false),
+                ProtocolType::Kitty
+            );
+        }
     }
 
     #[test]

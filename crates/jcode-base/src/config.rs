@@ -11,7 +11,8 @@ pub use jcode_config_types::{
     LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MenubarConfig, NamedProviderAuth,
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
     NotificationsConfig, PowerConfig, ProviderConfig, QuickPromptsConfig, ReasoningDisplayMode,
-    SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout,
+    SafetyConfig, SessionConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
+    SwarmStripLayout,
     TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,31 @@ const CONFIG_CACHE_CHECK_INTERVAL: Duration = if cfg!(test) {
 } else {
     Duration::from_millis(500)
 };
+
+#[cfg(test)]
+#[test]
+fn kagi_websearch_documented_config_parses() {
+    let docs = include_str!("../../../docs/kagi-web-search.md");
+    // Normalize line endings: git's text=auto plus core.autocrlf makes this
+    // file CRLF on Windows checkouts, so a literal LF fence split misses it.
+    let docs = docs.replace("\r\n", "\n");
+    let example = docs
+        .split("```toml\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    let config: Config = toml::from_str(example).unwrap();
+    assert_eq!(config.websearch.engine, WebSearchEngine::Kagi);
+    assert!(!config.websearch.native_enabled());
+    assert!(config.websearch.fallback_engines.is_empty());
+    assert_eq!(config.websearch.kagi_api_key_env, "KAGI_API_KEY");
+    let encoded = toml::to_string(&config.websearch).unwrap();
+    let decoded: WebSearchConfig = toml::from_str(&encoded).unwrap();
+    assert_eq!(decoded.engine, WebSearchEngine::Kagi);
+    assert_eq!(decoded.kagi_api_key_env, "KAGI_API_KEY");
+}
 
 #[cfg(test)]
 #[test]
@@ -70,7 +96,36 @@ snippet_pointer = "/summary"
     assert!(WebSearchConfig::default().custom.is_none());
 }
 
+#[cfg(test)]
+#[test]
+fn agents_jev_models_parse_and_default_unset() {
+    let config: AgentsConfig = toml::from_str(
+        r#"
+memory_jev_model = "typesafe/jev-1.14"
+browser_jev_model = "typesafe/jev-1.14"
+voice_jev_model = "typesafe/jev-1.14"
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        config.memory_jev_model.as_deref(),
+        Some("typesafe/jev-1.14")
+    );
+    assert_eq!(
+        config.browser_jev_model.as_deref(),
+        Some("typesafe/jev-1.14")
+    );
+    assert_eq!(config.voice_jev_model.as_deref(), Some("typesafe/jev-1.14"));
+    let defaults = AgentsConfig::default();
+    assert!(defaults.memory_jev_model.is_none());
+    assert!(defaults.browser_jev_model.is_none());
+    assert!(defaults.voice_jev_model.is_none());
+}
+
 const CONFIG_ENV_KEYS: &[&str] = &[
+    "JCODE_HIBERNATION_IDLE_SECS",
+    "JCODE_HIBERNATION_MODE",
+    "JCODE_REQUEST_COMPRESSION",
     "HOME",
     "JCODE_COMMIT_LOG_KEY",
     "JCODE_RESUME_PROJECT_SCOPE",
@@ -171,6 +226,14 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_EMBEDDING_MODEL",
     "JCODE_MEMORY_ENABLED",
     "JCODE_MEMORY_JEV_PROVIDER",
+    "JCODE_BROWSER_JEV_PROVIDER",
+    "JCODE_VOICE_JEV_PROVIDER",
+    "JCODE_LAYA_BASE_URL",
+    "LAYA_BASE_URL",
+    "LAYA_API_KEY",
+    "JCODE_MEMORY_JEV_MODEL",
+    "JCODE_BROWSER_JEV_MODEL",
+    "JCODE_VOICE_JEV_MODEL",
     "JCODE_ENABLE_MERMAID",
     "JCODE_MEMORY_JEV_PROVIDER",
     "JCODE_MEMORY_MODEL",
@@ -229,7 +292,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_SWARM_ENABLED",
     "JCODE_SWARM_EFFORT",
     "JCODE_SWARM_ROOT_EFFORT",
-    "JCODE_SWARM_DEEP_ROOT_EFFORT",
     "JCODE_SWARM_MODEL",
     "JCODE_SWARM_MAX_CONCURRENT_AGENTS",
     "JCODE_SWARM_SPAWN_MODE",
@@ -532,6 +594,9 @@ pub fn on_config_reloaded(listener: fn()) {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
+    /// Idle session memory hibernation policy.
+    pub session: SessionConfig,
+
     /// Daemon behavior for autonomous wake requests.
     pub server: ServerConfig,
 
@@ -684,7 +749,7 @@ impl Default for AcpConfig {
 pub enum McpToolsMode {
     /// Never change the cached tool list for MCP changes. Providers with
     /// native deferred loading (Claude, OpenAI gpt-5.4+) get MCP tools as
-    /// deferred definitions; others get the fixed `mcp_search`/`mcp_call`
+    /// deferred definitions; others get the fixed `mcp` search/call
     /// surface, with new tools described in the transcript.
     #[default]
     Auto,
@@ -738,9 +803,9 @@ pub struct ToolConfig {
         alias = "mcp_tools_auto_threshold_tokens"
     )]
     pub mcp_tools_token_threshold: usize,
-    /// Opt-in Codemode: expose a `codemode` tool that runs model-written
+    /// Codemode: expose a `codemode` tool that runs model-written
     /// JavaScript in an embedded QuickJS sandbox able to call every other
-    /// tool (including MCP tools). Off by default.
+    /// tool (including MCP tools). Enabled by default.
     pub codemode: bool,
 }
 
@@ -753,7 +818,7 @@ impl Default for ToolConfig {
             disable_base_tools: false,
             mcp_tools: McpToolsMode::Auto,
             mcp_tools_token_threshold: 8_000,
-            codemode: false,
+            codemode: true,
         }
     }
 }
@@ -818,7 +883,6 @@ impl ToolConfig {
                     "read",
                     "write",
                     "edit",
-                    "replace",
                     "apply_patch",
                     "agentgrep",
                     "ls",
@@ -836,7 +900,6 @@ impl ToolConfig {
                     "read",
                     "write",
                     "edit",
-                    "replace",
                     "apply_patch",
                     "agentgrep",
                     "ls",

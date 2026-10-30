@@ -368,6 +368,7 @@ pub(super) async fn dispatch_swarm_todo_progress(
         Some((completed, total))
     };
     let mut items = compact_todo_items(&event.todos);
+    let (statuses, blocked_reason) = todo_runtime_projection(&event.todos);
 
     let swarm_id = {
         let mut members = swarm_members.write().await;
@@ -386,11 +387,17 @@ pub(super) async fn dispatch_swarm_todo_progress(
         {
             new.tool_intents = old.tool_intents.clone();
         }
-        if member.todo_progress == progress && member.todo_items == items {
+        if member.todo_progress == progress
+            && member.todo_items == items
+            && member.runtime.todo_statuses == statuses
+            && member.runtime.todo_blocked_reason == blocked_reason
+        {
             return; // no change, skip the broadcast
         }
         member.todo_progress = progress;
         member.todo_items = items;
+        member.runtime.todo_statuses = statuses;
+        member.runtime.todo_blocked_reason = blocked_reason;
         member.swarm_id.clone()
     };
     if let Some(swarm_id) = swarm_id {
@@ -551,11 +558,47 @@ const SWARM_TODO_CONTENT_CAP: usize = 120;
 const SWARM_TOOL_INTENTS_CAP: usize = 3;
 const SWARM_TOOL_INTENT_CAP: usize = 120;
 
+fn todo_display_status(todo: &crate::todo::TodoItem) -> String {
+    if crate::todo::todo_completely_blocked(todo) {
+        "completely_blocked".into()
+    } else {
+        todo.status.clone()
+    }
+}
+
+/// A complete blocker applies to the worker only when every unfinished item
+/// is completely blocked. Independent pending/running work must remain actionable.
+pub(super) fn todo_runtime_projection(
+    todos: &[crate::todo::TodoItem],
+) -> (Vec<String>, Option<String>) {
+    let statuses = todos.iter().map(todo_display_status).collect();
+    let unfinished: Vec<_> = todos
+        .iter()
+        .filter(|todo| crate::todo::is_incomplete_todo(todo))
+        .collect();
+    let reason = (!unfinished.is_empty()
+        && unfinished
+            .iter()
+            .all(|todo| crate::todo::todo_completely_blocked(todo)))
+    .then(|| {
+        unfinished
+            .iter()
+            .filter_map(|todo| todo.completely_blocked.as_ref())
+            .map(|required| required.reason.trim().to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+    .map(|reason| format!("Completely blocked: {reason}"));
+    (statuses, reason)
+}
+
 /// Build the capped, display-only todo snapshot that crosses the swarm
 /// boundary. Prefers showing the active window: everything from the first
 /// non-completed item onward, then backfills with the most recent completed
 /// items if there is room left in the cap.
-fn compact_todo_items(todos: &[crate::todo::TodoItem]) -> Vec<crate::protocol::SwarmTodoItem> {
+pub(super) fn compact_todo_items(
+    todos: &[crate::todo::TodoItem],
+) -> Vec<crate::protocol::SwarmTodoItem> {
     let first_open = todos
         .iter()
         .position(|t| t.status != "completed")
@@ -568,7 +611,7 @@ fn compact_todo_items(todos: &[crate::todo::TodoItem]) -> Vec<crate::protocol::S
         .take(SWARM_TODO_ITEMS_CAP)
         .map(|t| crate::protocol::SwarmTodoItem {
             content: cap_chars(&t.content, SWARM_TODO_CONTENT_CAP),
-            status: t.status.clone(),
+            status: todo_display_status(t),
             tool_intents: Vec::new(),
         })
         .collect()
@@ -622,6 +665,94 @@ pub(super) async fn dispatch_ui_activity(
 mod tests {
     use super::*;
     use crate::bus::{BatchProgress, ToolEvent, ToolStatus};
+
+    #[tokio::test]
+    async fn swarm_todo_statuses_include_items_outside_detail_window() {
+        let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let member = SwarmMember {
+            session_id: "worker".into(),
+            event_tx,
+            event_txs: HashMap::new(),
+            working_dir: None,
+            swarm_id: None,
+            swarm_enabled: true,
+            status: "running".into(),
+            detail: None,
+            task_label: None,
+            friendly_name: None,
+            report_back_to_session_id: None,
+            latest_completion_report: None,
+            role: "agent".into(),
+            joined_at: std::time::Instant::now(),
+            last_status_change: std::time::Instant::now(),
+            is_headless: true,
+            output_tail: None,
+            todo_progress: None,
+            todo_items: Vec::new(),
+            runtime: Default::default(),
+        };
+        let members = Arc::new(RwLock::new(HashMap::from([("worker".into(), member)])));
+        let swarms = Arc::new(RwLock::new(HashMap::new()));
+        let mut event = crate::bus::TodoEvent {
+            session_id: "worker".into(),
+            todos: (0..20)
+                .map(|i| crate::todo::TodoItem {
+                    id: i.to_string(),
+                    content: format!("Step {i}"),
+                    status: "pending".into(),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        dispatch_swarm_todo_progress(&event, &members, &swarms).await;
+        {
+            let guard = members.read().await;
+            let worker = &guard["worker"];
+            assert_eq!(worker.todo_items.len(), SWARM_TODO_ITEMS_CAP);
+            assert_eq!(worker.runtime.todo_statuses.len(), 20);
+        }
+        // Same counts and same capped detail snapshot, but a different status
+        // outside the window must still reach clients.
+        event.todos[19].status = "in_progress".into();
+        dispatch_swarm_todo_progress(&event, &members, &swarms).await;
+        assert_eq!(
+            members.read().await["worker"].runtime.todo_statuses[19],
+            "in_progress"
+        );
+        for todo in &mut event.todos {
+            todo.completely_blocked = Some(crate::todo::TodoCompleteBlocker {
+                reason: "Required data is permanently unavailable".into(),
+            });
+        }
+        dispatch_swarm_todo_progress(&event, &members, &swarms).await;
+        {
+            let members = members.read().await;
+            let runtime = &members["worker"].runtime;
+            assert!(
+                runtime
+                    .todo_statuses
+                    .iter()
+                    .all(|s| s == "completely_blocked")
+            );
+            assert!(
+                runtime
+                    .todo_blocked_reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("Required data is permanently unavailable")
+            );
+            assert_eq!(members["worker"].todo_items[0].status, "completely_blocked");
+        }
+        event.todos[19].completely_blocked = None;
+        dispatch_swarm_todo_progress(&event, &members, &swarms).await;
+        assert!(
+            members.read().await["worker"]
+                .runtime
+                .todo_blocked_reason
+                .is_none(),
+            "independent in-progress work prevents a worker-wide pause"
+        );
+    }
 
     fn tool(id: &str, intent: &str, status: ToolStatus) -> ToolEvent {
         ToolEvent {

@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use super::provider_init::ProviderChoice;
 
+mod cloud_env;
+pub(crate) use cloud_env::CloudEnvCommand;
+mod cloud_ephemeral;
 mod mcp;
+pub(crate) use cloud_ephemeral::CloudEphemeralCommand;
 pub(crate) use mcp::McpCommand;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -285,7 +289,11 @@ pub(crate) enum Command {
     Repl,
 
     /// Update jcode to the latest version
-    Update,
+    Update {
+        /// Persist an update channel (stable permits returning from preview).
+        #[arg(long, value_parser = ["preview", "stable"])]
+        channel: Option<String>,
+    },
 
     /// Show build/version information in human or JSON form
     Version {
@@ -723,11 +731,202 @@ pub(crate) enum ServerCommand {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CloudCommand {
+    /// Transfer explicit project environment requirements without exposing values.
+    Env {
+        #[command(subcommand)]
+        action: CloudEnvCommand,
+    },
+    /// Manage disposable remote machines with mandatory automatic expiry.
+    Ephemeral {
+        #[command(subcommand)]
+        action: CloudEphemeralCommand,
+    },
     /// Upload, list, verify, and view cloud-synced sessions
     Sessions {
         #[command(subcommand)]
         action: CloudSessionsCommand,
     },
+
+    /// Prepare the destination without reading or moving a live session.
+    #[command(hide = true)]
+    Prepare {
+        #[command(flatten)]
+        target: CloudMoveTarget,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Internal: report the supported coordinated migration protocol.
+    #[command(hide = true)]
+    GroupProtocol,
+
+    /// Replace the cloud checkout with this local Git repository, keeping a backup.
+    /// Does not move a conversation or copy authentication or ignored files.
+    Replace {
+        #[command(flatten)]
+        target: CloudMoveTarget,
+        /// Confirm replacing the cloud checkout after preserving a backup.
+        #[arg(long)]
+        yes: bool,
+        /// Validate the incoming snapshot and destination without replacing files.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Internal: receive a repository-only replacement archive.
+    #[command(hide = true)]
+    ReplaceReceive {
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Move a live session (transcript, repo state, env notes) to a cloud host
+    /// and keep working there. Your local files stay editable. Git reconciles
+    /// both sides when the session comes back with `jcode cloud return`.
+    /// Copies the session's Jcode-owned OpenAI/Claude OAuth login securely to
+    /// the chosen host. Other accounts and external credentials stay local.
+    Move {
+        /// Session ID or name. Defaults to the session this command runs in.
+        #[arg(long)]
+        session: Option<String>,
+        /// Include another independent session sharing this repository (repeatable).
+        #[arg(long = "include-session", conflicts_with = "session_only")]
+        include_sessions: Vec<String>,
+        /// Move only this session instead of its associated swarm.
+        #[arg(long)]
+        session_only: bool,
+        #[command(flatten)]
+        target: CloudMoveTarget,
+        /// Allow moving while the session is mid-turn (the agent itself runs /cloud).
+        #[arg(long)]
+        allow_active: bool,
+        /// Prepare and verify only. Do not hand ownership to the cloud host.
+        #[arg(long)]
+        dry_run: bool,
+        /// After a successful move, attach this terminal to the cloud session.
+        #[arg(long)]
+        attach: bool,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Bring a moved session back: pull the cloud transcript and merge its git
+    /// work into your local checkout with a normal 3-way merge.
+    Return {
+        #[arg(long)]
+        session: Option<String>,
+        #[command(flatten)]
+        target: CloudMoveTarget,
+        /// Bring the work back as refs only (refs/jcode-cloud/<session>/*) without touching the working tree.
+        #[arg(long)]
+        refs_only: bool,
+        /// After returning, resume the session in this terminal.
+        #[arg(long)]
+        attach: bool,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show where moved sessions live and how their repos have diverged.
+    Where {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Attach this terminal to a session that lives on a cloud host.
+    Attach {
+        #[arg(long)]
+        session: Option<String>,
+    },
+
+    /// Show, wake, or stop the Jcode Cloud machine included with your Jcode
+    /// subscription. Its disk persists while it sleeps.
+    Machine {
+        #[arg(value_enum, default_value = "status")]
+        action: CloudMachineAction,
+    },
+
+    /// Internal: SSH ProxyCommand that wakes and authorizes the managed machine.
+    #[command(hide = true)]
+    Proxy,
+
+    /// Internal: transfer one named OAuth account over the private SSH channel.
+    #[command(hide = true)]
+    Credentials {
+        #[arg(long = "provider", id = "cloud_credential_provider")]
+        provider: String,
+        #[arg(long = "account", id = "cloud_credential_account")]
+        account: String,
+        /// Export to stdout instead of importing from stdin.
+        #[arg(long)]
+        export: bool,
+    },
+
+    /// Internal: import the account router's API keys, provider token stores
+    /// and auto-switch pool from stdin over the private SSH channel.
+    #[command(hide = true)]
+    RouterCredentials,
+
+    /// Internal: remote side of `cloud move` (reads a bundle tarball on stdin).
+    #[command(hide = true)]
+    Receive {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Internal: remote side of `cloud move` commit phase.
+    #[command(hide = true)]
+    Activate {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        epoch: u64,
+    },
+
+    /// Internal: remote side of `cloud return` (writes a bundle tarball to stdout).
+    #[command(hide = true)]
+    Export {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        epoch: u64,
+    },
+
+    /// Internal: restore cloud ownership after a rejected credential return.
+    #[command(hide = true)]
+    CancelReturn {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        epoch: u64,
+    },
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub(crate) enum CloudMachineAction {
+    Status,
+    Wake,
+    Stop,
+}
+
+#[derive(Parser, Debug, Clone, Default)]
+pub(crate) struct CloudMoveTarget {
+    /// SSH host alias for the cloud machine. Defaults to $JCODE_CLOUD_HOST,
+    /// else your subscription's managed Jcode Cloud machine (`jcode-cloud`).
+    #[arg(long)]
+    pub(crate) host: Option<String>,
+    /// Remote jcode binary (name or path). Defaults to `jcode`.
+    #[arg(long)]
+    pub(crate) remote_binary: Option<String>,
+    /// Local command used in place of `ssh <host>` (for tests and custom
+    /// transports). Receives the remote shell command as its final argument.
+    /// Also read from $JCODE_CLOUD_TRANSPORT.
+    #[arg(long, hide = true)]
+    pub(crate) transport: Option<String>,
 }
 
 mod cloud_sessions;
