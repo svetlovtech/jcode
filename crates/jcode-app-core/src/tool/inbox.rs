@@ -74,6 +74,37 @@ fn is_textual(mime: &str, name: &str) -> bool {
         || name.ends_with(".sh")
 }
 
+/// Human-readable one-liner for a Telegram forward origin: who the message
+/// was forwarded from. Telegram only exposes what the sender's privacy
+/// settings allow: the user id/name for open users, a plaintext name for
+/// hidden senders, or the channel title.
+fn describe_forward(f: &crate::chat::InboxForwardInfo) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(name) = &f.forward_from_user_name {
+        parts.push(name.clone());
+    }
+    if let Some(title) = &f.forward_from_chat_title {
+        parts.push(format!("channel «{title}»"));
+    }
+    if parts.is_empty() {
+        if let Some(chat) = f.forward_from_chat {
+            parts.push(format!("chat {chat}"));
+        } else if let Some(from) = f.forward_from {
+            parts.push(format!("user {from}"));
+        }
+    }
+    if let Some(mid) = f.forward_from_message_id {
+        parts.push(format!("message {mid}"));
+    }
+    if let Some(date) = &f.forward_date {
+        parts.push(format!("original at {date}"));
+    }
+    if parts.is_empty() {
+        parts.push("origin hidden".to_string());
+    }
+    parts.join(", ")
+}
+
 // ── inbox_list ──────────────────────────────────────────────────────────────
 
 pub struct InboxListTool;
@@ -110,6 +141,9 @@ impl Tool for InboxListTool {
                 "- {} (file_id: {}, {}, {} bytes, uploaded {})\n",
                 file.name, file.id, file.mime_type, file.size, file.uploaded_at
             ));
+            if let Some(fwd) = &file.forward {
+                text.push_str(&format!("  forwarded: {}\n", describe_forward(fwd)));
+            }
         }
         if let Some(expires) = &info.expires_at {
             text.push_str(&format!("Inbox expires at: {expires}\n"));

@@ -225,6 +225,32 @@ impl ChatServiceClient {
 
 // ── Inbox (files the user sent to the bot) ──────────────────────────────────
 
+/// Forward origin of an inbox file (Telegram forward metadata as the chat
+/// service relays it). Only the shapes Telegram actually sends are present:
+/// an open user (from + user_name), a hidden sender (user_name only, the
+/// "ForwardSenderName"), or a channel (chat_id + chat_title + message_id).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InboxForwardInfo {
+    /// Original sender's user id when the forward is from an open user or
+    /// channel post (Telegram hides it for privacy-restricted senders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_from: Option<i64>,
+    /// Channel/chat id when forwarded from a channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_from_chat: Option<i64>,
+    /// Best-effort display name: @username for open users, the plaintext
+    /// sender name for privacy-hidden forwards, or the channel title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_from_user_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_from_chat_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_from_message_id: Option<i64>,
+    /// ISO-8601 timestamp of the original message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_date: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxFileInfo {
     #[serde(rename = "file_id")]
@@ -234,6 +260,9 @@ pub struct InboxFileInfo {
     pub size: u64,
     #[serde(default)]
     pub uploaded_at: String,
+    /// Present only when the file arrived as a Telegram forward.
+    #[serde(default)]
+    pub forward: Option<InboxForwardInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
