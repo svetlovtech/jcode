@@ -176,6 +176,18 @@ pub async fn run_tui_client(
         // No local exec/reload may escape the SSH lifetime guard or inherit
         // remote session IDs as if they referred to laptop session files.
         tui_runtime.finish(true);
+        if let Some(handoff) = run_result.cloud_handoff.clone() {
+            // `/local` from a cloud attach: the SSH guard in `ssh.rs` must
+            // close before we exec, so hand the target back to it.
+            super::cloud_move::stash_handoff(handoff);
+            return Ok(());
+        }
+        if let Some(session_id) = run_result.reload_session.as_deref() {
+            // The owning SSH guard closes its transport before the re-exec.
+            // Never hand a remote ID to hot_reload, which resumes locally.
+            super::ssh::stash_client_reload(session_id.to_string());
+            return Ok(());
+        }
         if has_requested_action(&run_result) {
             anyhow::bail!(
                 "local reload/update actions are unavailable during SSH attach; reconnect after updating explicitly"
@@ -190,6 +202,7 @@ pub async fn run_tui_client(
         if let Some(ref session_id) = run_result.session_id {
             print_session_resume_hint(session_id);
         }
+        crate::tui::herdr::release();
         return Ok(());
     }
 
@@ -202,12 +215,21 @@ pub async fn run_tui_client(
         std::process::exit(code);
     }
 
+    if let Some(handoff) = run_result.cloud_handoff.clone() {
+        return super::cloud_move::exec_handoff(handoff);
+    }
+
     execute_requested_action(&run_result)?;
 
     if !has_requested_action(&run_result)
         && let Some(ref session_id) = run_result.session_id
     {
         print_session_resume_hint(session_id);
+    }
+    if !has_requested_action(&run_result) {
+        // The user quit (reload/update exec back into jcode in this pane and
+        // keep reporting, so they must not release it).
+        crate::tui::herdr::release();
     }
 
     Ok(())

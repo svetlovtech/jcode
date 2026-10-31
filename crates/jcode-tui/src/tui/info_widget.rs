@@ -67,6 +67,7 @@ use swarm_background::{render_background_compact, render_background_widget, rend
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
 use tips::render_tips_widget;
+pub(crate) use usage_render::render_inline_limit_bar;
 pub(crate) use usage_render::render_labeled_bar as render_usage_limit_bar;
 use usage_render::{render_usage_compact, render_usage_widget};
 
@@ -685,6 +686,8 @@ pub struct InfoWidgetData {
     pub session_name: Option<String>,
     /// Current working directory for this session.
     pub working_dir: Option<String>,
+    /// Session origin, if its working directory has changed.
+    pub original_working_dir: Option<String>,
     pub client_count: Option<usize>,
     /// Memory system statistics
     pub memory_info: Option<MemoryInfo>,
