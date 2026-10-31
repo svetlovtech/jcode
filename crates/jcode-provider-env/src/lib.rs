@@ -231,6 +231,25 @@ pub fn save_env_value_to_env_file(
     Ok(())
 }
 
+
+/// Persist a named API key to its provider env file, file-only.
+///
+/// Deliberately unlike [`save_env_value_to_env_file`]: no process env write.
+/// Env wins over file in [`load_api_key_from_env_or_config`], so a ``set_var``
+/// here would shadow later file edits until restart (issue #1386).
+pub fn save_named_api_key(env_file: &str, key_name: &str, key: &str) -> anyhow::Result<()> {
+    if !is_safe_env_key_name(key_name) {
+        anyhow::bail!("Invalid API key variable name: {}", key_name);
+    }
+    if !is_safe_env_file_name(env_file) {
+        anyhow::bail!("Invalid env file name: {}", env_file);
+    }
+
+    let file_path = jcode_storage::app_config_dir()?.join(env_file);
+    jcode_storage::upsert_env_file_value(&file_path, key_name, Some(key))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
