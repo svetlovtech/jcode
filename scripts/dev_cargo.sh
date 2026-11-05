@@ -246,9 +246,17 @@ maybe_enable_sccache() {
       log "removed inherited sccache wrapper for incremental build (it cannot cache incremental units)"
       return
     fi
-    sccache_status="external:${RUSTC_WRAPPER}"
-    log "keeping existing RUSTC_WRAPPER=${RUSTC_WRAPPER}"
-    return
+    # An inherited wrapper path that does not exist would fail every rustc
+    # invocation with "could not execute process ... (never executed)". Drop
+    # it and fall through to the normal discovery below.
+    if [[ ! -x "${RUSTC_WRAPPER}" ]] && ! command -v "${RUSTC_WRAPPER}" >/dev/null 2>&1; then
+      log "inherited RUSTC_WRAPPER='${RUSTC_WRAPPER}' is not executable; dropping it"
+      unset RUSTC_WRAPPER
+    else
+      sccache_status="external:${RUSTC_WRAPPER}"
+      log "keeping existing RUSTC_WRAPPER=${RUSTC_WRAPPER}"
+      return
+    fi
   fi
 
   if [[ "$force_sccache" != "1" ]] && build_is_incremental "$@"; then
