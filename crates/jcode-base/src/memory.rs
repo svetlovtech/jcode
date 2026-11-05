@@ -168,9 +168,8 @@ impl MemoryEntryEmbeddingExt for MemoryEntry {
     }
 }
 
-/// Stable on-disk location of a project's memory file, derived from the
-/// project directory path. Used by the cloud move paths to ship project
-/// memory alongside a relocated session.
+/// Per-project memory file for `project_dir`. Keyed by the absolute path, so a
+/// migrated session that keeps the same repo path keeps the same memories.
 pub fn project_memory_file(project_dir: &std::path::Path) -> Result<PathBuf> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -267,16 +266,7 @@ impl MemoryManager {
             None => return Ok(None),
         };
 
-        let project_hash = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            project_dir.hash(&mut hasher);
-            format!("{:016x}", hasher.finish())
-        };
-
-        let memory_dir = storage::jcode_dir()?.join("memory").join("projects");
-        Ok(Some(memory_dir.join(format!("{}.json", project_hash))))
+        project_memory_file(&project_dir).map(Some)
     }
 
     fn legacy_notes_path(&self) -> Result<Option<PathBuf>> {
@@ -818,20 +808,7 @@ impl MemoryManager {
     }
 
     /// Ensure all memories have embeddings (backfill for existing memories)
-    ///
-    /// Regenerates embeddings for two kinds of entries:
-    /// - entries with no embedding at all, and
-    /// - entries whose stored embedding was produced by a different model than
-    ///   the currently active backend (e.g. the user switched memory from the
-    ///   bundled local MiniLM to a remote OpenAI-compatible embedder). Stale
-    ///   vectors from another vector space are useless for dense search (the
-    ///   scorer skips model mismatches), so re-embedding them restores full
-    ///   hybrid retrieval coverage.
     pub fn backfill_embeddings(&self) -> Result<(usize, usize)> {
-        let active_model = crate::embedding_backend::active_model_id();
-        let needs_embedding = |entry: &MemoryEntry| {
-            entry.embedding.is_none() || entry.effective_embedding_model() != active_model
-        };
         let mut generated = 0;
         let mut failed = 0;
 
@@ -839,10 +816,7 @@ impl MemoryManager {
         if let Ok(mut graph) = self.load_project_graph() {
             let mut changed = false;
             for entry in graph.memories.values_mut() {
-                if needs_embedding(entry) {
-                    // Clear first so ensure_embedding actually regenerates
-                    // instead of returning false for an existing stale vector.
-                    entry.set_embedding(None, None);
+                if entry.embedding.is_none() {
                     if entry.ensure_embedding() {
                         generated += 1;
                         changed = true;
@@ -860,8 +834,7 @@ impl MemoryManager {
         if let Ok(mut graph) = self.load_global_graph() {
             let mut changed = false;
             for entry in graph.memories.values_mut() {
-                if needs_embedding(entry) {
-                    entry.set_embedding(None, None);
+                if entry.embedding.is_none() {
                     if entry.ensure_embedding() {
                         generated += 1;
                         changed = true;

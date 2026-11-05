@@ -21,11 +21,9 @@ pub(super) fn map_memory_subcommand(subcmd: MemoryCommand) -> commands::MemorySu
             overwrite,
         },
         MemoryCommand::Stats => commands::MemorySubcommand::Stats,
-        MemoryCommand::Backfill => commands::MemorySubcommand::Backfill,
         MemoryCommand::ClearTest => commands::MemorySubcommand::ClearTest,
     }
 }
-
 
 pub(super) fn map_ambient_subcommand(subcmd: AmbientCommand) -> commands::AmbientSubcommand {
     match subcmd {
