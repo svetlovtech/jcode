@@ -544,7 +544,6 @@ fn test_expand_badge_does_not_render_for_short_untruncated_edit_diff() {
 }
 
 #[test]
-#[test]
 fn test_expand_badge_renders_when_diffs_are_hidden() {
     let _render_lock = scroll_render_test_lock();
     for mode in [

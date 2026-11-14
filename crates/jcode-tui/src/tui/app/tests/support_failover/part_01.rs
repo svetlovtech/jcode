@@ -484,6 +484,14 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::storage::lock_test_env();
     let _provider_env = ProviderEnvGuard::clear();
     let temp = tempfile::tempdir().expect("tempdir");
+    // With a permissive umask (e.g. 002) the tempdir gets group-write, which
+    // the account-store guard rejects. Test homes must satisfy the same
+    // ownership contract as a real ~/.jcode.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700));
+    }
     let _env_guard = EnvRestoreGuard::capture(["JCODE_HOME"]);
     crate::env::set_var("JCODE_HOME", temp.path());
     // Preserve inherited telemetry opt-out env. In this crate telemetry-core is

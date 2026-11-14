@@ -473,6 +473,12 @@ mod tests {
     #[test]
     fn store_lock_serializes_threads_and_nested_transactions() {
         let home = tempfile::tempdir().unwrap();
+        // A permissive umask (002) leaves group-write, which lock_store rejects.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 let home = home.path();
@@ -489,6 +495,12 @@ mod tests {
     #[test]
     fn store_lock_serializes_process_transactions() {
         let home = tempfile::tempdir().unwrap();
+        // A permissive umask (002) leaves group-write, which lock_store rejects.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let mut children = (0..4)
             .map(|_| {
                 std::process::Command::new(std::env::current_exe().unwrap())
@@ -572,6 +584,12 @@ mod tests {
     #[test]
     fn store_lock_rejects_invalid_names() {
         let home = tempfile::tempdir().unwrap();
+        // A permissive umask (002) leaves group-write, which lock_store rejects.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         for name in [
             "",
             ".",
@@ -591,6 +609,12 @@ mod tests {
     fn store_lock_rejects_unsafe_paths() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let home = tempfile::tempdir().unwrap();
+        // A permissive umask (002) leaves group-write, which lock_store rejects.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let target = home.path().join("target");
         std::fs::write(&target, "unchanged").unwrap();
         let path = home.path().join(".auth.json.lock");

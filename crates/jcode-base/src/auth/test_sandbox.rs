@@ -15,6 +15,14 @@ impl AuthTestSandbox {
         let temp = tempfile::Builder::new()
             .prefix("jcode-auth-lifecycle-")
             .tempdir()?;
+        // A permissive umask (e.g. 002) leaves group-write on the tempdir,
+        // which the account-store lock guard rejects. Sandbox homes must
+        // satisfy the same ownership contract as a real ~/.jcode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
         let saved_env = tracked_env_vars()
             .into_iter()
             .map(|key| {
