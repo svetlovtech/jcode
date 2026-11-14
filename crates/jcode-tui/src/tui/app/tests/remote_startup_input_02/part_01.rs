@@ -1409,6 +1409,7 @@ fn test_create_transfer_session_from_parent_copies_todos_and_uses_compacted_cont
             &app.session.id,
             &[crate::todo::TodoItem {
                 lane_after: None,
+                lane_owner: None,
                 stage: None,
                 details: None,
                 group: None,
@@ -1421,8 +1422,8 @@ fn test_create_transfer_session_from_parent_copies_todos_and_uses_compacted_cont
                 confidence: None,
                 completion_confidence: None,
                 confidence_history: Vec::new(),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: vec!["parent-build-task".to_string()],
             }],
         )
@@ -1597,6 +1598,7 @@ fn test_escape_interrupt_disables_auto_poke_while_processing() {
         .push(super::commands::build_poke_message(&[
             crate::todo::TodoItem {
                 lane_after: None,
+                lane_owner: None,
                 stage: None,
                 details: None,
                 group: None,
@@ -1609,8 +1611,8 @@ fn test_escape_interrupt_disables_auto_poke_while_processing() {
                 confidence: None,
                 completion_confidence: None,
                 confidence_history: Vec::new(),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
             },
         ]));

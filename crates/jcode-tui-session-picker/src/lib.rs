@@ -61,11 +61,11 @@ pub enum SessionFilterMode {
 impl SessionFilterMode {
     pub fn next(self) -> Self {
         match self {
-            Self::All => Self::CurrentDir,
+            Self::All => Self::Cloud,
+            Self::Cloud => Self::CurrentDir,
             Self::CurrentDir => Self::CatchUp,
             Self::CatchUp => Self::Saved,
-            Self::Saved => Self::Cloud,
-            Self::Cloud => Self::Active,
+            Self::Saved => Self::Active,
             Self::Active => Self::ClaudeCode,
             Self::ClaudeCode => Self::Codex,
             Self::Codex => Self::Pi,
@@ -81,11 +81,11 @@ impl SessionFilterMode {
     pub fn previous(self) -> Self {
         match self {
             Self::All => Self::Cursor,
-            Self::CurrentDir => Self::All,
+            Self::Cloud => Self::All,
+            Self::CurrentDir => Self::Cloud,
             Self::CatchUp => Self::CurrentDir,
             Self::Saved => Self::CatchUp,
-            Self::Cloud => Self::Saved,
-            Self::Active => Self::Cloud,
+            Self::Active => Self::Saved,
             Self::ClaudeCode => Self::Active,
             Self::Codex => Self::ClaudeCode,
             Self::Pi => Self::Codex,
@@ -136,6 +136,9 @@ pub struct SessionInfo {
     pub saved: bool,
     pub save_label: Option<String>,
     pub status: SessionStatus,
+    /// Persisted todo statuses for local Jcode sessions, in todo order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub todo_statuses: Vec<String>,
     pub needs_catchup: bool,
     pub estimated_tokens: usize,
     /// First visible user prompt in the session, shown in compact list rows.
@@ -174,6 +177,10 @@ pub struct PreviewMessage {
     pub content: String,
     pub tool_calls: Vec<String>,
     pub tool_data: Option<ToolCall>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub duration_secs: Option<f32>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub title: Option<String>,
     pub timestamp: Option<DateTime<Utc>>,
 }
 
@@ -263,13 +270,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filter_cycle_includes_cloud_immediately_after_saved() {
+    fn filter_cycle_puts_cloud_immediately_after_all() {
         let cycle = [
             SessionFilterMode::All,
+            SessionFilterMode::Cloud,
             SessionFilterMode::CurrentDir,
             SessionFilterMode::CatchUp,
             SessionFilterMode::Saved,
-            SessionFilterMode::Cloud,
             SessionFilterMode::Active,
             SessionFilterMode::ClaudeCode,
             SessionFilterMode::Codex,

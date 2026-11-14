@@ -1,5 +1,5 @@
 //! Server-owned remote loop control. Only sessions explicitly opted in through
-//! remote.runtime_command get a state file, so ordinary local clients retain
+//! remote subscription or runtime_command get a state file, so ordinary local clients retain
 //! their existing client-side follow-up behavior.
 use crate::{agent::Agent, protocol::ServerEvent, todo};
 use anyhow::{Context, Result, bail};
@@ -10,8 +10,6 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use tokio::sync::mpsc;
-
-const MAX_CONTINUATIONS_PER_TURN: usize = 32;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Workflow {
@@ -77,6 +75,24 @@ fn read_state(path: &Path) -> Result<LoopState> {
     Ok(state)
 }
 
+/// Remote clients delegate automatic followups to the daemon, including while
+/// disconnected. Initialize once, never re-arm an explicit /poke off or reset
+/// persisted retry budgets when another client attaches.
+pub(super) fn initialize_remote_session(session_id: &str, enabled: bool) -> Result<()> {
+    let _lock = state_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let path = state_path(session_id)?;
+    if path.exists() {
+        return Ok(());
+    }
+    let state = LoopState {
+        poke_enabled: enabled,
+        policy: todo::followup::FollowUpPolicy::new(enabled),
+        ..Default::default()
+    };
+    crate::storage::write_json(&path, &state)?;
+    Ok(())
+}
+
 fn update_state<T>(
     session_id: &str,
     action: impl FnOnce(&mut LoopState) -> Result<T>,
@@ -124,6 +140,21 @@ pub(super) fn control(
         let _lock = state_lock().lock().unwrap_or_else(|p| p.into_inner());
         return status_result(session_id, &read_state(&state_path(session_id)?)?).map(Some);
     }
+    if command == "poke" && action == "on" {
+        return update_state(session_id, |state| {
+            if !state.poke_enabled {
+                state.poke_enabled = true;
+                state.policy = todo::followup::FollowUpPolicy::new(true);
+            }
+            if let Some(workflow) = state.workflow.as_mut() {
+                workflow.active = true;
+            }
+            let message = "Remote auto-poke enabled. Continuation will be checked at the next turn boundary. Use /poke to continue now.".to_string();
+            state.last_notice = Some(message.clone());
+            let data = status_data(session_id, state)?;
+            Ok(Some((data, message)))
+        });
+    }
     if !matches!(action.as_str(), "off" | "stop") {
         return Ok(None);
     }
@@ -145,7 +176,10 @@ pub(super) fn control(
             "Stopped /{command} at the next turn boundary. The current turn is not cancelled."
         ));
         let data = status_data(session_id, state)?;
-        Ok(Some((data, state.last_notice.clone().unwrap_or_default())))
+        Ok(Some((
+            data,
+            state.last_notice.as_deref().unwrap_or("").to_owned(),
+        )))
     })
 }
 
@@ -200,7 +234,7 @@ pub(super) async fn execute(
         let message = format!(
             "Recovered remote runtime context in session `{session_id}` without clearing history. Repaired {} missing tool outputs and reset provider resume/cache state. {}",
             data["repaired_tool_outputs"],
-            data["compaction_message"].as_str().unwrap_or_default()
+            data["compaction_message"].as_str().unwrap_or("")
         );
         return Ok((data, message));
     }
@@ -273,7 +307,10 @@ pub(super) async fn execute(
                 active: true,
             });
         }
-        let workflow = state.workflow.as_ref().expect("workflow initialized");
+        let workflow = state
+            .workflow
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Workflow was not initialized"))?;
         state.policy = todo::followup::FollowUpPolicy::new(!workflow.plan_only);
         let prompt = launch_prompt(workflow, resume);
         state.last_notice = Some(format!(
@@ -283,7 +320,7 @@ pub(super) async fn execute(
         ));
         let mut data = status_data(&session_id, state)?;
         data["next_prompt"] = json!(prompt);
-        Ok((data, state.last_notice.clone().unwrap_or_default()))
+        Ok((data, state.last_notice.as_deref().unwrap_or("").to_owned()))
     })
 }
 
@@ -328,15 +365,29 @@ fn next_followup(
 /// Run inside the server turn task before releasing its processing guard. Never
 /// recursively invokes turn_failover, and rereads durable state each turn so
 /// stop/status work from another connection while a model/tool is busy.
+#[cfg(test)]
 pub(super) async fn run_followups(
     agent: &mut Agent,
     event_tx: mpsc::UnboundedSender<ServerEvent>,
 ) -> Result<()> {
+    let lease = agent.claim_server_turn()?;
+    run_reserved_followups(agent, &lease, event_tx).await
+}
+
+pub(super) async fn run_reserved_followups(
+    agent: &mut Agent,
+    lease: &crate::agent::TurnLease,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
+) -> Result<()> {
+    agent.validate_server_turn(lease)?;
     let session_id = agent.session_id().to_string();
     if !state_path(&session_id)?.exists() {
         return Ok(());
     }
-    for _ in 0..MAX_CONTINUATIONS_PER_TURN {
+    // Bound retries by unchanged todo state, not total productive turns. A long
+    // cloud campaign can legitimately make progress across hundreds of turns.
+    // The persisted policy still limits no-progress retries and quality gates.
+    loop {
         if agent.graceful_shutdown_signal().is_set() {
             return Ok(());
         }
@@ -354,12 +405,32 @@ pub(super) async fn run_followups(
         let decision = update_state(&session_id, |state| Ok(next_followup(state, &snapshot)))?;
         apply_effects(&session_id, &decision.effects)?;
         let Some(followup) = decision.follow_up else {
+            if let Some(notice) = decision.notice {
+                crate::logging::info(&format!(
+                    "Remote continuation paused for session {session_id}: {notice}"
+                ));
+                if let Err(error) = event_tx.send(ServerEvent::Notification {
+                    from_session: "runtime".into(),
+                    from_name: Some("cloud continuation".into()),
+                    notification_type: crate::protocol::NotificationType::Message {
+                        scope: Some("runtime".into()),
+                        channel: None,
+                        tldr: None,
+                    },
+                    message: notice,
+                }) {
+                    crate::logging::debug(&format!(
+                        "Could not broadcast remote continuation pause for {session_id}: {error}"
+                    ));
+                }
+            }
             return Ok(());
         };
         // Persisted budgets are committed before the request. A daemon restart
         // cannot turn a failing continuation into an unlimited retry loop.
-        let result = super::client_lifecycle::process_locked_message_streaming_mpsc(
+        let result = super::client_lifecycle::process_reserved_message_streaming_mpsc(
             agent,
+            lease,
             &followup.message,
             Vec::new(),
             None,
@@ -368,6 +439,7 @@ pub(super) async fn run_followups(
         .await;
         let result = super::turn_failover::retry_turn_with_server_failover(
             agent,
+            lease,
             result,
             None,
             event_tx.clone(),
@@ -388,18 +460,6 @@ pub(super) async fn run_followups(
         }
         result?;
     }
-    update_state(&session_id, |state| {
-        state.policy.disable();
-        state.poke_enabled = false;
-        if let Some(workflow) = state.workflow.as_mut() {
-            workflow.active = false;
-        }
-        state.last_notice = Some(
-            "Paused at the server continuation safety limit. Inspect status before resuming."
-                .into(),
-        );
-        Ok(())
-    })
 }
 
 #[cfg(test)]

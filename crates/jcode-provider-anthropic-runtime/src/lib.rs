@@ -458,6 +458,16 @@ const API_VERSION: &str = "2023-06-01";
 /// Maximum number of retries for transient errors
 const MAX_RETRIES: u32 = 3;
 
+/// Attempt budget for pure transport faults (connection reset, DNS failure,
+/// HTTP/2 stream error). A Wi-Fi roam or DHCP renewal takes several seconds to
+/// settle, so the ~3s that [`MAX_RETRIES`] covers can fall entirely inside one
+/// blip. Six attempts back off ~1s, 2s, 4s, 8s, 16s (~31s of waiting).
+const TRANSPORT_MAX_RETRIES: u32 = 6;
+
+/// Extended transport retries stop once this much time has passed since the
+/// first failure, so slow per-attempt timeouts cannot stall a turn for minutes.
+const TRANSPORT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Base delay for exponential backoff (in milliseconds)
 const RETRY_BASE_DELAY_MS: u64 = 1000;
 
@@ -1051,9 +1061,13 @@ impl AnthropicProvider {
                 "claude",
                 &fresh_creds.refresh_token,
             ) {
-                anyhow::bail!(
-                    "Claude OAuth refresh token was previously rejected by Anthropic and cannot be refreshed. Run `jcode login --provider claude` to mint a fresh token."
-                );
+                if fresh_creds.expires_at <= now {
+                    anyhow::bail!(
+                        "Claude OAuth refresh token was previously rejected by Anthropic and cannot be refreshed. Run `jcode login --provider claude` to mint a fresh token."
+                    );
+                }
+                // Rejection blocks refresh, not a still-live access token.
+                return Ok((fresh_creds.access_token, true));
             }
 
             jcode_base::logging::info(
@@ -1438,7 +1452,6 @@ impl Provider for AnthropicProvider {
                 return None;
             }
         };
-        let cached = cached.as_ref()?;
         let accounts = match auth::claude::list_accounts() {
             Ok(accounts) => accounts,
             Err(error) => {
@@ -1447,6 +1460,17 @@ impl Provider for AnthropicProvider {
                 ));
                 return None;
             }
+        };
+        let Some(cached) = cached.as_ref() else {
+            // Binding an account clears the token cache until the next request.
+            // The explicit binding still names the exact account that will
+            // serve, so a just-switched route can show its identity at once.
+            // An unbound runtime stays unknown: never guess the global account.
+            let label = self.oauth_account_label()?;
+            return accounts
+                .into_iter()
+                .find(|account| account.label == label)
+                .and_then(|account| account.email);
         };
         accounts.into_iter().find_map(|account| {
             let matches = (!cached.access_token.is_empty()
@@ -1842,8 +1866,12 @@ async fn run_stream_with_retries(
     // Track every model id we have already attempted so a retired/renamed
     // model only falls back to genuinely new candidates.
     let mut tried_models: Vec<String> = vec![original_model.clone()];
+    // Transport faults get a longer budget than other transient errors; the
+    // displayed maximum grows only once one has actually been seen.
+    let mut retry_max = MAX_RETRIES;
+    let mut first_failure_at: Option<std::time::Instant> = None;
 
-    for attempt in 0..MAX_RETRIES {
+    for attempt in 0..TRANSPORT_MAX_RETRIES {
         if attempt > 0 {
             // Exponential backoff with jitter: ~1s, ~2s, ~4s
             let delay = jcode_provider_core::retry_after::retry_delay(
@@ -1855,7 +1883,7 @@ async fn run_stream_with_retries(
                 .send(Ok(StreamEvent::ConnectionPhase {
                     phase: jcode_message_types::ConnectionPhase::Retrying {
                         attempt: attempt + 1,
-                        max: MAX_RETRIES,
+                        max: retry_max,
                     },
                 }))
                 .await;
@@ -1863,7 +1891,7 @@ async fn run_stream_with_retries(
             jcode_base::logging::info(&format!(
                 "Retrying Anthropic API request (attempt {}/{})",
                 attempt + 1,
-                MAX_RETRIES
+                retry_max
             ));
         }
 
@@ -2041,6 +2069,48 @@ async fn run_stream_with_retries(
                     continue;
                 }
 
+                // Definitive exhaustion cannot recover by sleeping. Model-scoped
+                // recovery above still gets first refusal, including earned resets.
+                if is_oauth
+                    && !saw_output
+                    && is_account_limit_error(&error_str)
+                    && oauth_account_label.as_deref().is_some_and(|label| {
+                        jcode_base::usage::account_known_exhausted(
+                            jcode_base::usage::MultiAccountProviderKind::Anthropic,
+                            label,
+                        )
+                    })
+                {
+                    // The API often uses the same generic 429 for exhausted plan
+                    // usage and burst throttles. Preserve verified account usage
+                    // evidence so the outer router can skip its countdown too.
+                    if tx
+                        .send(Err(anyhow::anyhow!("Usage exhausted: {e:#}")))
+                        .await
+                        .is_err()
+                    {
+                        jcode_base::logging::debug("Anthropic exhaustion event receiver closed");
+                    }
+                    return;
+                }
+                if !saw_output
+                    && jcode_provider_core::failover::is_definitive_usage_exhaustion(&error_str)
+                {
+                    if tx.send(Err(e)).await.is_err() {
+                        jcode_base::logging::debug("Anthropic exhaustion event receiver closed");
+                    }
+                    return;
+                }
+
+                let retry_recoverable_limit =
+                    error_classification::should_retry_recoverable_rate_limit(
+                        &error_str,
+                        jcode_provider_core::retry_after::retry_after_from_error(&e),
+                        jcode_base::config::Config::load()
+                            .provider
+                            .anthropic_retry_recoverable_rate_limits,
+                    );
+
                 // Account routing owns pre-output OAuth quota/auth failures when
                 // other pool members exist, even if they are cooling down. Let
                 // the router decide whether to rotate or report exhaustion.
@@ -2054,6 +2124,7 @@ async fn run_stream_with_retries(
                     && !response_accepted
                     && (is_account_limit_error(&error_str) || is_oauth_auth_error(&error_str))
                     && jcode_base::provider::has_alternate_account_in_pool("claude")
+                    && !retry_recoverable_limit
                 {
                     let _ = tx.send(Err(e)).await;
                     return;
@@ -2076,7 +2147,15 @@ async fn run_stream_with_retries(
                 }
 
                 // Check if this is a transient/retryable error
-                if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                let since_first_failure = first_failure_at
+                    .get_or_insert_with(std::time::Instant::now)
+                    .elapsed();
+                let is_transport_fault =
+                    jcode_provider_core::is_transient_transport_error(&error_str);
+                if should_retry_transient(&error_str, attempt, since_first_failure) {
+                    if is_transport_fault {
+                        retry_max = TRANSPORT_MAX_RETRIES;
+                    }
                     if saw_output {
                         // The fault hit mid-stream after partial output reached
                         // the consumer. Tell it to discard the partial attempt
@@ -2089,7 +2168,7 @@ async fn run_stream_with_retries(
                         let _ = tx
                             .send(Ok(StreamEvent::RetryRollback {
                                 attempt: attempt + 2,
-                                max: MAX_RETRIES,
+                                max: retry_max,
                             }))
                             .await;
                     } else {
@@ -2108,6 +2187,17 @@ async fn run_stream_with_retries(
                             e
                         )))
                         .await;
+                } else if is_transport_fault && attempt > 0 {
+                    // Say that retries already happened and why they failed,
+                    // so the raw transport error is not mistaken for a
+                    // provider or model problem.
+                    let _ = tx
+                        .send(Err(e.context(format!(
+                            "Network unstable: {} attempts over {}s all failed at the transport level",
+                            attempt + 1,
+                            since_first_failure.as_secs().max(1)
+                        ))))
+                        .await;
                 } else {
                     let _ = tx.send(Err(e)).await;
                 }
@@ -2121,7 +2211,7 @@ async fn run_stream_with_retries(
         let _ = tx
             .send(Err(anyhow::anyhow!(
                 "Failed after {} retries: {}",
-                MAX_RETRIES,
+                TRANSPORT_MAX_RETRIES,
                 e
             )))
             .await;
@@ -2308,6 +2398,22 @@ async fn stream_response(
         response.status()
     ));
 
+    if is_oauth && (response.status().is_success() || response.status().as_u16() == 429) {
+        // Model responses already return real subscription limits, including
+        // quota walls. Keep those visible even when usage lookups are throttled.
+        // Recording them avoids a separate, heavily throttled usage lookup
+        // while the account is active. Never attribute API-key quotas here.
+        let headers = response.headers().clone();
+        let label = usage_label.map(str::to_owned);
+        let quota_token = token.clone();
+        tokio::task::spawn_blocking(move || {
+            jcode_base::usage::record_anthropic_response_limits(
+                &quota_token,
+                label.as_deref(),
+                &headers,
+            );
+        });
+    }
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = jcode_provider_core::retry_after::retry_after(response.headers());
@@ -2328,6 +2434,7 @@ async fn stream_response(
     // Parse SSE stream
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8 = jcode_base::util::Utf8StreamDecoder::new();
     let mut sse_state = SseStreamState {
         requested_model_base,
         ..SseStreamState::default()
@@ -2351,8 +2458,7 @@ async fn stream_response(
                 );
             }
         };
-        let chunk_str = String::from_utf8_lossy(&chunk);
-        buffer.push_str(&chunk_str);
+        buffer.push_str(&utf8.decode(&chunk));
 
         // Process complete SSE events
         while let Some(event) = parse_sse_event(&mut buffer) {
@@ -2662,3 +2768,29 @@ mod account_failover_tests;
 
 #[cfg(test)]
 mod account_binding_tests;
+
+#[cfg(test)]
+mod sse_utf8_chunk_tests {
+    use super::parse_sse_event;
+
+    /// Regression for #2087: a multibyte character split across transport
+    /// chunks must not decode to U+FFFD.
+    #[test]
+    fn multibyte_char_split_across_chunks_decodes_cleanly() {
+        let payload = "event: content_block_delta\ndata: {\"text\":\"你好世界\"}\n\n";
+        let bytes = payload.as_bytes();
+        let split = payload.find('你').unwrap() + 1; // inside the 3-byte char
+        let mut utf8 = jcode_base::util::Utf8StreamDecoder::new();
+        let mut buffer = String::new();
+        for chunk in [
+            &bytes[..split],
+            &bytes[split..split + 3],
+            &bytes[split + 3..],
+        ] {
+            buffer.push_str(&utf8.decode(chunk));
+        }
+        let event = parse_sse_event(&mut buffer).expect("complete event");
+        assert!(!event.data.contains('\u{FFFD}'));
+        assert!(event.data.contains("你好世界"));
+    }
+}

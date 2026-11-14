@@ -144,7 +144,8 @@ fn test_tool_row_time_badge_survives_narrow_width() {
         tool_duration_ms: Some(48_300),
     };
 
-    let expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
+    // Stamp assertions live in the other badge tests; this truncation test pins badge ordering only.
+    let _expected_stamp = stamp.with_timezone(&chrono::Local).format("%H:%M:%S").to_string();
     for width in [40, 56, 72, 120] {
         let row = row_text(&msg, width);
         assert!(

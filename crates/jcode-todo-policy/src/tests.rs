@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn background_dependencies_block_only_for_running_ids() {
     let todo = TodoItem {
-        completely_blocked: None,
-        external_blocker: None,
+        requires_user_auth: None,
+        waiting_reason: None,
         waiting_on: vec!["task-a".into()],
         ..Default::default()
     };
@@ -610,12 +610,13 @@ fn todo(content: &str, status: &str, group: Option<&str>) -> TodoItem {
         id: content.to_ascii_lowercase().replace(' ', "-"),
         group: group.map(str::to_string),
         lane_after: None,
+        lane_owner: None,
         confidence: None,
         completion_confidence: None,
         confidence_history: Vec::new(),
         blocked_by: Vec::new(),
-        completely_blocked: None,
-        external_blocker: None,
+        requires_user_auth: None,
+        waiting_reason: None,
         waiting_on: Vec::new(),
         assigned_to: None,
         stage: None,
@@ -1111,5 +1112,27 @@ fn ungrouped_session_title_prefers_plan_intention_then_item_content() {
     assert_eq!(
         derive_session_title(&todos, &TodoPlan::default()).as_deref(),
         Some("Run targeted tests")
+    );
+}
+
+#[test]
+fn plan_title_beats_lane_name_and_intention() {
+    let todos = vec![todo("Fix it", "in_progress", Some("implementation"))];
+    let plan = TodoPlan {
+        title: Some("  Live default sync ".to_string()),
+        user_intention: Some("Make defaults apply immediately".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        derive_session_title(&todos, &plan).as_deref(),
+        Some("Live default sync")
+    );
+    let blank = TodoPlan {
+        title: Some("   ".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        derive_session_title(&todos, &blank).as_deref(),
+        Some("implementation")
     );
 }

@@ -241,8 +241,8 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
                 priority: "high".to_string(),
                 confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
                 completion_confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
                 confidence_history: vec![
                     crate::todo::ConfidenceState::Speculative,
@@ -285,6 +285,7 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
 #[test]
 fn test_completion_gate_nudges_stop_after_budget_exhausted() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
 
@@ -299,8 +300,8 @@ fn test_completion_gate_nudges_stop_after_budget_exhausted() {
                 priority: "high".to_string(),
                 confidence: Some(crate::todo::ConfidenceState::from_legacy_score(50)),
                 completion_confidence: Some(crate::todo::ConfidenceState::from_legacy_score(50)),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
                 confidence_history: vec![crate::todo::ConfidenceState::from_legacy_score(50)],
                 ..Default::default()
@@ -352,6 +353,7 @@ fn test_completion_gate_nudges_stop_after_budget_exhausted() {
 #[test]
 fn low_ownership_is_gated_after_the_completed_todo_was_saved() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
 
@@ -365,8 +367,8 @@ fn low_ownership_is_gated_after_the_completed_todo_was_saved() {
                 group: Some("release".to_string()),
                 confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
                 completion_confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
                 confidence_history: vec![crate::todo::ConfidenceState::from_legacy_score(100)],
                 ..Default::default()
@@ -404,6 +406,7 @@ fn low_ownership_is_gated_after_the_completed_todo_was_saved() {
 #[test]
 fn remote_ownership_gate_reads_the_remote_goal_assessment() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         app.is_remote = true;
@@ -420,8 +423,8 @@ fn remote_ownership_gate_reads_the_remote_goal_assessment() {
                 group: Some("release".to_string()),
                 confidence: Some(crate::todo::ConfidenceState::Verified),
                 completion_confidence: Some(crate::todo::ConfidenceState::Verified),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
                 confidence_history: vec![crate::todo::ConfidenceState::Verified],
                 ..Default::default()
@@ -463,8 +466,8 @@ fn save_unfinished_ownership_fixture(session_id: &str) {
             status: "completed".to_string(),
             confidence: Some(crate::todo::ConfidenceState::Verified),
             completion_confidence: Some(crate::todo::ConfidenceState::Verified),
-            external_blocker: None,
-            completely_blocked: None,
+            waiting_reason: None,
+            requires_user_auth: None,
             waiting_on: Vec::new(),
             confidence_history: vec![crate::todo::ConfidenceState::Verified],
             ..Default::default()
@@ -499,6 +502,7 @@ fn dispatch_ownership_followup(app: &mut App) {
 #[test]
 fn ownership_gate_stops_on_unchanged_assessment_without_claiming_success() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         app.todo_final_response_requested = false;
@@ -519,6 +523,7 @@ fn ownership_gate_stops_on_unchanged_assessment_without_claiming_success() {
 #[test]
 fn ownership_gate_ignores_cosmetic_assessment_changes() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         save_unfinished_ownership_fixture(&app.session.id);
@@ -541,6 +546,7 @@ fn ownership_gate_ignores_cosmetic_assessment_changes() {
 #[test]
 fn ownership_gate_rechecks_actual_gap_changes_and_respects_budget() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         save_unfinished_ownership_fixture(&app.session.id);
@@ -658,6 +664,7 @@ fn scheduling_and_remote_done_accept_documented_stops_and_requested_only_results
 #[test]
 fn ownership_gate_rearms_after_reopened_work_or_explicit_poke() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         save_unfinished_ownership_fixture(&app.session.id);
@@ -681,6 +688,7 @@ fn ownership_gate_rearms_after_reopened_work_or_explicit_poke() {
 #[test]
 fn ownership_gate_survives_reload_and_is_scoped_to_session() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         app.auto_poke_incomplete_todos = true;
         save_unfinished_ownership_fixture(&app.session.id);
@@ -701,6 +709,7 @@ fn ownership_gate_survives_reload_and_is_scoped_to_session() {
 #[test]
 fn remote_done_does_not_repeat_ownership_notice() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -897,8 +906,8 @@ fn test_gate_digest_is_disabled_at_turn_end() {
                 priority: "high".to_string(),
                 confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
                 completion_confidence: Some(crate::todo::ConfidenceState::from_legacy_score(100)),
-                external_blocker: None,
-                completely_blocked: None,
+                waiting_reason: None,
+                requires_user_auth: None,
                 waiting_on: Vec::new(),
                 confidence_history: vec![
                     crate::todo::ConfidenceState::from_legacy_score(97),

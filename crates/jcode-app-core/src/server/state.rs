@@ -409,6 +409,24 @@ pub(super) async fn unregister_session_event_sender(
     }
 }
 
+/// Send synchronously, moving the original payload into the final live queue.
+/// In particular, a closed queue must not cause a large swarm snapshot clone.
+pub(super) fn send_event_to_targets<'a>(
+    targets: impl IntoIterator<Item = &'a mpsc::UnboundedSender<ServerEvent>>,
+    event: ServerEvent,
+) -> usize {
+    let mut targets = targets.into_iter().filter(|tx| !tx.is_closed()).peekable();
+    let mut delivered = 0;
+    while let Some(tx) = targets.next() {
+        if targets.peek().is_none() {
+            delivered += usize::from(tx.send(event).is_ok());
+            break;
+        }
+        delivered += usize::from(tx.send(event.clone()).is_ok());
+    }
+    delivered
+}
+
 pub(super) async fn fanout_session_event(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     session_id: &str,
@@ -422,6 +440,7 @@ pub(super) async fn fanout_session_event(
         };
 
         member.event_txs.retain(|_, tx| !tx.is_closed());
+        crate::stream_batching::note_session_targets(session_id, member.event_txs.keys());
 
         if member.event_txs.is_empty() {
             vec![member.event_tx.clone()]
@@ -433,13 +452,7 @@ pub(super) async fn fanout_session_event(
         }
     };
 
-    let mut delivered = 0;
-    for tx in targets {
-        if tx.send(event.clone()).is_ok() {
-            delivered += 1;
-        }
-    }
-    delivered
+    send_event_to_targets(&targets, event)
 }
 
 pub(super) async fn fanout_live_client_event(
@@ -457,13 +470,7 @@ pub(super) async fn fanout_live_client_event(
         member.event_txs.values().cloned().collect::<Vec<_>>()
     };
 
-    let mut delivered = 0;
-    for tx in targets {
-        if tx.send(event.clone()).is_ok() {
-            delivered += 1;
-        }
-    }
-    delivered
+    send_event_to_targets(&targets, event)
 }
 
 /// Deliver `event` to every live attachment of `session_id` except the
@@ -487,42 +494,97 @@ pub(super) async fn fanout_peer_client_event(
             .map(|(_, tx)| tx.clone())
             .collect::<Vec<_>>()
     };
-    let mut delivered = 0;
-    for tx in targets {
-        if tx.send(event.clone()).is_ok() {
-            delivered += 1;
+    send_event_to_targets(&targets, event)
+}
+
+/// Owns one turn's event queue. Closing or aborting the producer drains all
+/// accepted events before releasing the runtime's publication reservation.
+pub(super) struct TurnEventChannel {
+    tx: mpsc::UnboundedSender<ServerEvent>,
+    close: Option<tokio::sync::oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TurnEventChannel {
+    pub(super) fn new(
+        session_id: String,
+        members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        fallback: mpsc::UnboundedSender<ServerEvent>,
+        lease: &crate::agent::TurnLease,
+    ) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ServerEvent>();
+        let (close, mut closed) = tokio::sync::oneshot::channel();
+        let publication = lease.publication_pin();
+        let identity = lease.identity().clone();
+        let task = tokio::spawn(async move {
+            let _publication = publication;
+            let started = ServerEvent::TurnStarted {
+                identity: identity.clone(),
+            };
+            if fanout_session_event(&members, &session_id, started.clone()).await == 0 {
+                let _ = fallback.send(started);
+            }
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = &mut closed => { rx.close(); break; }
+                    event = rx.recv() => event,
+                };
+                let Some(event) = event else {
+                    return;
+                };
+                match &event {
+                    ServerEvent::ToolExec { name, .. } => {
+                        crate::agents_status::tool_started(&session_id, name)
+                    }
+                    ServerEvent::ToolDone { .. } => crate::agents_status::tool_done(&session_id),
+                    _ => {}
+                }
+                let event = ServerEvent::TurnEvent {
+                    identity: identity.clone(),
+                    event: Box::new(event),
+                };
+                if fanout_session_event(&members, &session_id, event.clone()).await == 0 {
+                    let _ = fallback.send(event);
+                }
+            }
+            while let Some(event) = rx.recv().await {
+                let event = ServerEvent::TurnEvent {
+                    identity: identity.clone(),
+                    event: Box::new(event),
+                };
+                if fanout_session_event(&members, &session_id, event.clone()).await == 0 {
+                    let _ = fallback.send(event);
+                }
+            }
+        });
+        Self {
+            tx,
+            close: Some(close),
+            task: Some(task),
         }
     }
-    delivered
+
+    pub(super) fn sender(&self) -> mpsc::UnboundedSender<ServerEvent> {
+        self.tx.clone()
+    }
+
+    pub(super) async fn finish(mut self) {
+        self.close.take();
+        if let Some(task) = self.task.take()
+            && let Err(error) = task.await
+        {
+            crate::logging::warn(&format!("Turn event drain failed: {error}"));
+        }
+    }
 }
 
-pub(super) fn session_event_fanout_sender(
-    session_id: String,
-    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-) -> mpsc::UnboundedSender<ServerEvent> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerEvent>();
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let _ = fanout_session_event(&swarm_members, &session_id, event).await;
-        }
-    });
-    tx
-}
-
-pub(super) fn session_event_fanout_sender_with_fallback(
-    session_id: String,
-    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-    fallback_tx: mpsc::UnboundedSender<ServerEvent>,
-) -> mpsc::UnboundedSender<ServerEvent> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerEvent>();
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if fanout_session_event(&swarm_members, &session_id, event.clone()).await == 0 {
-                let _ = fallback_tx.send(event);
-            }
-        }
-    });
-    tx
+impl Drop for TurnEventChannel {
+    fn drop(&mut self) {
+        // Dropping JoinHandle detaches the drain task. It must not be aborted:
+        // already queued events still own the runtime publication reservation.
+        self.close.take();
+    }
 }
 
 pub(super) fn enqueue_soft_interrupt(
@@ -601,7 +663,10 @@ impl SessionControlHandle {
     pub fn provider_handle(&self) -> Option<Arc<dyn Provider>> {
         SESSION_PROVIDERS
             .lock()
-            .ok()?
+            .unwrap_or_else(|poisoned| {
+                crate::logging::warn("Recovering poisoned session provider registry");
+                poisoned.into_inner()
+            })
             .get(&self.session_id)?
             .upgrade()
     }
@@ -753,6 +818,7 @@ impl SessionControlHandle {
             "SESSION_CANCEL_SIGNAL_FIRE session={}",
             self.session_id
         ));
+        crate::mobile_push::mark_cancelled(&self.session_id);
         self.stop_current_turn_signal.fire();
         let active_turn_signals =
             crate::turn_cancel_registry::active_turn_signals(&self.session_id);

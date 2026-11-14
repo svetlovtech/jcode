@@ -1,4 +1,9 @@
 use super::*;
+
+mod cloud_directories;
+mod codemode_preview;
+mod preview_redraw_schedule;
+mod resume_parity;
 use crate::tui::session_picker;
 use crate::tui::ui::tools_ui;
 
@@ -192,6 +197,8 @@ fn native_scrollbar_visibility_requires_overflow() {
 
 #[derive(Clone, Default)]
 struct TestState {
+    session_picker: Option<std::rc::Rc<std::cell::RefCell<session_picker::SessionPicker>>>,
+    unfocused: bool,
     input: String,
     cursor_pos: usize,
     provider_name: Option<String>,
@@ -202,6 +209,7 @@ struct TestState {
     display_messages: Vec<DisplayMessage>,
     messages_version: u64,
     streaming_text: String,
+    streaming_tools: Vec<ToolCall>,
     batch_progress: Option<crate::bus::BatchProgress>,
     queued_messages: Vec<String>,
     pending_soft_interrupts: Vec<String>,
@@ -214,6 +222,8 @@ struct TestState {
     anim_elapsed: f32,
     now_ms: u64,
     time_since_activity: Option<Duration>,
+    /// `Some(pending)` overrides the trait's conservative default.
+    stream_reveal_pending: Option<bool>,
     remote_startup_phase_active: bool,
     inline_view_state: Option<crate::tui::InlineViewState>,
     inline_interactive_state: Option<crate::tui::InlineInteractiveState>,
@@ -241,6 +251,9 @@ struct TestState {
 }
 
 impl crate::tui::TuiState for TestState {
+    fn client_focused(&self) -> bool {
+        !self.unfocused
+    }
     fn justrust_status(&self) -> Option<&crate::tui::justrust_status::StatusRow> {
         self.justrust_status.as_ref()
     }
@@ -339,7 +352,7 @@ impl crate::tui::TuiState for TestState {
         None
     }
     fn streaming_tool_calls(&self) -> Vec<ToolCall> {
-        Vec::new()
+        self.streaming_tools.clone()
     }
     fn elapsed(&self) -> Option<Duration> {
         None
@@ -361,6 +374,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn time_since_activity(&self) -> Option<Duration> {
         self.time_since_activity
+    }
+    fn stream_reveal_pending(&self) -> bool {
+        self.stream_reveal_pending.unwrap_or(true)
     }
     fn total_session_tokens(&self) -> Option<(u64, u64)> {
         None
@@ -540,7 +556,7 @@ impl crate::tui::TuiState for TestState {
         None
     }
     fn session_picker_overlay(&self) -> Option<&std::cell::RefCell<session_picker::SessionPicker>> {
-        None
+        self.session_picker.as_deref()
     }
     fn login_picker_overlay(
         &self,

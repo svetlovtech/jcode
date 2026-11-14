@@ -4,7 +4,6 @@ use crate::session::Session;
 use jcode_swarm_core::{SwarmLifecycleStatus, SwarmMemberRecord, SwarmRole};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 struct TestHome {
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -51,7 +50,9 @@ fn state() -> SwarmState {
     )
 }
 fn agents() -> SessionAgents {
-    Arc::new(RwLock::new(HashMap::new()))
+    Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::new(),
+    ))
 }
 fn member(id: &str, swarm: &str) -> PersistedSwarmMember {
     PersistedSwarmMember {
@@ -451,11 +452,13 @@ async fn live_agents_are_reserved_together_then_only_selected_agents_evicted() {
     let one = make_agent("one");
     let two = make_agent("two");
     let unrelated = make_agent("unrelated");
-    sessions.write().await.extend([
+    for (id, agent) in [
         ("one".into(), one.clone()),
         ("two".into(), two.clone()),
         ("unrelated".into(), unrelated.clone()),
-    ]);
+    ] {
+        sessions.register_new(id, agent).await.unwrap();
+    }
     let raw = handle_with_gate(
         "group_transfer:inspect:{\"session_ids\":[\"one\",\"two\"]}",
         &sessions,
@@ -496,6 +499,73 @@ async fn live_agents_are_reserved_together_then_only_selected_agents_evicted() {
     assert!(one.lock().await.ensure_session_lease().is_err());
     assert!(two.lock().await.ensure_session_lease().is_err());
     assert!(unrelated.lock().await.ensure_session_lease().is_ok());
+}
+
+#[tokio::test]
+async fn admission_waits_for_selected_and_unscoped_drain_without_bypassing_work() {
+    use std::time::Duration;
+    let gate = crate::runtime_activity::ActivityGate::default();
+    let ids = BTreeSet::from(["selected".to_owned()]);
+    let _unrelated = gate.try_enter_session("unrelated").unwrap();
+    for action in ["inspect", "prepare"] {
+        for unscoped in [false, true] {
+            let busy = if unscoped {
+                gate.try_enter_global().unwrap()
+            } else {
+                gate.try_enter_session("selected").unwrap()
+            };
+            let wait = admit_transfer(&gate, &ids, action, Duration::from_secs(1));
+            tokio::pin!(wait);
+            tokio::select! {
+                _ = &mut wait => panic!("admitted before outstanding work drained"),
+                _ = tokio::time::sleep(Duration::from_millis(35)) => {}
+            }
+            drop(busy);
+            let fence = wait.await.expect("drained work should admit the transfer");
+            assert!(gate.try_enter_session("selected").is_err());
+            assert!(gate.try_enter_global().is_err());
+            assert!(gate.try_enter_session("unrelated").is_ok());
+            drop(fence);
+        }
+    }
+}
+
+#[tokio::test]
+async fn admission_timeout_keeps_real_work_busy_and_does_not_leave_a_fence() {
+    use std::time::Duration;
+    let gate = crate::runtime_activity::ActivityGate::default();
+    let ids = BTreeSet::from(["selected".to_owned()]);
+    for unscoped in [false, true] {
+        let busy = if unscoped {
+            gate.try_enter_global().unwrap()
+        } else {
+            gate.try_enter_session("selected").unwrap()
+        };
+        for action in [
+            "inspect",
+            "prepare",
+            "abort",
+            "reserve",
+            "import",
+            "check_import",
+        ] {
+            assert!(
+                admit_transfer(&gate, &ids, action, Duration::from_millis(30))
+                    .await
+                    .is_none()
+            );
+            assert!(
+                gate.try_enter_session("selected").is_ok(),
+                "no fence on failed admission"
+            );
+        }
+        drop(busy);
+        assert!(
+            admit_transfer(&gate, &ids, "inspect", Duration::ZERO)
+                .await
+                .is_some()
+        );
+    }
 }
 
 #[tokio::test]
@@ -703,6 +773,18 @@ async fn production_transport_inspect_prepare_abort_with_unrelated_active_sessio
     let mut reader = BufReader::new(reader);
     let mut expected = None;
     for id in 1..=3 {
+        // Reproduce a terminal event reaching the client before the daemon's
+        // selected turn/callback reservation has actually drained. Exercise
+        // both bare inspect and the server-prefixed prepare route.
+        let drain = (id <= 2).then(|| {
+            let activity = crate::runtime_activity::global()
+                .try_enter_session("selected")
+                .unwrap();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                drop(activity);
+            })
+        });
         let command = match id {
             1 => "group_transfer:inspect:{\"session_ids\":[\"selected\"]}".to_string(),
             2 => format!(
@@ -733,6 +815,9 @@ async fn production_transport_inspect_prepare_abort_with_unrelated_active_sessio
         assert_eq!(response["type"], "debug_response", "{response}");
         assert_eq!(response["id"], id);
         assert_eq!(response["ok"], true, "{response}");
+        if let Some(drain) = drain {
+            drain.await.unwrap();
+        }
         if id == 1 {
             let mut bundle: GroupTransferBundle =
                 serde_json::from_str(response["output"].as_str().unwrap()).unwrap();

@@ -35,6 +35,7 @@ fn fixture() -> SessionInfo {
             session_id: "faithful_refresh".into(),
         },
         external_path: None,
+        todo_statuses: Vec::new(),
     }
 }
 
@@ -44,8 +45,102 @@ fn message(role: &str, content: &str) -> PreviewMessage {
         content: content.into(),
         tool_calls: vec![],
         tool_data: None,
+        duration_secs: None,
+        title: None,
         timestamp: None,
     }
+}
+
+#[test]
+fn populated_transcript_still_loads_missing_preview_metadata() {
+    let mut snapshot = fixture();
+    snapshot
+        .messages_preview
+        .push(message("assistant", "Already cached"));
+    let mut picker = SessionPicker::new(vec![snapshot]);
+    picker.ensure_selected_preview_loading();
+    assert!(picker.pending_preview_load.is_some());
+}
+
+#[test]
+fn preview_metadata_refreshes_after_freshness_window() {
+    let snapshot = fixture();
+    let mut picker = SessionPicker::new(vec![snapshot.clone()]);
+    picker.preview_extras.insert(
+        snapshot.id.clone(),
+        PreviewExtras {
+            loaded_at: Some(std::time::Instant::now()),
+            ..Default::default()
+        },
+    );
+    picker.ensure_selected_preview_loading();
+    assert!(picker.pending_preview_load.is_none());
+    picker
+        .preview_extras
+        .get_mut(&snapshot.id)
+        .unwrap()
+        .loaded_at = Some(std::time::Instant::now() - Duration::from_secs(16));
+    picker.ensure_selected_preview_loading();
+    assert!(picker.pending_preview_load.is_some());
+}
+
+#[test]
+fn metadata_failure_does_not_invalidate_a_populated_transcript() {
+    let mut snapshot = fixture();
+    snapshot
+        .messages_preview
+        .push(message("assistant", "Cached conversation"));
+    let mut picker = SessionPicker::new(vec![snapshot.clone()]);
+    let mode = crate::config::config().display.diff_mode;
+    let before = picker.preview_content_hash(&snapshot, mode);
+    picker.preview_load_failures.insert(snapshot.id.clone());
+    assert_eq!(before, picker.preview_content_hash(&snapshot, mode));
+}
+
+#[test]
+fn workspace_change_keeps_transcript_but_rejects_old_metadata_and_pending_result() {
+    let snapshot = fixture();
+    let mut picker = SessionPicker::new(vec![snapshot.clone()]);
+    deliver(
+        &mut picker,
+        vec![message("assistant", "Retained conversation")],
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    picker.pending_preview_load = Some(PendingSessionPreviewLoad {
+        session_id: snapshot.id.clone(),
+        receiver,
+    });
+    let mut changed = snapshot;
+    changed.working_dir = Some("/different/workspace".into());
+    picker.reseed_grouped(vec![], vec![changed]);
+    assert!(!picker.preview_extras.contains_key("faithful_refresh"));
+    assert!(picker.pending_preview_load.is_none());
+    assert!(
+        sender.send(None).is_err(),
+        "obsolete loader receiver must be dropped"
+    );
+    assert_eq!(
+        picker.all_sessions[0].messages_preview[0].content,
+        "Retained conversation"
+    );
+}
+
+#[test]
+fn refresh_equality_includes_duration_and_title() {
+    let mut old = fixture();
+    let mut row = message("tool", "completed");
+    row.duration_secs = Some(1.25);
+    row.title = Some("Build".into());
+    old.messages_preview.push(row);
+    assert!(same_transcript(&old, &old));
+    let mut changed = old.clone();
+    changed.messages_preview[0].duration_secs = Some(2.5);
+    assert!(!same_transcript(&old, &changed));
+    changed = old.clone();
+    changed.messages_preview[0].title = Some("Test".into());
+    assert!(!same_transcript(&old, &changed));
+    changed.messages_preview.clear();
+    assert!(same_transcript(&old, &changed));
 }
 
 fn deliver(picker: &mut SessionPicker, messages: Vec<PreviewMessage>) {
@@ -57,6 +152,7 @@ fn deliver(picker: &mut SessionPicker, messages: Vec<PreviewMessage>) {
     sender
         .send(Some(LoadedSessionPreview {
             messages,
+            search: None,
             extras: PreviewExtras {
                 hidden_prompts: 7,
                 ..Default::default()
@@ -185,4 +281,79 @@ fn genuinely_empty_completed_preview_remains_loaded_and_removed_sessions_release
     assert!(render(&mut picker).contains("(empty session)"));
     picker.reseed_grouped(vec![], vec![]);
     assert!(picker.preview_extras.is_empty());
+}
+
+#[test]
+fn resume_time_modes_pick_expected_timestamp() {
+    use super::super::time_labels::session_resume_time_for;
+    use crate::config::ResumeTimeMode;
+    use chrono::Duration;
+
+    let now = chrono::Utc::now();
+    let mut session = fixture();
+    session.created_at = now - Duration::days(3);
+    session.last_message_time = now - Duration::hours(2);
+    session.last_active_at = Some(now - Duration::minutes(5));
+
+    let at = |s: &SessionInfo, mode| session_resume_time_for(s, mode);
+    // Opening without working must not refresh the default label.
+    assert_eq!(
+        at(&session, ResumeTimeMode::Message),
+        now - Duration::hours(2)
+    );
+    assert_eq!(
+        at(&session, ResumeTimeMode::Activity),
+        now - Duration::minutes(5)
+    );
+    assert_eq!(
+        at(&session, ResumeTimeMode::Opened),
+        now - Duration::minutes(5)
+    );
+    assert_eq!(
+        at(&session, ResumeTimeMode::Created),
+        now - Duration::days(3)
+    );
+
+    // Long run after opening: message and activity follow the newest message.
+    session.last_message_time = now - Duration::minutes(1);
+    assert_eq!(
+        at(&session, ResumeTimeMode::Message),
+        now - Duration::minutes(1)
+    );
+    assert_eq!(
+        at(&session, ResumeTimeMode::Activity),
+        now - Duration::minutes(1)
+    );
+    assert_eq!(
+        at(&session, ResumeTimeMode::Opened),
+        now - Duration::minutes(5)
+    );
+}
+
+#[test]
+fn running_session_shows_spinner_state_instead_of_age() {
+    let session = fixture();
+    let mut picker = SessionPicker::new(vec![session.clone()]);
+    let text = |picker: &SessionPicker| {
+        picker
+            .render_session_item_lines_at_frame(&session, false, 0)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>()
+    };
+    assert!(text(&picker).contains("ago"));
+
+    picker.live_presence.insert(
+        session.id.clone(),
+        crate::session::SessionPresence {
+            session_id: session.id.clone(),
+            pid: 1,
+            streaming: true,
+            streaming_since: None,
+            internal: false,
+        },
+    );
+    let running = text(&picker);
+    assert!(running.contains("running"), "row: {running}");
+    assert!(!running.contains("ago"), "row: {running}");
 }

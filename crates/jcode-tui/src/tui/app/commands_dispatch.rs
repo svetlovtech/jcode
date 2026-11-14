@@ -14,7 +14,7 @@ use super::App;
 /// display preferences intentionally stay on the client, never on the VM.
 pub(super) fn ssh_presentation_command(input: &str) -> bool {
     matches!(
-        input.split_whitespace().next().unwrap_or_default(),
+        input.split_whitespace().next().unwrap_or(""),
         "/cancel"
             | "/stop"
             | "/help"
@@ -103,7 +103,7 @@ pub(super) fn handle_ssh_presentation_command(app: &mut App, input: &str) -> boo
 /// against the laptop. Wire-backed commands are handled before local dispatch.
 pub(super) fn ssh_unsupported_command(input: &str) -> bool {
     let mut words = input.split_whitespace();
-    let command = words.next().unwrap_or_default();
+    let command = words.next().unwrap_or("");
     if command.starts_with('!') {
         return true;
     }
@@ -374,10 +374,13 @@ mod tests {
         app.open_login_picker_inline();
         app.open_agents_picker();
         app.handle_new_terminal_hotkey();
-        app.toggle_next_prompt_new_session_routing();
         assert!(app.session_picker_overlay.is_none());
         assert!(app.pending_session_picker_load.is_none());
         assert!(app.inline_interactive_state.is_none());
+        // The fork hotkey is served by the remote daemon, so it stays usable.
+        app.toggle_next_prompt_new_session_routing();
+        assert!(app.route_next_prompt_to_new_session);
+        app.toggle_next_prompt_new_session_routing();
         assert!(!app.route_next_prompt_to_new_session);
 
         let image = tempfile::Builder::new().suffix(".png").tempfile().unwrap();

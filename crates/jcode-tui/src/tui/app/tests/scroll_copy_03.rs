@@ -1515,7 +1515,7 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
         "collapsed card must show the tldr:\n{collapsed}"
     );
     assert!(
-        collapsed.contains("▸ expand"),
+        collapsed.contains("⊞"),
         "collapsed card must show the expand badge:\n{collapsed}"
     );
     assert!(
@@ -1532,7 +1532,7 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
         for col in 0..area.width {
             line.push_str(buf[(col, row)].symbol());
         }
-        if let Some(byte) = line.find("▸ expand") {
+        if let Some(byte) = line.find("⊞") {
             let col = line[..byte].chars().count() as u16;
             badge = Some((col, row));
             break 'rows;
@@ -1576,7 +1576,7 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
         "expanded card must show the body:\n{expanded}"
     );
     assert!(
-        expanded.contains("▾ collapse"),
+        expanded.contains("⊟"),
         "expanded card must show the collapse badge:\n{expanded}"
     );
 
@@ -1589,7 +1589,7 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
         for col in 0..area.width {
             line.push_str(buf[(col, row)].symbol());
         }
-        if let Some(byte) = line.find("▾ collapse") {
+        if let Some(byte) = line.find("⊟") {
             let col = line[..byte].chars().count() as u16;
             collapse_badge = Some((col, row));
             break 'rows2;
@@ -1695,6 +1695,8 @@ fn test_alt_e_expands_prompt_preview_to_multiple_prompts() {
             duration_secs: None,
             title: None,
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
         });
         msgs.push(DisplayMessage {
             role: "assistant".to_string(),
@@ -1703,6 +1705,8 @@ fn test_alt_e_expands_prompt_preview_to_multiple_prompts() {
             duration_secs: None,
             title: None,
             tool_data: None,
+            timestamp: None,
+            tool_duration_ms: None,
         });
     }
     app.display_messages = msgs;

@@ -48,6 +48,8 @@ pub struct DisplayConfig {
     /// Markdown block spacing style (compact/document, default: compact)
     #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub markdown_spacing: MarkdownSpacingMode,
+    /// Append link destinations after Markdown link labels (default: false).
+    pub show_link_urls: bool,
     /// LaTeX rendering style (none/unicode/image, default: image)
     #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub latex_rendering: LatexRenderingMode,
@@ -98,15 +100,20 @@ pub struct DisplayConfig {
     #[serde(default = "default_true")]
     pub keybinding_hints: bool,
     /// Color theme: "auto" (detect terminal background), "dark", or "light".
-    /// Auto queries the terminal's background color (OSC 11) at startup and
-    /// adapts jcode's palette for light backgrounds. Default: auto.
+    /// Auto queries the terminal's background color (OSC 11) at startup,
+    /// periodically during the session, and on focus. Adapts jcode's palette
+    /// when the terminal switches light/dark mode. Default: auto.
     #[serde(default)]
     pub theme: String,
     /// Per-role color overrides, e.g. `user = "#8ab4f8"`. Any TUI color can be
     /// configured: the named roles are substituted directly, and ad hoc shades
     /// used by widgets follow the role they belong to. Run `/colors` to list
     /// roles and `/colors harmony` to score the result.
-    #[serde(default)]
+    ///
+    /// An empty map is not written: a bare `[display.colors]` header invites a
+    /// second one to be appended by hand, and TOML rejects the duplicate, which
+    /// makes the whole file unreadable.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub colors: std::collections::BTreeMap<String, String>,
     /// Opt-in active sessions manager: pressing Left arrow on an empty input
     /// opens a picker scoped to live (open) sessions, showing which are still
@@ -129,6 +136,14 @@ pub struct DisplayConfig {
     /// within this many seconds in Resume (default: 30). Zero disables it.
     /// This uses socket-disconnect events, never transcript/message activity.
     pub resume_recent_close_seconds: u64,
+    /// Which timestamp Resume shows as "x ago" and sorts by
+    /// (message/activity/opened/created, default: message).
+    #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
+    pub resume_time: ResumeTimeMode,
+    /// What Resume does when the picked session is already shown by another
+    /// local client window (off/move/replace, default: off).
+    #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
+    pub resume_open_elsewhere: ResumeOpenElsewhere,
     /// Usage percentage wording: "left" (default) or "used".
     pub usage_display: String,
     /// Style of the overscroll status footer: "classic" (default) or "pi"
@@ -146,6 +161,65 @@ pub struct DisplayConfig {
     /// `/tool-row-time`; set false to free ~13 columns for the description.
     #[serde(default = "default_true")]
     pub tool_row_time: bool,
+}
+
+/// Resume behavior for a session another local client window already shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResumeOpenElsewhere {
+    /// Attach a second client and leave the other window alone (default).
+    #[default]
+    #[serde(alias = "none", alias = "duplicate")]
+    Off,
+    /// Bring the existing window to the current workspace and focus it instead
+    /// of attaching again. Needs compositor support (niri); otherwise behaves
+    /// like `replace`.
+    #[serde(alias = "bring")]
+    Move,
+    /// Resume as usual and close the other window's client.
+    #[serde(alias = "close")]
+    Replace,
+}
+
+impl ResumeOpenElsewhere {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "duplicate" => Some(Self::Off),
+            "move" | "bring" => Some(Self::Move),
+            "replace" | "close" => Some(Self::Replace),
+            _ => None,
+        }
+    }
+}
+
+/// Timestamp used for Resume's "x ago" label and recency ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResumeTimeMode {
+    /// Newest conversation message of any role: prompts, replies, tool
+    /// results (default). Opening a session without working does not count.
+    #[default]
+    #[serde(alias = "messages", alias = "last_message")]
+    Message,
+    /// Newest of the last message and the last open/resume.
+    Activity,
+    /// Last time the session was opened, resumed, or attached.
+    #[serde(alias = "active", alias = "resumed")]
+    Opened,
+    /// When the session was created.
+    Created,
+}
+
+impl ResumeTimeMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "message" | "messages" | "last_message" => Some(Self::Message),
+            "activity" => Some(Self::Activity),
+            "opened" | "active" | "resumed" => Some(Self::Opened),
+            "created" => Some(Self::Created),
+            _ => None,
+        }
+    }
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -165,6 +239,7 @@ impl Default for DisplayConfig {
             reasoning_display: Some(ReasoningDisplayMode::Full),
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
+            show_link_urls: false,
             latex_rendering: LatexRenderingMode::default(),
             idle_animation: false,
             prompt_entry_animation: true,
@@ -186,6 +261,8 @@ impl Default for DisplayConfig {
             external_sessions: true,
             resume_project_scope: false,
             resume_recent_close_seconds: 30,
+            resume_time: ResumeTimeMode::default(),
+            resume_open_elsewhere: ResumeOpenElsewhere::default(),
             usage_display: "left".to_string(),
             footer_style: "classic".to_string(),
             timestamp_tz: String::new(),
@@ -284,6 +361,66 @@ impl DisplayConfig {
 mod tests {
     use super::DisplayConfig;
     use crate::ReasoningDisplayMode;
+
+    #[test]
+    fn link_urls_are_opt_in_and_roundtrip() {
+        assert!(!DisplayConfig::default().show_link_urls);
+        let missing: DisplayConfig = serde_json::from_str("{}").unwrap();
+        assert!(!missing.show_link_urls);
+        for value in [true, false] {
+            let config: DisplayConfig = serde_json::from_value(serde_json::json!({
+                "show_link_urls": value
+            }))
+            .unwrap();
+            assert_eq!(config.show_link_urls, value);
+            let roundtrip: DisplayConfig =
+                serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+            assert_eq!(roundtrip.show_link_urls, value);
+        }
+    }
+
+    #[test]
+    fn resume_time_defaults_to_message_and_parses_modes() {
+        use super::ResumeTimeMode;
+        let missing: DisplayConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.resume_time, ResumeTimeMode::Message);
+        for (raw, mode) in [
+            ("message", ResumeTimeMode::Message),
+            ("activity", ResumeTimeMode::Activity),
+            ("opened", ResumeTimeMode::Opened),
+            ("created", ResumeTimeMode::Created),
+        ] {
+            let config: DisplayConfig =
+                serde_json::from_value(serde_json::json!({ "resume_time": raw })).unwrap();
+            assert_eq!(config.resume_time, mode);
+            assert_eq!(ResumeTimeMode::parse(raw), Some(mode));
+        }
+        let bogus: DisplayConfig =
+            serde_json::from_value(serde_json::json!({ "resume_time": "bogus" })).unwrap();
+        assert_eq!(bogus.resume_time, ResumeTimeMode::Message);
+    }
+
+    #[test]
+    fn resume_open_elsewhere_defaults_to_off_and_parses_modes() {
+        use super::ResumeOpenElsewhere;
+        let missing: DisplayConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.resume_open_elsewhere, ResumeOpenElsewhere::Off);
+        for (raw, mode) in [
+            ("off", ResumeOpenElsewhere::Off),
+            ("move", ResumeOpenElsewhere::Move),
+            ("replace", ResumeOpenElsewhere::Replace),
+        ] {
+            let config: DisplayConfig =
+                serde_json::from_value(serde_json::json!({ "resume_open_elsewhere": raw }))
+                    .unwrap();
+            assert_eq!(config.resume_open_elsewhere, mode);
+            assert_eq!(ResumeOpenElsewhere::parse(raw), Some(mode));
+        }
+        let bogus: DisplayConfig =
+            serde_json::from_value(serde_json::json!({ "resume_open_elsewhere": "bogus" }))
+                .unwrap();
+        assert_eq!(bogus.resume_open_elsewhere, ResumeOpenElsewhere::Off);
+    }
 
     #[test]
     fn recent_close_window_defaults_to_thirty_and_is_configurable() {

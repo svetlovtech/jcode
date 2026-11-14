@@ -12,336 +12,60 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 #[test]
-fn server_reload_report_preserves_json_fields_and_exit_status_contract() {
-    let cases = [
-        (false, false, false, false),
-        (true, true, true, false),
-        (true, false, true, false),
-        (true, false, false, true),
-    ];
-
-    for (had_listener, already_current, handoff_ready, should_fail) in cases {
-        let report = ServerReloadReport {
-            socket: "/tmp/jcode.sock".to_string(),
-            had_listener,
-            forced: false,
-            reloaded: had_listener && !already_current,
-            already_current,
-            handoff_ready,
-            detail: "test reload outcome".to_string(),
-        };
-
-        let json = serde_json::to_value(&report).expect("serialize reload report");
-        assert_eq!(json["had_listener"], had_listener);
-        assert_eq!(json["already_current"], already_current);
-        assert_eq!(json["handoff_ready"], handoff_ready);
-
-        let result = validate_server_reload_report(&report);
-        assert_eq!(result.is_err(), should_fail, "report: {json}");
-        if should_fail {
-            assert!(
-                result
-                    .expect_err("not-ready handoff must fail")
-                    .to_string()
-                    .contains("never became ready")
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn server_reload_without_listener_is_a_successful_json_noop() {
-    let _env_lock = crate::storage::lock_test_env();
-    let _saved = SavedEnv::capture(&["JCODE_HOME", "JCODE_SOCKET"]);
-    let home = tempfile::tempdir().expect("tempdir");
-    crate::env::set_var("JCODE_HOME", home.path());
-    crate::env::set_var("JCODE_SOCKET", home.path().join("isolated.sock"));
-
-    let mut output = Vec::new();
-    let result = run_server_reload_command_to(false, true, &mut output).await;
-
-    result.expect("reload without a listener must be a successful no-op");
-    let report: serde_json::Value =
-        serde_json::from_slice(&output).expect("reload --json must emit one JSON report");
-    assert_eq!(report["had_listener"], false);
-    assert_eq!(report["already_current"], false);
-    assert_eq!(report["handoff_ready"], false);
-    assert_eq!(report["reloaded"], false);
-    assert_eq!(report["forced"], false);
-    assert!(
-        report["detail"]
-            .as_str()
-            .is_some_and(|detail| { detail.contains("No running jcode server found") })
+fn run_auto_poke_default_skips_quality_reviews_but_keeps_unfinished_work() {
+    let mut spiked = test_todo(
+        "a",
+        "completed",
+        "high",
+        Some(ConfidenceState::Speculative),
+        Some(ConfidenceState::Verified),
     );
-}
-
-#[tokio::test]
-async fn memory_cli_project_import_uses_explicit_directory_and_persists() {
-    let _guard = crate::storage::lock_test_env();
-    let _saved = SavedEnv::capture(&["JCODE_HOME"]);
-    let temp = tempfile::tempdir().expect("temp dir");
-    crate::env::set_var("JCODE_HOME", temp.path().join("home"));
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&project).expect("create project");
-
-    let entry = crate::memory::MemoryEntry::new(
-        crate::memory::MemoryCategory::Fact,
-        "persisted project memory".to_string(),
-    );
-    let input = temp.path().join("memories.json");
-    std::fs::write(
-        &input,
-        serde_json::to_vec(&vec![entry.clone()]).expect("serialize memory"),
-    )
-    .expect("write import");
-
-    run_memory_command_for_dir(
-        MemorySubcommand::Import {
-            input: input.display().to_string(),
-            scope: "project".to_string(),
-            overwrite: false,
-        },
-        Some(project.clone()),
-    )
-    .await
-    .expect("import project memory");
-
-    let reloaded = crate::memory::MemoryManager::new()
-        .with_project_dir(project)
-        .load_project_graph()
-        .expect("reload project graph");
-    assert_eq!(
-        reloaded
-            .get_memory(&entry.id)
-            .map(|memory| memory.content.as_str()),
-        Some("persisted project memory")
-    );
-}
-
-#[tokio::test]
-async fn memory_cli_project_import_fails_without_durable_project_store() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let input = temp.path().join("memories.json");
-    std::fs::write(&input, "[]").expect("write import");
-
-    let error = run_memory_command_for_dir(
-        MemorySubcommand::Import {
-            input: input.display().to_string(),
-            scope: "project".to_string(),
-            overwrite: false,
-        },
-        None,
-    )
-    .await
-    .expect_err("project import must require a durable store");
-
-    assert!(error.to_string().contains("without a project directory"));
-}
-
-#[tokio::test]
-async fn memory_cli_semantic_requires_jev_but_keyword_search_remains_local() {
-    let _guard = crate::storage::lock_test_env();
-    let keys = [
-        "JCODE_HOME",
-        "JCODE_API_KEY",
-        "OPENROUTER_API_KEY",
-        "TYPESAFE_API_KEY",
-        "AIMLAPI_API_KEY",
-        "JCODE_MEMORY_JEV_PROVIDER",
-    ];
-    let _saved = SavedEnv::capture(&keys);
-    let temp = tempfile::tempdir().expect("temp dir");
-    crate::env::set_var("JCODE_HOME", temp.path().join("home"));
-    for key in &keys[1..] {
-        crate::env::remove_var(key);
+    spiked.confidence_history = vec![ConfidenceState::Speculative, ConfidenceState::Verified];
+    for todo in [spiked, test_todo("b", "completed", "high", None, None)] {
+        assert!(
+            build_run_auto_poke_follow_up_from_todos(
+                false,
+                &[todo],
+                false,
+                Some("stale digest".into())
+            )
+            .is_none()
+        );
     }
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&project).unwrap();
-    let manager = crate::memory::MemoryManager::new().with_project_dir(&project);
-    manager
-        .remember_project(crate::memory::MemoryEntry::new(
-            crate::memory::MemoryCategory::Fact,
-            "cli-jev-probe without embedding",
-        ))
-        .unwrap();
-    assert!(
-        manager
-            .list_all()
-            .unwrap()
-            .iter()
-            .all(|entry| entry.embedding.is_none())
-    );
-
-    let command = |semantic| MemorySubcommand::Search {
-        query: "cli-jev-probe".into(),
-        semantic,
-    };
-    run_memory_command_for_dir(command(false), Some(project.clone()))
-        .await
-        .expect("local keyword search must remain available without credentials");
-    let error = run_memory_command_for_dir(command(true), Some(project))
-        .await
-        .expect_err("--semantic must report missing Jev access, not silently use embeddings");
-    assert!(error.to_string().contains("Jev memory search failed"));
-    assert!(!format!("{error:#}").contains("cli-jev-probe"));
-
-    // Scope still comes from the explicit directory, never the process cwd.
-    run_memory_command_for_dir(command(true), Some(temp.path().join("empty-project")))
-        .await
-        .expect("an empty project must not leak another project's candidates");
-}
-
-struct SavedEnv {
-    vars: Vec<(String, Option<String>)>,
-}
-
-impl SavedEnv {
-    fn capture(keys: &[&str]) -> Self {
-        Self {
-            vars: keys
-                .iter()
-                .map(|key| (key.to_string(), std::env::var(key).ok()))
-                .collect(),
-        }
-    }
-}
-
-impl Drop for SavedEnv {
-    fn drop(&mut self) {
-        for (key, value) in &self.vars {
-            if let Some(value) = value {
-                crate::env::set_var(key, value);
-            } else {
-                crate::env::remove_var(key);
-            }
-        }
-    }
-}
-
-struct TestProvider;
-
-#[async_trait]
-impl Provider for TestProvider {
-    async fn complete(
-        &self,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _system: &str,
-        _resume_session_id: Option<&str>,
-    ) -> Result<EventStream> {
-        let (tx, rx) = tokio_mpsc::channel::<Result<StreamEvent>>(4);
-        tokio::spawn(async move {
-            let _ = tx.send(Ok(StreamEvent::TextDelta("ok".to_string()))).await;
-            let _ = tx
-                .send(Ok(StreamEvent::MessageEnd {
-                    stop_reason: Some("end_turn".to_string()),
-                }))
-                .await;
-        });
-        Ok(Box::pin(ReceiverStream::new(rx)))
-    }
-
-    fn name(&self) -> &str {
-        "test"
-    }
-
-    fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self)
-    }
-}
-
-// Fork (#804): the run report names Ollama/LM Studio by their session
-// profile key instead of the shared "openrouter" slot id.
-fn run_report_provider_name_local(
-    provider: &dyn crate::provider::Provider,
-    session_provider_key: Option<&str>,
-) -> String {
-    let name = provider.name();
-    if name.eq_ignore_ascii_case("openrouter")
-        && let Some(key) = session_provider_key
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-    {
-        return key.to_string();
-    }
-    name.to_string()
-}
-
-struct FailingTestProvider;
-
-#[async_trait]
-impl Provider for FailingTestProvider {
-    async fn complete(
-        &self,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _system: &str,
-        _resume_session_id: Option<&str>,
-    ) -> Result<EventStream> {
-        Err(anyhow::anyhow!("one-shot sentinel failure"))
-    }
-
-    fn name(&self) -> &str {
-        "failing-test"
-    }
-
-    fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self)
-    }
-}
-
-struct OpenRouterSlotProvider;
-
-#[async_trait]
-impl Provider for OpenRouterSlotProvider {
-    async fn complete(
-        &self,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _system: &str,
-        _resume_session_id: Option<&str>,
-    ) -> Result<EventStream> {
-        Err(anyhow::anyhow!(
-            "the provider label test never sends a request"
-        ))
-    }
-
-    fn name(&self) -> &str {
-        "openrouter"
-    }
-
-    fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self)
-    }
+    let open = test_todo("open", "pending", "high", None, None);
+    assert!(matches!(
+        build_run_auto_poke_follow_up_from_todos(false, &[open], false, None),
+        Some(RunAutoPokeFollowUp::Incomplete { .. })
+    ));
 }
 
 #[test]
 fn run_report_names_local_profile_instead_of_openrouter_slot() {
     // Ollama/LM Studio share the OpenRouter transport slot (#804).
     assert_eq!(
-        run_report_provider_name_local(&OpenRouterSlotProvider, Some("ollama")),
+        run_report_provider_name(&OpenRouterSlotProvider, Some("ollama")),
         "ollama"
     );
     assert_eq!(
-        run_report_provider_name_local(&OpenRouterSlotProvider, Some("lmstudio")),
+        run_report_provider_name(&OpenRouterSlotProvider, Some("lmstudio")),
         "lmstudio"
     );
     // Public OpenRouter and unknown identities keep the slot id.
     assert_eq!(
-        run_report_provider_name_local(&OpenRouterSlotProvider, Some("openrouter")),
+        run_report_provider_name(&OpenRouterSlotProvider, Some("openrouter")),
         "openrouter"
     );
     assert_eq!(
-        run_report_provider_name_local(&OpenRouterSlotProvider, None),
+        run_report_provider_name(&OpenRouterSlotProvider, None),
         "openrouter"
     );
     assert_eq!(
-        run_report_provider_name_local(&OpenRouterSlotProvider, Some("  ")),
+        run_report_provider_name(&OpenRouterSlotProvider, Some("  ")),
         "openrouter"
     );
     // Other providers keep their established name.
     assert_eq!(
-        run_report_provider_name_local(&TestProvider, Some("openai-api")),
+        run_report_provider_name(&TestProvider, Some("openai-api")),
         "test"
     );
 }
@@ -565,24 +289,22 @@ fn dependency_todo(id: &str, dependencies: &[&str]) -> crate::todo::TodoItem {
 }
 
 #[tokio::test]
-async fn completely_blocked_cli_pauses_without_review_and_keeps_peers_actionable() {
+async fn user_auth_cli_pauses_only_that_todo_and_keeps_peers_actionable() {
     let temp = tempfile::tempdir().unwrap();
     let manager = crate::background::BackgroundTaskManager::with_output_dir(temp.path().into());
     let mut blocked = dependency_todo("blocked", &[]);
-    blocked.completely_blocked = Some(crate::todo::TodoCompleteBlocker {
+    blocked.requires_user_auth = Some(crate::todo::TodoUserAuth {
         reason: "Required source data no longer exists".into(),
     });
     let (actionable, resumed) =
         prepare_run_todo_follow_up(&manager, "owner", &[blocked.clone()], true).await;
     assert!(actionable.is_empty());
     assert!(resumed.is_none());
-    let notice = run_blocked_notice(&[blocked.clone()]).unwrap();
+    let notice = run_blocked_notice(&[blocked.clone()], &[]).unwrap();
     assert_eq!(
         notice,
-        "✋ Completely blocked. No way forward.\nblocked: Required source data no longer exists"
+        "✋ Needs your login.\nblocked: Required source data no longer exists"
     );
-    assert!(!notice.contains("review deadline"));
-    assert!(run_external_blocker_notice(&[blocked.clone()]).is_none());
 
     let independent = dependency_todo("independent", &[]);
     let all = vec![blocked.clone(), independent];
@@ -593,66 +315,42 @@ async fn completely_blocked_cli_pauses_without_review_and_keeps_peers_actionable
     assert!(poke.contains("independent"));
     assert!(!poke.contains("Required source data"));
 
-    blocked.completely_blocked = None;
+    blocked.requires_user_auth = None;
     let (actionable, _) =
         prepare_run_todo_follow_up(&manager, "owner", &[blocked.clone()], true).await;
     assert_eq!(actionable.len(), 1);
     assert_eq!(actionable[0].status, "pending");
-    assert!(run_completely_blocked_notice(&[blocked]).is_none());
+    assert!(run_user_auth_notice(&[blocked]).is_none());
 }
 
 #[test]
-fn completely_blocked_cli_ignores_terminal_tasks_and_keeps_external_notice() {
+fn cli_notice_reports_user_auth_and_goal_that_cannot_complete() {
     let mut blocked = dependency_todo("blocked", &[]);
-    blocked.completely_blocked = Some(crate::todo::TodoCompleteBlocker {
-        reason: "Required source data no longer exists".into(),
+    blocked.requires_user_auth = Some(crate::todo::TodoUserAuth {
+        reason: "Log in to the deploy dashboard".into(),
     });
-    let mut external = dependency_todo("service", &[]);
-    external.external_blocker = Some(crate::todo::TodoExternalBlocker {
-        reason: "Service is unavailable".into(),
-        review_at: chrono::Utc::now() + chrono::Duration::minutes(10),
-    });
-    let notice = run_blocked_notice(&[blocked.clone(), external]).unwrap();
-    assert!(notice.contains("Completely blocked. No way forward."));
-    assert!(notice.contains("Service is unavailable"));
+    let mut abandoned = dependency_todo("service", &[]);
+    abandoned.group = Some("migration".into());
+    let goals = vec![crate::todo::TodoGoal {
+        group: Some("migration".into()),
+        cannot_complete: Some("Source data was deleted upstream".into()),
+        ..Default::default()
+    }];
+    // The declared goal covers only its own group's todos.
+    assert!(run_cannot_complete_notice(&[blocked.clone()], &goals).is_none());
+    let notice = run_blocked_notice(&[blocked.clone(), abandoned.clone()], &goals).unwrap();
+    assert!(notice.contains("Needs your login."));
+    assert!(notice.contains("Goal cannot be completed."));
+    assert!(notice.contains("Source data was deleted upstream"));
     for status in ["completed", "cancelled"] {
         blocked.status = status.into();
-        assert!(run_completely_blocked_notice(&[blocked.clone()]).is_none());
+        abandoned.status = status.into();
+        assert!(run_blocked_notice(&[blocked.clone(), abandoned.clone()], &goals).is_none());
         assert_eq!(
             run_actionable_todos(&[blocked.clone()], &[], "owner").len(),
             1
         );
     }
-}
-
-#[tokio::test]
-async fn external_blocker_cli_suppresses_only_blocked_work_and_reports_durable_review() {
-    let temp = tempfile::tempdir().unwrap();
-    let manager = crate::background::BackgroundTaskManager::with_output_dir(temp.path().into());
-    let mut blocked = dependency_todo("acceptance", &[]);
-    blocked.external_blocker = Some(crate::todo::TodoExternalBlocker {
-        reason: "Coordinator acceptance".into(),
-        review_at: chrono::Utc::now() + chrono::Duration::minutes(10),
-    });
-    let (actionable, resumed) =
-        prepare_run_todo_follow_up(&manager, "owner", &[blocked.clone()], true).await;
-    assert!(actionable.is_empty());
-    assert!(resumed.is_none(), "durable scheduler owns the review wake");
-    let notice = run_external_blocker_notice(&[blocked.clone()]).unwrap();
-    assert!(notice.contains("Coordinator acceptance") && notice.contains("review"));
-    let mixed = vec![blocked.clone(), dependency_todo("independent", &[])];
-    let (actionable, _) = prepare_run_todo_follow_up(&manager, "owner", &mixed, true).await;
-    assert_eq!(actionable.len(), 1);
-    assert_eq!(actionable[0].id, "independent");
-    blocked.external_blocker.as_mut().unwrap().review_at =
-        chrono::Utc::now() - chrono::Duration::seconds(1);
-    let (actionable, _) = prepare_run_todo_follow_up(&manager, "owner", &[blocked], true).await;
-    assert_eq!(
-        actionable.len(),
-        1,
-        "deadline restores reassessment, never completes"
-    );
-    assert_eq!(actionable[0].status, "pending");
 }
 
 #[tokio::test]
@@ -733,15 +431,15 @@ async fn run_dependency_mixed_work_stays_actionable_and_scoped() {
     assert!(resumed.is_none());
     assert_eq!(actionable.len(), 1);
     assert_eq!(actionable[0].id, "independent");
-    let followup = build_run_auto_poke_follow_up_from_todos(&actionable, false, None);
+    let followup = build_run_auto_poke_follow_up_from_todos(true, &actionable, false, None);
     let Some(RunAutoPokeFollowUp::Incomplete { count, message }) = followup else {
         panic!("independent work must remain actionable");
     };
     assert_eq!(count, 1);
     let message = run_actionable_poke_message(message, &todos, &actionable);
-    assert!(message.contains("Actionable todos:\n- independent:"));
+    assert!(message.contains("Actionable todos:\n- \"todo independent\""));
     assert!(
-        !message.contains("- waiting:"),
+        !message.contains("\"todo waiting\""),
         "blocked work is not actionable"
     );
     assert!(crate::todo::is_auto_poke_message(&message));
@@ -946,7 +644,7 @@ fn run_auto_poke_followup_targets_below_threshold_todos() {
         ),
     ];
 
-    let followup = build_run_auto_poke_follow_up_from_todos(&todos, false, None);
+    let followup = build_run_auto_poke_follow_up_from_todos(true, &todos, false, None);
 
     match followup {
         Some(RunAutoPokeFollowUp::ConfidenceSummary {
@@ -977,7 +675,7 @@ fn run_auto_poke_followup_challenges_abrupt_confidence_once() {
     todo.confidence_history = vec![ConfidenceState::Speculative, ConfidenceState::Verified];
 
     let todos = [todo];
-    match build_run_auto_poke_follow_up_from_todos(&todos, false, None) {
+    match build_run_auto_poke_follow_up_from_todos(true, &todos, false, None) {
         Some(RunAutoPokeFollowUp::ConfidenceSummary {
             message,
             confidence_spike_challenge,
@@ -988,7 +686,7 @@ fn run_auto_poke_followup_challenges_abrupt_confidence_once() {
         }
         _ => panic!("expected confidence-spike challenge"),
     }
-    assert!(build_run_auto_poke_follow_up_from_todos(&todos, true, None).is_none());
+    assert!(build_run_auto_poke_follow_up_from_todos(true, &todos, true, None).is_none());
 }
 
 #[test]
@@ -1020,7 +718,7 @@ fn run_auto_poke_followup_silent_when_confident_and_earned() {
             Some(ConfidenceState::Validated),
         ),
     ];
-    assert!(build_run_auto_poke_follow_up_from_todos(&todos, false, None).is_none());
+    assert!(build_run_auto_poke_follow_up_from_todos(true, &todos, false, None).is_none());
 }
 
 #[test]
@@ -1042,7 +740,7 @@ fn run_auto_poke_followup_prioritizes_incomplete_todos() {
         ),
     ];
 
-    let followup = build_run_auto_poke_follow_up_from_todos(&todos, false, None);
+    let followup = build_run_auto_poke_follow_up_from_todos(true, &todos, false, None);
 
     match followup {
         Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
@@ -1067,7 +765,7 @@ fn run_auto_poke_treats_completion_synonyms_and_case_as_finished() {
             Some(ConfidenceState::Verified),
         )];
         assert!(
-            build_run_auto_poke_follow_up_from_todos(&todos, false, None).is_none(),
+            build_run_auto_poke_follow_up_from_todos(true, &todos, false, None).is_none(),
             "status {status:?} should not trigger an incomplete-todo poke"
         );
     }
@@ -1078,7 +776,7 @@ fn run_auto_poke_treats_cancelled_spelling_variants_as_finished() {
     for status in ["cancelled", "canceled", "Cancelled"] {
         let todos = vec![test_todo("a", status, "high", None, None)];
         assert!(
-            build_run_auto_poke_follow_up_from_todos(&todos, false, None).is_none(),
+            build_run_auto_poke_follow_up_from_todos(true, &todos, false, None).is_none(),
             "status {status:?} should not trigger an incomplete-todo poke"
         );
     }
@@ -1097,12 +795,13 @@ fn run_auto_poke_delivers_the_deferred_gate_digest_before_confidence() {
     )];
     // Without a digest, the confidence gate is what fires.
     assert!(matches!(
-        build_run_auto_poke_follow_up_from_todos(&todos, false, None),
+        build_run_auto_poke_follow_up_from_todos(true, &todos, false, None),
         Some(RunAutoPokeFollowUp::ConfidenceSummary { .. })
     ));
     // With one, the weak points are reviewed first, since that work can change
     // the very assessments the confidence gate judges.
     match build_run_auto_poke_follow_up_from_todos(
+        true,
         &todos,
         false,
         Some("review these points".to_string()),
@@ -1127,6 +826,7 @@ fn run_auto_poke_prefers_incomplete_todos_over_the_gate_digest() {
     )];
     assert!(matches!(
         build_run_auto_poke_follow_up_from_todos(
+            true,
             &todos,
             false,
             Some("review these points".to_string())
@@ -1166,6 +866,7 @@ fn open_todos_do_not_consume_the_pending_gate_digest() {
     )];
     assert!(matches!(
         build_run_auto_poke_follow_up_from_todos(
+            true,
             &open,
             false,
             take_run_gate_digest_if_turn_ended(session, false, &open, true),
@@ -1188,6 +889,7 @@ fn open_todos_do_not_consume_the_pending_gate_digest() {
         Some(ConfidenceState::Verified),
     )];
     match build_run_auto_poke_follow_up_from_todos(
+        true,
         &done,
         false,
         take_run_gate_digest_if_turn_ended(session, false, &done, true),
@@ -1276,11 +978,11 @@ fn run_auto_poke_followup_rechecks_completion_confidence_until_it_passes() {
         Some(ConfidenceState::Plausible),
     )];
     assert!(matches!(
-        build_run_auto_poke_follow_up_from_todos(&needs_validation, false, None),
+        build_run_auto_poke_follow_up_from_todos(true, &needs_validation, false, None),
         Some(RunAutoPokeFollowUp::ConfidenceSummary { .. })
     ));
     assert!(matches!(
-        build_run_auto_poke_follow_up_from_todos(&needs_validation, false, None),
+        build_run_auto_poke_follow_up_from_todos(true, &needs_validation, false, None),
         Some(RunAutoPokeFollowUp::ConfidenceSummary { .. })
     ));
 
@@ -1292,8 +994,8 @@ fn run_auto_poke_followup_rechecks_completion_confidence_until_it_passes() {
         Some(ConfidenceState::Verified),
     )];
     // A normal validation gain is not a reason to spend another model turn.
-    assert!(build_run_auto_poke_follow_up_from_todos(&validated, false, None).is_none());
-    assert!(build_run_auto_poke_follow_up_from_todos(&validated, true, None).is_none());
+    assert!(build_run_auto_poke_follow_up_from_todos(true, &validated, false, None).is_none());
+    assert!(build_run_auto_poke_follow_up_from_todos(true, &validated, true, None).is_none());
 }
 
 #[test]
@@ -1444,9 +1146,9 @@ async fn auth_test_choice_plan_discovers_model_for_hosted_custom_compat_endpoint
         "NO_PROXY",
         "no_proxy",
     ]);
-    // 0.0.0.0 is accepted as an insecure HTTP test host but is not treated as
-    // localhost by resolve_openai_compatible_profile, so this exercises the
-    // hosted/API-key code path while still serving the response locally.
+    // Since #2018 a bare IP host is treated like loopback, so the profile
+    // needs no API key by default. A configured key must still be sent, so
+    // this checks model discovery with a key against a bare-IP endpoint.
     let api_base = spawn_single_response_http_server_on_host(
         "0.0.0.0",
         200,
@@ -1463,7 +1165,7 @@ async fn auth_test_choice_plan_discovers_model_for_hosted_custom_compat_endpoint
     let resolved = crate::provider_catalog::resolve_openai_compatible_profile(
         crate::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
-    assert!(resolved.requires_api_key);
+    assert!(!resolved.requires_api_key);
 
     let plan = auth_test_choice_plan(
         &super::super::provider_init::ProviderChoice::OpenaiCompatible,

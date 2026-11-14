@@ -123,6 +123,21 @@ mod tests {
     use super::parse_release_semver;
 
     #[test]
+    fn forwarded_tag_distance_matches_compiled_dev_version() {
+        if option_env!("JCODE_BUILD_SEMVER").is_some() {
+            return;
+        }
+        let base = super::build_inputs::semver_core(super::BASE_SEMVER).unwrap();
+        if let Some(offset) = super::build_inputs::base_tag_offset(super::GIT_TAG, base) {
+            assert_eq!(
+                super::SEMVER,
+                format!("{}.{}.{}", base.0, base.1, base.2.saturating_add(offset))
+            );
+            assert_eq!(super::UPDATE_SEMVER, super::BASE_SEMVER);
+        }
+    }
+
+    #[test]
     fn release_build_display_preserves_comparison_identity() {
         if option_env!("JCODE_RELEASE_BUILD").is_some() {
             assert!(super::VERSION.starts_with(&format!("v{} (", super::SEMVER)));
@@ -135,9 +150,21 @@ mod tests {
     }
 
     #[test]
+    fn explicit_build_override_preserves_release_identity() {
+        if let Some(expected) = option_env!("JCODE_BUILD_SEMVER").and_then(parse_release_semver) {
+            assert_eq!(super::SEMVER, expected);
+            assert_eq!(super::UPDATE_SEMVER, expected);
+        }
+    }
+
+    #[test]
     fn runtime_release_semver_accepts_only_three_numeric_components() {
         assert_eq!(parse_release_semver("v1.2.3").as_deref(), Some("1.2.3"));
         assert_eq!(parse_release_semver(" 1.2.3 ").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            parse_release_semver("v1.2.3-rc.1").as_deref(),
+            Some("1.2.3-rc.1")
+        );
         assert_eq!(parse_release_semver("1.2"), None);
         assert_eq!(parse_release_semver("1.2.3.4"), None);
         assert_eq!(parse_release_semver("1.2.beta"), None);

@@ -45,8 +45,8 @@ struct BgInput {
     #[serde(default)]
     action: Option<String>,
     /// Short display label describing why this tool call is being made.
-    #[serde(default)]
-    intent: Option<String>,
+    #[serde(deserialize_with = "deserialize_intent")]
+    intent: String,
     /// Task ID (for single-task actions)
     #[serde(default)]
     task_id: Option<String>,
@@ -101,6 +101,18 @@ struct BgInput {
     graceful_timeout_ms: Option<u64>,
 }
 
+fn deserialize_intent<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let intent = String::deserialize(deserializer)?;
+    if intent.trim().is_empty() {
+        return Err(serde::de::Error::custom(
+            "bg intent must be a nonblank string",
+        ));
+    }
+    Ok(intent)
+}
+
 fn infer_action_from_intent(intent: Option<&str>) -> Option<&'static str> {
     let intent = intent?.trim().to_ascii_lowercase();
     if intent.is_empty() {
@@ -136,7 +148,7 @@ fn resolve_action(params: &BgInput) -> Result<String> {
         return Ok(action.to_ascii_lowercase());
     }
 
-    if let Some(action) = infer_action_from_intent(params.intent.as_deref()) {
+    if let Some(action) = infer_action_from_intent(Some(&params.intent)) {
         return Ok(action.to_string());
     }
 
@@ -405,6 +417,18 @@ async fn resolve_task_ids(
     }
 }
 
+fn task_label(task: &background::TaskStatusFile) -> String {
+    crate::message::background_task_display_label(&task.tool_name, task.display_name.as_deref())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Name what is being waited on so status rows say more than "a background task".
+fn task_wait_reason(task: &background::TaskStatusFile) -> String {
+    format!("Waiting for {}", task_label(task))
+}
+
 async fn wait_many_polling(
     manager: &background::BackgroundTaskManager,
     session_id: &str,
@@ -459,7 +483,23 @@ async fn wait_many_polling(
             last_progress.insert(task.task_id.clone(), task.progress.clone());
         }
         wait_guard.get_or_insert_with(|| {
-            crate::wait_registry::register(session_id, "Waiting for background tasks")
+            let running: Vec<_> = tasks
+                .iter()
+                .filter(|task| !is_terminal(&task.status))
+                .collect();
+            let reason = match running.as_slice() {
+                [task] => task_wait_reason(task),
+                _ => format!(
+                    "Waiting for {} background tasks: {}",
+                    running.len(),
+                    running
+                        .iter()
+                        .map(|task| task_label(task))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            crate::wait_registry::register(session_id, &reason)
         });
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -476,39 +516,42 @@ impl Tool for BgTool {
     }
 
     fn parameters_schema(&self) -> Value {
+        let mut intent_schema = super::intent_schema_property();
+        intent_schema["minLength"] = json!(1);
+        intent_schema["pattern"] = json!("\\S");
         json!({
             "type": "object",
-            "required": ["action"],
+            "required": ["action", "intent"],
             "properties": {
-                "intent": super::intent_schema_property(),
+                "intent": intent_schema,
                 "action": {
                     "type": "string",
                     "enum": ["list", "status", "output", "tail", "cancel", "cleanup", "watch", "delivery", "subscribe", "wait"],
-                    "description": "Action. Prefer wait over polling; watch is an alias for delivery."
+                    "description": "watch and subscribe are aliases for delivery."
                 },
-                "task_id": { "type": "string", "description": "Task ID." },
-                "task_ids": { "type": "array", "items": {"type":"string"}, "description": "Task IDs for multi-task wait/status." },
-                "latest": { "type": "boolean", "description": "Use latest matching task when task_id is omitted." },
-                "session_only": { "type": "boolean", "description": "Restrict list/implicit selection to current session." },
+                "task_id": { "type": "string", "description": "Omit with latest." },
+                "task_ids": { "type": "array", "items": {"type":"string"}, "description": "For multi-task wait/status." },
+                "latest": { "type": "boolean", "description": "Use the latest matching task." },
+                "session_only": { "type": "boolean", "description": "Only this session's tasks." },
                 "status_filter": {
                     "anyOf": [
                         { "type": "string" },
                         { "type": "array", "items": { "type": "string" } }
                     ],
-                    "description": "Status filter string or array: running, completed, failed, superseded, terminal, all."
+                    "description": "running, completed, failed, superseded, terminal, or all."
                 },
                 "max_age_hours": { "type": "integer", "description": "Cleanup age in hours." },
-                "dry_run": { "type": "boolean", "description": "For cleanup, report what would be removed without deleting." },
-                "notify": { "type": "boolean", "description": "When using delivery/watch/subscribe, whether to notify on completion. Defaults to true." },
-                "wake": { "type": "boolean", "description": "When using delivery/watch/subscribe, whether to wake on completion. Defaults to true." },
-                "stall_wake_seconds": { "type": "integer", "description": "For delivery/watch: also wake after N seconds without output/progress (min 30). For jobs that may hang." },
-                "max_wait_seconds": { "type": "integer", "description": "For wait: max seconds to block. Default 60, cap 3600, 0 = immediate check." },
-                "return_on_progress": { "type": "boolean", "description": "For wait: return on the first progress/checkpoint event too. Defaults to true." },
-                "wait_mode": { "type": "string", "enum": ["any", "all", "first_failure"], "description": "For multi-task wait, return on any completion, all completions, or first failure. Defaults to any." },
-                "tail_lines": { "type": "integer", "description": "Return only the last N output lines for output/tail/wait preview." },
+                "dry_run": { "type": "boolean", "description": "cleanup: report without deleting." },
+                "notify": { "type": "boolean", "description": "delivery: notify on completion. Default true." },
+                "wake": { "type": "boolean", "description": "delivery: wake on completion. Default true." },
+                "stall_wake_seconds": { "type": "integer", "description": "delivery: also wake after N seconds without output (min 30), for jobs that may hang." },
+                "max_wait_seconds": { "type": "integer", "description": "wait: default 60, cap 3600, 0 checks without blocking." },
+                "return_on_progress": { "type": "boolean", "description": "wait: also return on the first progress event. Default true." },
+                "wait_mode": { "type": "string", "enum": ["any", "all", "first_failure"], "description": "Multi-task wait. Default any." },
+                "tail_lines": { "type": "integer", "description": "Last N lines for output/tail/wait preview." },
                 "lines": { "type": "integer", "description": "Alias for tail_lines." },
-                "include_output_preview": { "type": "boolean", "description": "When wait returns, include a recent output preview. Failed tasks include a preview by default." },
-                "graceful_timeout_ms": { "type": "integer", "description": "For cancel, grace period for detached process termination before force kill." }
+                "include_output_preview": { "type": "boolean", "description": "wait: include recent output. Failed tasks always do." },
+                "graceful_timeout_ms": { "type": "integer", "description": "cancel: grace period before force kill." }
             }
         })
     }
@@ -716,10 +759,6 @@ impl Tool for BgTool {
                 let wait_duration = Duration::from_secs(capped_wait);
                 // watch/delivery only updates notification settings and does not
                 // block. Only the actual wait action owns foreground metadata.
-                let wait_reason = format!(
-                    "Waiting for background task{}",
-                    if task_ids.len() > 1 { "s" } else { "" }
-                );
 
                 if task_ids.len() > 1 {
                     let mode = params.wait_mode.as_deref().unwrap_or("any");
@@ -766,14 +805,15 @@ impl Tool for BgTool {
                         "Missing task_id; provide a task_id or use latest=true"
                     ));
                 };
-                let blocking = if capped_wait > 0 {
-                    manager
-                        .status(&task_id)
-                        .await
-                        .is_some_and(|task| !is_terminal(&task.status))
-                } else {
-                    false
-                };
+                let current = manager.status(&task_id).await;
+                let blocking = capped_wait > 0
+                    && current
+                        .as_ref()
+                        .is_some_and(|task| !is_terminal(&task.status));
+                let wait_reason = current
+                    .as_ref()
+                    .map(task_wait_reason)
+                    .unwrap_or_else(|| "Waiting for background task".to_string());
                 let wait_guard =
                     blocking.then(|| crate::wait_registry::register(&ctx.session_id, &wait_reason));
                 let wait_result = manager
@@ -924,7 +964,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             crate::wait_registry::current(sid).map(|(reason, _)| reason),
-            Some("Waiting for background tasks".into())
+            Some("Waiting for test".into())
         );
         drop(future);
         assert_eq!(crate::wait_registry::current(sid), None);
@@ -942,6 +982,63 @@ mod tests {
         assert_eq!(branches[1]["type"], json!("array"));
         assert_eq!(branches[1]["items"]["type"], json!("string"));
         Ok(())
+    }
+
+    #[test]
+    fn bg_intent_is_required_and_nonblank() {
+        for action in [
+            "list",
+            "status",
+            "output",
+            "tail",
+            "cancel",
+            "cleanup",
+            "watch",
+            "delivery",
+            "subscribe",
+            "wait",
+        ] {
+            assert!(serde_json::from_value::<BgInput>(json!({"action": action})).is_err());
+            for intent in [
+                Value::Null,
+                json!(""),
+                json!(" \t\n"),
+                json!("\u{2003}"),
+                json!(7),
+                json!(false),
+                json!([]),
+                json!({}),
+            ] {
+                assert!(
+                    serde_json::from_value::<BgInput>(json!({"action": action, "intent": intent}))
+                        .is_err(),
+                    "accepted invalid intent for {action}"
+                );
+            }
+            let params: BgInput = serde_json::from_value(
+                json!({"action": action, "intent": " Inspect background work "}),
+            )
+            .unwrap();
+            assert_eq!(resolve_action(&params).unwrap(), action);
+        }
+    }
+
+    #[test]
+    fn bg_schema_requires_nonblank_intent() {
+        for schema in [
+            BgTool::new().parameters_schema(),
+            BgTool::new().to_definition().input_schema,
+        ] {
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("intent"))
+            );
+            assert_eq!(schema["properties"]["intent"]["type"], "string");
+            assert_eq!(schema["properties"]["intent"]["minLength"], 1);
+            assert_eq!(schema["properties"]["intent"]["pattern"], "\\S");
+        }
     }
 
     #[test]

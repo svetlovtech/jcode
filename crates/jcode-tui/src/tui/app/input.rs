@@ -16,10 +16,11 @@ use crate::bus::{
     Bus, BusEvent, ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
     InputShellCompleted,
 };
+use crate::tui::terminal_events::EventStream;
 use crate::util::truncate_str;
 use anyhow::Result;
 use base64::Engine;
-use crossterm::event::{EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -337,6 +338,12 @@ pub(crate) use paste_guard::tiny_png_bytes_for_test;
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
     if app.append_ssh_login_input(&text) {
+        return;
+    }
+    // Fork ask_user modal: pasted text seeds the own-answer draft instead of
+    // the composer underneath.
+    if app.fork_ask.modal.is_some() {
+        app.fork_ask_ops().modal_paste(&text);
         return;
     }
     paste_guard::note_paste();
@@ -1457,6 +1464,11 @@ impl App {
         &mut self,
         final_response_delivered: bool,
     ) -> bool {
+        // Playback observes recorded turns. It must never create new work from
+        // the current machine's todos, guardrails, or overnight configuration.
+        if self.is_replay {
+            return false;
+        }
         // SSH workflow state and todo reads belong to the remote daemon.
         // Even the guardrail/report checks below consult laptop session files.
         if crate::tui::is_ssh_remote() {
@@ -1495,6 +1507,9 @@ impl App {
         &mut self,
         final_response_delivered: bool,
     ) -> bool {
+        if self.is_replay {
+            return false;
+        }
         if crate::tui::is_ssh_remote() {
             return false;
         }
@@ -1567,7 +1582,9 @@ impl App {
             self.todo_confidence_spike_challenged = false;
             self.last_todo_ownership_fingerprint = None;
         }
-        if !todos.is_empty()
+        let quality_reviews_enabled = crate::config::config().features.todo_gate_digest;
+        if quality_reviews_enabled
+            && !todos.is_empty()
             && crate::todo::take_long_session_review_if_due(&todo_session_id).unwrap_or(false)
         {
             self.push_display_message(DisplayMessage::system(
@@ -1614,8 +1631,8 @@ impl App {
                     return true;
                 }
             }
-            let ownership_needs_followup =
-                !crate::todo::completed_groups_have_sufficient_delivery(&todos, &goals);
+            let ownership_needs_followup = quality_reviews_enabled
+                && !crate::todo::completed_groups_have_sufficient_delivery(&todos, &goals);
             let gate_budget_left =
                 self.todo_completion_gate_attempts < Self::TODO_COMPLETION_GATE_MAX_ATTEMPTS;
             let ownership_message =
@@ -1651,11 +1668,12 @@ impl App {
                 return true;
             }
             let confidence_summary = super::commands::todo_confidence_summary(&todos);
-            let needs_spike_challenge = confidence_summary.confidence_spike_detected
+            let needs_spike_challenge = quality_reviews_enabled
+                && confidence_summary.confidence_spike_detected
                 && !self.todo_confidence_spike_challenged;
-            if (confidence_summary.completion_confidence_needs_validation || needs_spike_challenge)
-                && gate_budget_left
-            {
+            let needs_validation = quality_reviews_enabled
+                && confidence_summary.completion_confidence_needs_validation;
+            if (needs_validation || needs_spike_challenge) && gate_budget_left {
                 self.todo_completion_gate_attempts =
                     self.todo_completion_gate_attempts.saturating_add(1);
                 let notice = if confidence_summary.completion_confidence_needs_validation {
@@ -1676,9 +1694,7 @@ impl App {
                 self.pending_queued_dispatch = true;
                 return true;
             }
-            if (ownership_needs_followup
-                || confidence_summary.completion_confidence_needs_validation
-                || needs_spike_challenge)
+            if (ownership_needs_followup || needs_validation || needs_spike_challenge)
                 && !gate_budget_left
             {
                 // The gate keeps failing but the model is no longer making
@@ -1846,10 +1862,9 @@ impl App {
         }
     }
 
+    /// Works over SSH too: the fork is created by the attached daemon and the
+    /// new window is another SSH client, so nothing is read from this machine.
     pub(crate) fn toggle_next_prompt_new_session_routing(&mut self) {
-        if super::commands_dispatch::ssh_local_action_blocked(self, "New-session routing") {
-            return;
-        }
         self.route_next_prompt_to_new_session = !self.route_next_prompt_to_new_session;
         if self.route_next_prompt_to_new_session {
             self.set_status_notice("Next prompt → new session");
@@ -2678,6 +2693,16 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
+    // Fork ask_user modal is the topmost overlay: arrows/digits/space pick
+    // options and any printable character opens the own-answer editor. Route
+    // here before every other overlay so the modal never leaks keys to the
+    // composer (the regression that made local selection impossible while
+    // answering from Telegram still worked).
+    if app.fork_ask.modal.is_some() {
+        app.fork_ask_ops().modal_key(code, modifiers);
+        return Ok(true);
+    }
+
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
         return Ok(true);
@@ -3463,6 +3488,35 @@ impl App {
         self.copy_badge_ui.key_active = Some((key, expiry));
     }
 
+    /// Everything a key *release* can change on screen: the held-modifier and
+    /// held-key copy badges and the voice-input phase. Compared before and
+    /// after a release so releases that change none of it skip the full
+    /// frame. Under kitty's keyboard protocol every keystroke also reports a
+    /// release, which doubled the frames drawn while typing.
+    pub(super) fn key_release_visible_state(
+        &self,
+    ) -> (
+        bool,
+        bool,
+        Option<char>,
+        Option<super::voice_input::VoicePhase>,
+    ) {
+        // Badges render only through the `*_is_active` gates (the held key
+        // only shows under Alt+Shift), so compare those, not raw fields.
+        let now = std::time::Instant::now();
+        let badge = &self.copy_badge_ui;
+        let shift = badge.shift_is_active(now);
+        (
+            badge.alt_is_active(now),
+            shift,
+            badge
+                .key_active
+                .filter(|(_, expires_at)| shift && *expires_at > now)
+                .map(|(c, _)| c.to_ascii_lowercase()),
+            self.voice_input.as_ref().map(|voice| voice.phase),
+        )
+    }
+
     pub(super) fn record_copy_badge_feedback(&mut self, key: char, success: bool) {
         self.copy_badge_ui.copied_feedback = Some(crate::tui::app::CopyBadgeFeedback {
             key,
@@ -4095,6 +4149,8 @@ impl App {
         // Remember the typed prompt so we can restore it to the input box if this
         // turn fails (e.g. "token refresh needed"), instead of dropping it.
         self.last_submitted_input = Some(raw_input.clone());
+        self.automatic_failover_targets.clear();
+        self.automatic_failover_stopped = false;
 
         // See `stage_turn_for_remote_tick_loop`: a remote client must never
         // park on the local-only `pending_turn` flag.
@@ -4114,6 +4170,9 @@ impl App {
         });
         // Send expanded content (with actual pasted text) to model
         let images = self.take_pending_image_payloads();
+        if !images.is_empty() {
+            self.invalidate_side_pane_images_signature();
+        }
         if !images.is_empty() {
             crate::logging::info(&format!(
                 "Submitting with {} image(s): {}",
@@ -4215,6 +4274,10 @@ impl App {
             let combined = messages.join("\n\n");
             let has_combined = !combined.is_empty();
             let preserve_visible_turn = super::commands::queued_messages_are_only_pokes(&messages);
+            if !messages.is_empty() && !preserve_visible_turn {
+                self.automatic_failover_targets.clear();
+                self.automatic_failover_stopped = false;
+            }
 
             self.commit_pending_streaming_assistant_message();
 

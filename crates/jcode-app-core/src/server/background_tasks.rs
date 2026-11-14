@@ -53,6 +53,13 @@ async fn emit_external_wake(
     if crate::config::config().server.wake_mode != crate::config::WakeMode::External {
         return false;
     }
+    crate::mobile_push::notify(
+        crate::mobile_push::PushKind::Wake,
+        session_id,
+        None,
+        notification,
+        None,
+    );
     let _ = fanout_session_event(
         swarm_members,
         session_id,
@@ -82,23 +89,29 @@ pub(super) async fn dispatch_background_task_completion(
 ) {
     let notification = format_background_task_notification_markdown(task);
 
-    if task.notify
-        && fanout_session_event(
-            swarm_members,
-            &task.session_id,
-            ServerEvent::Notification {
-                from_session: "background_task".to_string(),
-                from_name: Some("background task".to_string()),
-                notification_type: NotificationType::Message {
-                    scope: Some("background_task".to_string()),
-                    channel: None,
-                    tldr: None,
-                },
-                message: notification.clone(),
+    if fanout_session_event(
+        swarm_members,
+        &task.session_id,
+        ServerEvent::Notification {
+            from_session: "background_task".to_string(),
+            from_name: Some("background task".to_string()),
+            notification_type: NotificationType::Message {
+                scope: Some(
+                    if task.notify {
+                        "background_task"
+                    } else {
+                        "background_activity"
+                    }
+                    .to_string(),
+                ),
+                channel: None,
+                tldr: None,
             },
-        )
-        .await
-            == 0
+            message: notification.clone(),
+        },
+    )
+    .await
+        == 0
     {
         crate::logging::warn(&format!(
             "Failed to notify attached clients for background task completion on session {}",
@@ -323,6 +336,55 @@ pub(super) async fn dispatch_swarm_await_completion(
             "Failed to deliver swarm await completion to session {}",
             event.session_id
         ));
+    }
+}
+
+/// Completion is actionable even without an explicit await. Keep the UI card
+/// emitted by the status transition, but deliver the full report to the model.
+pub(super) async fn dispatch_swarm_worker_report(
+    event: &crate::bus::SwarmWorkerReported,
+    sessions: &SessionAgents,
+    soft_interrupt_queues: &SessionInterruptQueues,
+    swarm: LiveTurnSwarmContext,
+) {
+    // Do not revive a coordinator that the user explicitly stopped.
+    if swarm
+        .members
+        .read()
+        .await
+        .get(&event.session_id)
+        .is_none_or(|member| matches!(member.status.as_str(), "stopped" | "crashed" | "failed"))
+    {
+        return;
+    }
+    if emit_external_wake(
+        &event.session_id,
+        "swarm_worker_reported",
+        &event.notification,
+        &swarm.members,
+    )
+    .await
+    {
+        return;
+    }
+    if !run_live_turn_if_idle(
+        &event.session_id,
+        &event.notification,
+        Some("A worker has reported back. Integrate its result and check the remaining todo plan. Reassign available workers to actionable work, or explicitly stop them if no work remains. Do not end coordination with an unfinished actionable plan just because this worker finished its chunk. Respect user cancellation and genuine external blockers.".to_string()),
+        sessions,
+        swarm,
+    ).await {
+        let queued = queue_soft_interrupt_for_session(
+            &event.session_id,
+            format!("{}\n\nReview this worker report and continue coordinating the remaining actionable plan, including assigning available workers their next work.", event.notification),
+            false,
+            SoftInterruptSource::System,
+            soft_interrupt_queues,
+            sessions,
+        ).await;
+        if !queued {
+            crate::logging::warn("Could not queue worker report for coordinator session");
+        }
     }
 }
 
@@ -589,15 +651,15 @@ const SWARM_TOOL_INTENTS_CAP: usize = 3;
 const SWARM_TOOL_INTENT_CAP: usize = 120;
 
 fn todo_display_status(todo: &crate::todo::TodoItem) -> String {
-    if crate::todo::todo_completely_blocked(todo) {
-        "completely_blocked".into()
+    if crate::todo::todo_requires_user_auth(todo) {
+        "requires_user_auth".into()
     } else {
         todo.status.clone()
     }
 }
 
-/// A complete blocker applies to the worker only when every unfinished item
-/// is completely blocked. Independent pending/running work must remain actionable.
+/// The worker as a whole is paused for the user only when every unfinished
+/// item needs authorization. Independent pending/running work stays actionable.
 pub(super) fn todo_runtime_projection(
     todos: &[crate::todo::TodoItem],
 ) -> (Vec<String>, Option<String>) {
@@ -609,16 +671,16 @@ pub(super) fn todo_runtime_projection(
     let reason = (!unfinished.is_empty()
         && unfinished
             .iter()
-            .all(|todo| crate::todo::todo_completely_blocked(todo)))
+            .all(|todo| crate::todo::todo_requires_user_auth(todo)))
     .then(|| {
         unfinished
             .iter()
-            .filter_map(|todo| todo.completely_blocked.as_ref())
+            .filter_map(|todo| todo.requires_user_auth.as_ref())
             .map(|required| required.reason.trim().to_string())
             .collect::<Vec<_>>()
             .join("; ")
     })
-    .map(|reason| format!("Completely blocked: {reason}"));
+    .map(|reason| format!("Needs your login: {reason}"));
     (statuses, reason)
 }
 
@@ -697,6 +759,85 @@ mod tests {
     use crate::bus::{BatchProgress, ToolEvent, ToolStatus};
 
     #[tokio::test]
+    async fn silent_background_completion_fanouts_lifecycle_only() {
+        let (event_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let member = SwarmMember {
+            session_id: "silent-session".into(),
+            event_tx,
+            event_txs: HashMap::new(),
+            working_dir: None,
+            swarm_id: None,
+            swarm_enabled: true,
+            status: "idle".into(),
+            detail: None,
+            task_label: None,
+            friendly_name: None,
+            report_back_to_session_id: None,
+            latest_completion_report: None,
+            role: "agent".into(),
+            joined_at: std::time::Instant::now(),
+            last_status_change: std::time::Instant::now(),
+            is_headless: false,
+            output_tail: None,
+            todo_progress: None,
+            todo_items: Vec::new(),
+            runtime: Default::default(),
+        };
+        let members = Arc::new(RwLock::new(HashMap::from([(
+            "silent-session".into(),
+            member,
+        )])));
+        let sessions = Arc::new(super::super::session_manager::SessionManager::new());
+        let queues = Arc::new(RwLock::new(HashMap::new()));
+        let (swarm_tx, _) = broadcast::channel(8);
+        let task = crate::bus::BackgroundTaskCompleted {
+            task_id: "silent-completion".into(),
+            tool_name: "bash".into(),
+            display_name: None,
+            session_id: "silent-session".into(),
+            status: crate::bus::BackgroundTaskStatus::Completed,
+            exit_code: Some(0),
+            output_preview: "done".into(),
+            output_file: "silent.output".into(),
+            duration_secs: 1.0,
+            notify: false,
+            wake: false,
+        };
+        dispatch_background_task_completion(
+            &task,
+            &sessions,
+            &queues,
+            &members,
+            &Arc::new(RwLock::new(HashMap::new())),
+            &Arc::new(RwLock::new(VecDeque::new())),
+            &Arc::new(AtomicU64::new(0)),
+            &swarm_tx,
+        )
+        .await;
+        let ServerEvent::Notification {
+            notification_type,
+            message,
+            ..
+        } = events
+            .try_recv()
+            .expect("silent lifecycle must reach attached client")
+        else {
+            panic!("expected lifecycle notification");
+        };
+        assert!(
+            matches!(notification_type, NotificationType::Message { scope: Some(scope), .. } if scope == "background_activity")
+        );
+        let completed =
+            crate::message::parse_background_task_notification_markdown(&message).unwrap();
+        assert_eq!(completed.task_id, task.task_id);
+        assert!(
+            events.try_recv().is_err(),
+            "silent completion must not request wake"
+        );
+        assert!(queues.read().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn swarm_todo_statuses_include_items_outside_detail_window() {
         let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
         let member = SwarmMember {
@@ -750,7 +891,7 @@ mod tests {
             "in_progress"
         );
         for todo in &mut event.todos {
-            todo.completely_blocked = Some(crate::todo::TodoCompleteBlocker {
+            todo.requires_user_auth = Some(crate::todo::TodoUserAuth {
                 reason: "Required data is permanently unavailable".into(),
             });
         }
@@ -762,7 +903,7 @@ mod tests {
                 runtime
                     .todo_statuses
                     .iter()
-                    .all(|s| s == "completely_blocked")
+                    .all(|s| s == "requires_user_auth")
             );
             assert!(
                 runtime
@@ -771,9 +912,9 @@ mod tests {
                     .unwrap()
                     .contains("Required data is permanently unavailable")
             );
-            assert_eq!(members["worker"].todo_items[0].status, "completely_blocked");
+            assert_eq!(members["worker"].todo_items[0].status, "requires_user_auth");
         }
-        event.todos[19].completely_blocked = None;
+        event.todos[19].requires_user_auth = None;
         dispatch_swarm_todo_progress(&event, &members, &swarms).await;
         assert!(
             members.read().await["worker"]

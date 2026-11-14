@@ -9,7 +9,8 @@
 //! Flow:
 //! 1. `on_ask_prompt_with_spec` (in `fork_ask`) records the pending request
 //!    and opens the modal.
-//! 2. `handle_modal_key` (called first from `input::handle_modal_key`)
+//! 2. `handle_modal_key` (routed from `input::handle_modal_key` and the
+//!    remote key handler while `fork_ask.modal` is open)
 //!    dispatches keys into `AskModal::key` and stages the answer in
 //!    `ForkAskState::staged_answer`.
 //! 3. `process_remote_followups` (in `remote`) flushes the staged answer via
@@ -185,7 +186,6 @@ impl From<jcode_protocol::AskSpec> for AskSpecUi {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fork_ask_keys::handle_modal_key;
     use super::super::fork_ask_render::{draw_ask_modal, truncate_display, wrap_display};
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -1073,5 +1073,62 @@ mod tests {
         // No modal open: a stale event must not push a stray transcript line.
         app.fork_ask_ops().on_question_resolved_elsewhere("поздно");
         assert!(app.display_messages.is_empty());
+    }
+
+    /// Regression: the fork ask_user modal opened but no key path ever routed
+    /// to it, so arrows/digits/space did nothing locally while a Telegram
+    /// answer still worked. The modal must own the keyboard through the shared
+    /// key pipeline (`App::handle_key` -> `input::handle_modal_key`).
+    #[test]
+    fn key_pipeline_routes_arrows_and_enter_to_the_ask_modal() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
+        assert!(app.fork_ask.modal.is_some(), "modal should open");
+        let initial_cursor = app.fork_ask.modal.as_ref().unwrap().cursor;
+
+        // Down then Up: both must reach the modal and move the cursor.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .expect("key pipeline must not error");
+        assert_eq!(
+            app.fork_ask.modal.as_ref().unwrap().cursor,
+            (initial_cursor + 1) % 2
+        );
+
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE)
+            .expect("key pipeline must not error");
+        assert_eq!(app.fork_ask.modal.as_ref().unwrap().cursor, initial_cursor);
+
+        // Enter submits the highlighted option through the same path.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .expect("key pipeline must not error");
+        assert!(app.fork_ask.modal.is_none(), "Enter should close the modal");
+        let (request_id, answer) = app.fork_ask.staged_answer.clone().unwrap();
+        assert_eq!(request_id, "ask-42");
+        assert_eq!(answer, "Staging");
+        assert!(app.pending_queued_dispatch);
+    }
+
+    /// Digit instant-submit also flows through the shared key pipeline.
+    #[test]
+    fn key_pipeline_routes_digit_submit_to_the_ask_modal() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(stdin_request(Some(wire_spec(false))), &mut remote);
+        assert!(app.fork_ask.modal.is_some());
+
+        app.handle_key(KeyCode::Char('2'), KeyModifiers::NONE)
+            .expect("key pipeline must not error");
+        assert!(app.fork_ask.modal.is_none());
+        assert_eq!(
+            app.fork_ask.staged_answer.clone().unwrap().1,
+            "Production"
+        );
     }
 }

@@ -1,6 +1,62 @@
 use super::*;
 use ratatui::style::Modifier;
 
+fn background_row(
+    label: &str,
+    status: crate::tui::BackgroundTaskRowStatus,
+) -> crate::tui::BackgroundTaskRow {
+    crate::tui::BackgroundTaskRow {
+        task_id: label.into(),
+        label: label.into(),
+        percent: None,
+        status,
+        completed_at: None,
+    }
+}
+
+#[test]
+fn background_status_keeps_all_running_intents_after_launch_returns() {
+    use crate::tui::BackgroundTaskRowStatus::*;
+    let tasks = [
+        background_row("Run tests", Running),
+        background_row("Build app", Running),
+        background_row("Already done", Completed),
+        background_row("Old failure", Failed),
+    ];
+    let text = status_with_background_tasks(Line::from("thinking…"), &tasks, 120, true).to_string();
+    assert_eq!(text, "thinking… · bg 2: Run tests · Build app");
+    let idle = status_with_background_tasks(Line::from("idle tip"), &tasks, 120, false).to_string();
+    assert_eq!(idle, "bg 2: Run tests · Build app");
+    assert_eq!(
+        status_with_background_tasks(Line::from("thinking…"), &tasks[2..], 120, true).to_string(),
+        "thinking…"
+    );
+}
+
+#[test]
+fn background_status_fits_unicode_cells_and_keeps_background_visible() {
+    let tasks = [background_row(
+        "Run 界\n tests\tand more",
+        crate::tui::BackgroundTaskRowStatus::Running,
+    )];
+    for width in 0..120 {
+        for processing in [false, true] {
+            let line = status_with_background_tasks(
+                Line::from("foreground 界 intent ".repeat(10)),
+                &tasks,
+                width,
+                processing,
+            );
+            assert!(line.width() <= width, "width={width}: {line}");
+            let text = line.to_string();
+            assert!(!text.contains('\n') && !text.contains('\t'), "{text}");
+            if width >= 24 {
+                assert!(text.contains("bg 1:"), "width={width}: {text}");
+            }
+        }
+    }
+}
+
 #[test]
 fn overscroll_directory_transition_only_shows_real_moves() {
     assert_eq!(
@@ -777,4 +833,68 @@ fn normalize_repaint_sensitive_notice_text_drops_warning_variation_selector() {
         normalize_repaint_sensitive_notice_text("all clear"),
         "all clear"
     );
+}
+
+fn voice_preview(recording: bool, levels: Vec<f32>) -> crate::tui::VoiceComposerPreview {
+    crate::tui::VoiceComposerPreview {
+        recording,
+        elapsed_secs: 7,
+        levels,
+        live: "hello world".into(),
+        hint: "Ctrl+Space send · Esc cancel".into(),
+    }
+}
+
+fn line_text(line: &Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+#[test]
+fn voice_waveform_row_never_exceeds_width() {
+    use unicode_width::UnicodeWidthStr;
+    let preview = voice_preview(true, vec![0.1; 64]);
+    for width in [0usize, 5, 12, 20, 40, 80, 200] {
+        let text = line_text(&voice_waveform_line(&preview, width));
+        assert!(text.width() <= width.max(1), "width {width}: {text:?}");
+    }
+    let wide = line_text(&voice_waveform_line(&preview, 120));
+    assert!(
+        wide.contains("0:07") && wide.contains("Esc cancel"),
+        "{wide}"
+    );
+    let narrow = line_text(&voice_waveform_line(&preview, 20));
+    assert!(!narrow.contains("Esc"), "hint dropped first: {narrow}");
+    let transcribing = line_text(&voice_waveform_line(&voice_preview(false, vec![]), 80));
+    assert!(transcribing.contains("Transcribing"), "{transcribing}");
+}
+
+#[test]
+fn voice_waveform_is_newest_on_the_right_and_padded() {
+    let preview = voice_preview(true, vec![0.0, 0.0, 1.0]);
+    let text = line_text(&voice_waveform_line(&preview, 40));
+    assert!(text.contains('·'), "short history pads on the left: {text}");
+    let wave_end = text.trim_end_matches(|c: char| !"▁▂▃▄▅▆▇█".contains(c));
+    assert!(wave_end.ends_with('█'), "{text}");
+}
+
+#[test]
+fn voice_ghost_text_wraps_after_input_without_moving_cursor() {
+    let style = Style::default().italic();
+    let (lines, cursor_line, cursor_col) = wrap_input_text_with_ghost(
+        "fix",
+        3,
+        100,
+        "1",
+        "> ",
+        Color::White,
+        3,
+        &|_| false,
+        Some(("the bug", style)),
+    );
+    assert_eq!((cursor_line, cursor_col), (0, 3));
+    let text = line_text(&lines[0]);
+    assert!(text.ends_with("fix the bug"), "{text}");
+    let ghost = lines[0].spans.last().unwrap();
+    assert_eq!(ghost.content.as_ref(), " the bug");
+    assert!(ghost.style.add_modifier.contains(Modifier::ITALIC));
 }

@@ -273,85 +273,8 @@ fn auto_poke_environment_override_uses_standard_boolean_values() {
     restore_env_var("JCODE_AUTO_POKE", previous);
 }
 
-#[test]
-fn latex_rendering_defaults_to_image_and_parses_all_modes() {
-    assert_eq!(
-        Config::default().display.latex_rendering,
-        LatexRenderingMode::Image
-    );
-    for (value, expected) in [
-        ("none", LatexRenderingMode::None),
-        ("unicode", LatexRenderingMode::Unicode),
-        ("image", LatexRenderingMode::Image),
-    ] {
-        let cfg: Config = toml::from_str(&format!("[display]\nlatex_rendering = \"{value}\"\n"))
-            .expect("latex rendering mode should parse");
-        assert_eq!(cfg.display.latex_rendering, expected);
-        assert_eq!(LatexRenderingMode::parse(expected.as_str()), Some(expected));
-    }
-    // An unknown mode degrades to the default instead of failing the whole
-    // config parse, which used to silently discard every other setting in
-    // config.toml (issue #689).
-    let cfg: Config = toml::from_str("[display]\ncentered = true\nlatex_rendering = \"canvas\"\n")
-        .expect("an unknown latex mode must not invalidate the config");
-    assert_eq!(cfg.display.latex_rendering, LatexRenderingMode::Image);
-    assert!(cfg.display.centered, "unrelated settings must survive");
-}
-
-#[test]
-fn latex_rendering_environment_override_accepts_aliases() {
-    let _guard = crate::storage::lock_test_env();
-    let previous = std::env::var_os("JCODE_LATEX_RENDERING");
-    crate::env::set_var("JCODE_LATEX_RENDERING", "png");
-    let mut cfg = Config::default();
-    cfg.apply_env_overrides();
-    assert_eq!(cfg.display.latex_rendering, LatexRenderingMode::Image);
-    restore_env_var("JCODE_LATEX_RENDERING", previous);
-}
-
-/// The /latex command persists through set_latex_rendering, which is a
-/// read-modify-write over the real config.toml. Pin the whole roundtrip at
-/// this layer: write, then parse the file back and confirm the mode and an
-/// unrelated sibling setting both survive, so a future refactor cannot make
-/// the setter rewrite the file without keeping other keys.
-#[test]
-fn set_latex_rendering_roundtrips_through_config_toml() {
-    let _guard = crate::storage::lock_test_env();
-    let temp = tempfile::tempdir().expect("tempdir");
-    let previous_home = std::env::var_os("JCODE_HOME");
-    crate::env::set_var("JCODE_HOME", temp.path());
-    let previous_latex = std::env::var_os("JCODE_LATEX_RENDERING");
-    crate::env::remove_var("JCODE_LATEX_RENDERING");
-
-    // Seed a non-default sibling key so the test can catch a rewrite that
-    // drops it.
-    let seed = temp.path().join("config.toml");
-    std::fs::write(
-        &seed,
-        "[display]\ncentered = false\nlatex_rendering = \"unicode\"\n",
-    )
-    .expect("seed config");
-
-    Config::set_latex_rendering(LatexRenderingMode::None).expect("save mode");
-
-    let raw = std::fs::read_to_string(&seed).expect("read config back");
-    assert!(
-        raw.contains("latex_rendering = \"none\""),
-        "mode must be persisted, got: {raw}"
-    );
-    assert!(
-        raw.contains("centered = false"),
-        "unrelated display keys must survive the rewrite, got: {raw}"
-    );
-
-    let reloaded = Config::load_strict().expect("config parses after the write");
-    assert_eq!(reloaded.display.latex_rendering, LatexRenderingMode::None);
-    assert!(!reloaded.display.centered);
-
-    restore_env_var("JCODE_LATEX_RENDERING", previous_latex);
-    restore_env_var("JCODE_HOME", previous_home);
-    Config::invalidate_cache();
-}
+#[path = "config_latex_tests.rs"]
+mod latex;
 
 #[test]
 fn swarm_max_concurrent_agents_parses_and_allows_zero_for_unbounded() {
@@ -1043,6 +966,30 @@ fn config_env_fingerprint_ignores_runtime_only_jcode_vars() {
     restore_env_var("JCODE_DISPLAY_CENTERED", prev_display_centered);
 }
 
+// Changing the resume override must invalidate the cached configuration.
+#[test]
+fn config_cache_reloads_after_resume_open_elsewhere_changes() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_resume = std::env::var_os("JCODE_RESUME_OPEN_ELSEWHERE");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::set_var("JCODE_RESUME_OPEN_ELSEWHERE", "off");
+    Config::invalidate_cache();
+
+    let before = crate::config::config().display.resume_open_elsewhere;
+    crate::env::set_var("JCODE_RESUME_OPEN_ELSEWHERE", "replace");
+    let after = crate::config::config().display.resume_open_elsewhere;
+
+    // Restore process-wide state before checking the result, even on failure.
+    restore_env_var("JCODE_HOME", prev_home);
+    restore_env_var("JCODE_RESUME_OPEN_ELSEWHERE", prev_resume);
+    Config::invalidate_cache();
+
+    assert_eq!(before, jcode_config_types::ResumeOpenElsewhere::Off);
+    assert_eq!(after, jcode_config_types::ResumeOpenElsewhere::Replace);
+}
+
 #[test]
 fn config_env_fingerprint_tracks_every_apply_env_override_var() {
     let override_source = include_str!("config/env_overrides.rs");
@@ -1133,6 +1080,34 @@ fn test_provider_failover_defaults_match_new_behavior() {
         super::CrossProviderFailoverMode::Countdown
     );
     assert!(provider.same_provider_account_failover);
+    assert!(provider.openai_auto_banked_reset);
+    assert!(!provider.anthropic_auto_fable_reset);
+}
+
+#[test]
+fn automatic_banked_reset_defaults_on_and_supports_explicit_opt_out() {
+    let cfg: Config = toml::from_str("[provider]\nopenai_auto_banked_reset = false\n").unwrap();
+    assert!(!cfg.provider.openai_auto_banked_reset);
+    let cfg: Config = toml::from_str("[provider]\n").unwrap();
+    assert!(cfg.provider.openai_auto_banked_reset);
+    assert!(cfg.provider.auto_reset_only_when_no_routes);
+    assert!(!cfg.provider.anthropic_auto_fable_reset);
+    let cfg: Config = toml::from_str("[provider]\nanthropic_auto_fable_reset = true\n").unwrap();
+    assert!(cfg.provider.anthropic_auto_fable_reset);
+    assert!(cfg.provider.openai_auto_banked_reset);
+}
+
+#[test]
+fn automatic_reset_routes_first_by_default_and_can_be_overridden() {
+    let cfg: Config = toml::from_str("[provider]\n").unwrap();
+    assert!(cfg.provider.auto_reset_only_when_no_routes);
+    assert!(ProviderConfig::default().auto_reset_only_when_no_routes);
+    let cfg: Config = toml::from_str(
+        "[provider]\nopenai_auto_banked_reset = true\nanthropic_auto_fable_reset = true\nauto_reset_only_when_no_routes = false\n",
+    ).unwrap();
+    assert!(!cfg.provider.auto_reset_only_when_no_routes);
+    assert!(cfg.provider.openai_auto_banked_reset);
+    assert!(cfg.provider.anthropic_auto_fable_reset);
 }
 
 #[test]
@@ -1595,12 +1570,40 @@ fn sponsors_optout_survives_config_save_and_reload() {
             );
             let saved = std::fs::read_to_string(&path).expect("read saved config");
             let saved: toml::Value = toml::from_str(&saved).expect("parse saved config");
-            assert_eq!(saved["sponsors"]["enabled"].as_bool(), Some(false));
+            assert_eq!(
+                saved
+                    .get("sponsors")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false),
+                false
+            );
         }
     }
 
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
+}
+
+#[test]
+fn integration_discovery_is_opt_in() {
+    assert!(!Config::default().sponsors.enabled);
+    for raw in [
+        "",
+        "[sponsors]\n",
+        "[sponsors]\nendpoint = 'https://example.com'\n",
+    ] {
+        let config: Config = toml::from_str(raw).expect("parse config");
+        assert!(!config.sponsors.enabled, "must be disabled for {raw:?}");
+    }
+    let config: Config = toml::from_str("[sponsors]\nenabled = true\n").expect("parse opt-in");
+    assert!(config.sponsors.enabled);
+    let rendered = toml::to_string_pretty(&config).expect("serialize opt-in");
+    let reloaded: Config = toml::from_str(&rendered).expect("reload opt-in");
+    assert!(
+        reloaded.sponsors.enabled,
+        "explicit opt-in must survive saving"
+    );
 }
 
 #[test]
@@ -1753,6 +1756,32 @@ fn cli_config_save_round_trips_desktop_tables() {
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
 }
+
+#[test]
+fn global_voice_devices_fall_back_to_desktop_selection() {
+    let desktop: Config =
+        toml::from_str("[desktop.voice]\nglobal_devices = [\"/dev/input/event3\", \"\"]\n")
+            .unwrap();
+    assert_eq!(
+        desktop.global_voice_devices(),
+        vec![std::path::PathBuf::from("/dev/input/event3")]
+    );
+
+    let explicit: Config = toml::from_str(
+        "[dictation]\nglobal_devices = [\"/dev/input/event7\"]\n\n\
+         [desktop.voice]\nglobal_devices = [\"/dev/input/event3\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        explicit.global_voice_devices(),
+        vec![std::path::PathBuf::from("/dev/input/event7")]
+    );
+
+    assert!(Config::default().global_voice_devices().is_empty());
+}
+
+#[path = "config_tests/default_provider.rs"]
+mod default_provider;
 
 /// `display.overscroll_status` was removed; configs that still set it (users
 /// had `"on"` written by older versions) must load without losing settings.

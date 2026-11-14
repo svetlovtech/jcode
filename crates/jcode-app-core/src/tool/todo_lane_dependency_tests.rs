@@ -56,15 +56,123 @@ fn incremental_edits_apply_to_whole_lane_and_new_members_inherit() {
 }
 
 #[test]
-fn public_schema_exposes_lane_after_only_at_correct_levels() {
+fn public_schema_exposes_lane_dependencies_only_at_correct_levels() {
     let schema = TodoTool.parameters_schema();
-    assert!(schema["properties"]["update"]["items"]["properties"]["lane_after"].is_object());
-    assert!(schema["properties"]["add"]["items"]["properties"]["lane_after"].is_object());
-    let lane = &schema["properties"]["phases"]["items"]["properties"]["lanes"]["items"];
-    assert!(lane["properties"]["after"].is_object());
+    assert!(schema["properties"]["add"]["items"]["properties"]["lane_dependencies"].is_object());
     assert!(
-        lane["properties"]["items"]["items"]["properties"]
+        schema["properties"]["update"]["items"]["properties"]
             .get("lane_after")
             .is_none()
     );
+    assert!(schema["properties"]["add"]["items"]["properties"]["after"].is_object());
+    let lane = &schema["properties"]["phases"]["items"]["properties"]["lanes"]["items"];
+    assert!(lane["properties"]["dependencies"].is_object());
+    assert!(lane["properties"].get("after").is_none());
+    assert!(
+        lane["properties"]["items"]["items"]["properties"]
+            .get("lane_dependencies")
+            .is_none()
+    );
+}
+
+#[test]
+fn named_dependencies_roundtrip_and_lane_updates() {
+    let plan = apply_todo_patch(
+        json!({"phases": [
+            {"phase": 1, "lanes": [{"lane": "base", "items": [
+                {"name": "Build", "status": "pending", "priority": "high"}
+            ]}]},
+            {"phase": 2, "lanes": [{"lane": "checks", "dependencies": ["Build"], "items": [
+                {"name": "Test", "status": "pending", "priority": "high"},
+                {"name": "Lint", "status": "pending", "priority": "high"}
+            ]}]}
+        ]}),
+        || json!([]),
+    )
+    .unwrap();
+    let todos = parsed(plan.clone());
+    assert_eq!(todos[1].lane_after, Some(vec![todos[0].id.clone()]));
+    assert_eq!(todos[1].lane_after, todos[2].lane_after);
+    let public = names::public_todos(&todos).unwrap();
+    assert_eq!(public[1]["lane_dependencies"], json!(["Build"]));
+    assert!(public[1].get("lane_after").is_none());
+    let cleared = apply_todo_patch(
+        json!({"update": [
+            {"name": "Test", "lane_dependencies": null}
+        ]}),
+        || plan["todos"].clone(),
+    )
+    .unwrap();
+    assert!(
+        parsed(cleared.clone())
+            .iter()
+            .all(|todo| todo.lane_after.is_none())
+    );
+    let restored = apply_todo_patch(
+        json!({"update": [
+            {"name": "Lint", "lane_dependencies": ["Build"]}
+        ]}),
+        || cleared["todos"].clone(),
+    )
+    .unwrap();
+    assert_eq!(parsed(restored)[1].lane_after, todos[1].lane_after);
+}
+
+#[test]
+fn conflicting_dependency_aliases_are_rejected() {
+    let result = apply_todo_patch(
+        json!({"phases": [{"phase": 1, "lanes": [
+            {"lane": "base", "dependencies": null, "after": null, "items": []}
+        ]}]}),
+        || json!([]),
+    );
+    assert!(result.unwrap_err().to_string().contains("not both"));
+    let result = apply_todo_patch(
+        json!({"update": [
+            {"name": "Test", "lane_dependencies": null, "lane_after": null}
+        ]}),
+        || json!([]),
+    );
+    assert!(result.unwrap_err().to_string().contains("not both"));
+}
+
+#[test]
+fn phase_lane_owner_marks_every_member_and_update_flips_whole_lane() {
+    let todos = parsed(json!({"phases": [
+        {"phase": 1, "lanes": [
+            {"lane": "api", "owner": "worker", "items": [
+                {"id": "a", "content": "A", "status": "pending", "priority": "high"},
+                {"id": "b", "content": "B", "status": "pending", "priority": "high"}
+            ]},
+            {"lane": "mine", "items": [{"id": "c", "content": "C", "status": "pending", "priority": "high"}]}
+        ]}
+    ]}));
+    assert!(
+        todos[..2]
+            .iter()
+            .all(crate::todo::stages::lane_requests_worker)
+    );
+    assert!(!crate::todo::stages::lane_requests_worker(&todos[2]));
+
+    let stored = json!([item("a", 1, "api"), item("b", 1, "api")]);
+    let updated = apply_todo_patch(
+        json!({"update": [{"id": "b", "lane_owner": "worker"}]}),
+        || stored,
+    )
+    .unwrap();
+    let todos = parsed(updated);
+    assert!(todos.iter().all(crate::todo::stages::lane_requests_worker));
+}
+
+#[test]
+fn unknown_lane_owner_is_rejected() {
+    let mut bad = TodoItem {
+        id: "a".into(),
+        content: "A".into(),
+        status: "pending".into(),
+        priority: "high".into(),
+        ..Default::default()
+    };
+    bad.lane_owner = Some("robot".into());
+    assert!(crate::todo::stages::validate_lane_dependencies(&[bad]).is_err());
 }

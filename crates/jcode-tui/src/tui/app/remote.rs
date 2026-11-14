@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 mod input_dispatch;
 mod key_handling;
+mod latency;
 mod queue_recovery;
 mod reconnect;
 mod server_event_handlers;
@@ -28,6 +29,7 @@ mod ssh_host;
 pub(super) mod ssh_sessions;
 mod swarm_plan_core;
 mod swarm_status_core;
+pub(super) mod turn_identity;
 mod workspace;
 
 #[cfg(test)]
@@ -51,8 +53,7 @@ use session_persistence::{
 };
 use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 
-// Re-export the remote input dispatch helpers for sibling modules/tests that go
-// through the `remote` facade instead of private submodule paths.
+// Re-export remote input dispatch helpers for sibling modules/tests.
 #[allow(unused_imports)]
 pub(super) use input_dispatch::{
     apply_remote_transcript_event, apply_transcript_event, begin_remote_send,
@@ -64,7 +65,7 @@ pub(super) use input_dispatch::{
 pub(super) use key_handling::{
     handle_remote_char_input, handle_remote_key, handle_remote_key_event, send_interleave_now,
 };
-pub(super) use server_events::handle_server_event;
+pub(super) use latency::handle_server_event;
 
 const CONNECTION_MESSAGE_TITLE: &str = "Connection";
 const RELOAD_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
@@ -98,6 +99,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             "Could not clear expired cloud resource tools: {error}"
         ));
     }
+    app.expire_presumed_focus();
+    crate::tui::window_visibility::poll(app.client_focused(), app.is_processing);
     app.refresh_terminal_title_metrics();
     app.sync_herdr_agent_state();
     crate::tui::ui::set_frame_input_attribution(crate::tui::ui::FrameInputAttribution {
@@ -108,10 +111,13 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             .as_ref()
             .is_some_and(|state| state.kind == crate::tui::PickerKind::Model),
     });
-    let mut needs_redraw = crate::tui::periodic_redraw_required(app);
+    let mut needs_redraw = crate::tui::periodic_redraw_required(app)
+        | crate::tui::terminal_events::theme_redraw_pending();
     needs_redraw |= app.poll_pending_startup_transcript();
     if remote.has_loaded_history()
-        && let Err(error) = remote.poll_account_usage().await
+        && let Err(error) = remote
+            .poll_account_usage_for_focus(app.client_focused())
+            .await
     {
         crate::logging::warn(&format!("Failed to request daemon account usage: {error}"));
     }
@@ -126,6 +132,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     needs_redraw |= app.poll_cloud_job();
+    if app.take_cloud_remote_interrupt() {
+        if let Err(error) = remote.cancel_with_reason("cloud_handoff_ready").await {
+            crate::logging::warn(&format!(
+                "Failed to interrupt turn for cloud handoff: {error}"
+            ));
+        }
+        needs_redraw = true;
+    }
     if let Some((provider, account)) = app.usage_reset.invalidate_account.take() {
         let sent = match provider {
             super::usage_reset::Provider::OpenAi => remote.invalidate_openai_usage(account).await,
@@ -200,7 +214,15 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         && app.stream_buffer.is_empty()
         && let Some(id) = app.deferred_stream_done_id.take()
     {
-        needs_redraw |= app.handle_server_event(crate::protocol::ServerEvent::Done { id }, remote);
+        let event = crate::protocol::ServerEvent::Done { id };
+        let event = match app.deferred_stream_done_identity.clone() {
+            Some(identity) => crate::protocol::ServerEvent::TurnEvent {
+                identity,
+                event: Box::new(event),
+            },
+            None => event,
+        };
+        needs_redraw |= app.handle_server_event(event, remote);
     }
 
     if app.remote_todos_refresh_due()
@@ -218,16 +240,27 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.poll_model_picker_load();
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
+    needs_redraw |= app.poll_session_picker_search_submission();
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.progress_update_simulator();
     needs_redraw |= app.refresh_keybindings_if_config_reloaded();
 
     let _ = check_debug_command(app, remote).await;
 
+    if app.pending_automatic_failover_request_id.is_some()
+        && app
+            .pending_automatic_failover_started
+            .is_some_and(|started| started.elapsed() >= Duration::from_secs(30))
+    {
+        fail_pending_automatic_failover(app, "Timed out waiting for route confirmation");
+        return true;
+    }
     let had_failover_countdown = app.pending_provider_failover.is_some();
     needs_redraw |= app.maybe_progress_provider_failover_countdown();
-    if had_failover_countdown {
-        if let Some(selection) = app.pending_automatic_failover_route.take() {
+    if had_failover_countdown || app.pending_automatic_failover_route.is_some() {
+        if app.pending_automatic_failover_request_id.is_none()
+            && let Some(selection) = app.pending_automatic_failover_route.take()
+        {
             app.pending_model_switch = None;
             match remote
                 .set_route_selection_for_failover(selection.clone())
@@ -235,6 +268,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             {
                 Ok(id) => {
                     app.pending_automatic_failover_request_id = Some(id);
+                    app.pending_automatic_failover_started = Some(Instant::now());
                     app.pending_automatic_failover_route = Some(selection);
                     app.remote_model_switch_in_flight = true;
                     forward_pending_reasoning_effort(app, remote).await;
@@ -256,7 +290,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         return true;
     }
 
-    if app.remote_model_switch_in_flight && app.pending_fallback_resend.is_some() {
+    if app.pending_fallback_resend.is_some()
+        && (app.remote_model_switch_in_flight || app.pending_route_selection.is_some())
+    {
         return needs_redraw;
     }
 
@@ -363,10 +399,25 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         }
     }
 
+    if app
+        .remote_queue_retry_not_before
+        .is_some_and(|deadline| Instant::now() < deadline)
+    {
+        return needs_redraw;
+    }
+    app.remote_queue_retry_not_before = None;
+
     // Esc redirect hold. On timeout this arms pending_queued_dispatch, which
     // the next check hands to the normal follow-up path.
     let holding_for_interrupt = app.awaiting_remote_interrupt_ack();
     if holding_for_interrupt || app.pending_queued_dispatch {
+        return needs_redraw;
+    }
+
+    // After a reload `is_processing` stays false until the History bootstrap
+    // reports whether the server is still mid-turn. Dispatching queued work
+    // before then would inject follow-ups into the still-running turn.
+    if !remote.has_loaded_history() {
         return needs_redraw;
     }
 
@@ -375,13 +426,21 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         // to the follow-up dispatcher, which runs them one at a time.
         app.pending_queued_dispatch = true;
         needs_redraw = true;
-    } else if !app.is_processing && !app.queued_messages.is_empty() {
-        let queued_messages = std::mem::take(&mut app.queued_messages);
+    } else if !app.is_processing
+        && !app.queued_messages.is_empty()
+        && !app.reload_recovery_blocks_queue()
+    {
+        let mut queued_messages = std::mem::take(&mut app.queued_messages);
+        super::commands::drop_stale_incomplete_todo_pokes(app, &mut queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let (messages, reminder, display_system_messages) =
             super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
         let combined = messages.join("\n\n");
         let auto_retry = reminder.is_some() && messages.is_empty();
+        if !messages.is_empty() && !super::commands::queued_messages_are_only_pokes(&messages) {
+            app.automatic_failover_targets.clear();
+            app.automatic_failover_stopped = false;
+        }
         crate::logging::info(&format!(
             "Sending queued continuation message ({} chars)",
             combined.len()
@@ -390,7 +449,15 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             app.push_display_message(DisplayMessage::system(msg));
         }
         for msg in &messages {
-            app.push_display_message(DisplayMessage::user(msg.clone()));
+            // Synthetic continuations are for the model, not user prompts.
+            let display = match crate::todo::auto_poke_display_summary(msg) {
+                Some(summary) => DisplayMessage::system(summary.to_string()),
+                None => DisplayMessage::user(msg.clone()),
+            };
+            app.push_display_message(display);
+        }
+        if messages.is_empty() && reminder.is_none() {
+            return true;
         }
         if begin_remote_send(
             app,
@@ -427,6 +494,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             || (remote.has_loaded_history() && app.has_pending_cloud_recovery()))
     {
         let reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        app.reload_recovery_dispatch_pending = false;
         let combined = reminders.join("\n\n");
         crate::logging::info(&format!(
             "Sending hidden continuation reminder ({} chars)",
@@ -459,6 +527,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= recover_stuck_remote_history(app, remote).await;
     needs_redraw |= detect_starved_queued_followup(app);
     needs_redraw |= app.maybe_finish_background_client_reload();
+    needs_redraw |= app.maybe_hot_reload_onto_new_binary();
     needs_redraw
 }
 
@@ -501,11 +570,10 @@ pub(super) async fn handle_terminal_event(
     // lag. Mirrors the identical drain in `local::handle_terminal_event`.
     const MAX_DRAINED_EVENTS_PER_WAKE: usize = 32;
     for _ in 0..MAX_DRAINED_EVENTS_PER_WAKE {
-        if !crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-            break;
-        }
-        if let Ok(event) = crossterm::event::read() {
+        if let Ok(Some(event)) = crate::tui::terminal_events::try_read() {
             needs_redraw |= apply_terminal_event(app, terminal, remote, Some(Ok(event))).await?;
+        } else {
+            break;
         }
     }
     Ok(needs_redraw)
@@ -548,6 +616,8 @@ async fn apply_terminal_event<B: Backend>(
             });
             input_attribution.scroll_delta = key_scroll_delta(&key);
             app.note_client_interaction();
+            let before_release =
+                (key.kind == KeyEventKind::Release).then(|| app.key_release_visible_state());
             app.update_copy_badge_key_event(key);
             app.observe_voice_key_release(&key);
             if !app.handle_voice_key_event(&key)
@@ -557,14 +627,24 @@ async fn apply_terminal_event<B: Backend>(
                 if let Some(selection) = app.pending_route_selection.take() {
                     app.cancel_pending_provider_failover("Provider auto-switch canceled");
                     app.pending_model_switch = None;
-                    match remote.set_route_selection(selection).await {
-                        Ok(_) => {
+                    match remote.set_route_selection(selection.clone()).await {
+                        Ok(id) => {
+                            // Manual fallback offers use unrestricted SetRoute,
+                            // but need the same exact acknowledgement fence as
+                            // automatic failover before releasing their resend.
+                            if app.pending_fallback_resend.is_some() {
+                                app.pending_automatic_failover_route = Some(selection);
+                                app.pending_automatic_failover_request_id = Some(id);
+                                app.pending_automatic_failover_started = Some(Instant::now());
+                            }
                             app.remote_model_switch_in_flight = true;
                             forward_pending_reasoning_effort(app, remote).await;
                         }
                         Err(error) => {
                             app.pending_reasoning_effort = None;
-                            app.pending_fallback_resend = None;
+                            if let Some(payload) = app.pending_fallback_resend.take() {
+                                app.restore_failover_payload(payload);
+                            }
                             app.push_display_message(DisplayMessage::error(format!(
                                 "Failed to request model switch: {}",
                                 error
@@ -606,7 +686,8 @@ async fn apply_terminal_event<B: Backend>(
                     }
                 }
             }
-            needs_redraw = true;
+            needs_redraw =
+                before_release.is_none_or(|before| before != app.key_release_visible_state());
             needs_redraw |= dispatch_compacted_history_load(app, remote).await;
         }
         Some(Ok(Event::Paste(text))) => {
@@ -664,8 +745,18 @@ async fn dispatch_compacted_history_load(app: &mut App, remote: &mut RemoteConne
     let Some(visible_messages) = app.take_pending_compacted_history_load() else {
         return false;
     };
-    match remote.get_compacted_history(visible_messages).await {
-        Ok(_) => true,
+    let recent_history = app.recent_history_window_active();
+    match remote
+        .get_compacted_history(visible_messages, recent_history)
+        .await
+    {
+        Ok(id) => {
+            if recent_history {
+                app.recent_history_paging.request =
+                    Some((id, app.display_messages_version, visible_messages));
+            }
+            true
+        }
         Err(error) => {
             app.restore_pending_compacted_history_load(visible_messages);
             app.set_status_notice(format!("Failed to request older history: {}", error));
@@ -706,6 +797,7 @@ pub(super) async fn handle_bus_event(
         }
         Ok(BusEvent::MermaidRenderCompleted) => true,
         Ok(BusEvent::GitInfoRefreshed) => true,
+        Ok(BusEvent::ClientBinaryChanged) => app.maybe_hot_reload_onto_new_binary(),
         Ok(BusEvent::UsageReportProgress(progress)) => {
             app.handle_usage_report_progress(progress);
             true
@@ -1057,11 +1149,32 @@ pub(super) fn debug_command_needs_current_frame(command: &str) -> bool {
     )
 }
 
+fn fail_pending_automatic_failover(app: &mut App, reason: &str) {
+    app.automatic_failover_stopped = true;
+    app.pending_automatic_failover_request_id = None;
+    app.pending_automatic_failover_started = None;
+    app.pending_automatic_failover_route = None;
+    app.remote_model_switch_in_flight = false;
+    if let Some(payload) = app.pending_fallback_resend.take() {
+        app.restore_failover_payload(payload);
+    }
+    app.push_display_message(DisplayMessage::error(format!(
+        "Fallback switch stopped: {}",
+        App::compact_provider_failure(reason)
+    )));
+    app.set_status_notice("Fallback switch stopped; resend manually");
+}
+
 pub(super) fn handle_disconnect(
     app: &mut App,
     state: &mut RemoteRunState,
     reason: Option<RemoteDisconnectReason>,
 ) {
+    // The daemon may have applied the switch, but the acknowledgement was
+    // lost. Never wait on an old connection's request ID or blindly resend.
+    if app.pending_automatic_failover_request_id.is_some() {
+        fail_pending_automatic_failover(app, "Connection lost before route confirmation");
+    }
     app.revoke_cloud_environment();
     let detail = if state.server_reload_in_progress {
         "server reload in progress".to_string()
@@ -1078,6 +1191,8 @@ pub(super) fn handle_disconnect(
     // queued prompt for reconnect, but release the transient model-setup gate so
     // it cannot remain blocked forever waiting for an event that was lost.
     app.finish_auth_catalog_refresh();
+    // The cancel answer cannot arrive on a dead connection. Ask again later.
+    app.soft_interrupt_recovery = None;
     state.last_disconnect_reason = Some(detail.clone());
 
     let scheduled_retry =
@@ -1348,6 +1463,13 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
 }
 
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+    if app
+        .remote_queue_retry_not_before
+        .is_some_and(|deadline| Instant::now() < deadline)
+    {
+        return;
+    }
+    app.remote_queue_retry_not_before = None;
     if app.prepare_cloud_environment(remote).await.is_err() {
         app.revoke_cloud_environment();
         return;
@@ -1356,6 +1478,9 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
     if app.pending_provider_failover.is_some()
+        || app.pending_automatic_failover_route.is_some()
+        || app.pending_automatic_failover_request_id.is_some()
+        || (app.pending_route_selection.is_some() && app.pending_fallback_resend.is_some())
         || (app.remote_model_switch_in_flight && app.pending_fallback_resend.is_some())
     {
         return;
@@ -1390,6 +1515,9 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     }
 
     let _ = recover_stranded_soft_interrupts(app, remote).await;
+    if app.soft_interrupt_recovery_in_flight() {
+        return;
+    }
 
     if app.pending_queued_dispatch {
         note_startup_submit_deferred(app, "pending_queued_dispatch in progress");
@@ -1413,6 +1541,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         }
         app.last_submitted_input = payload.raw_input.clone();
         crate::logging::info("Resending failed turn after accepted fallback route switch");
+        let recovery_payload = payload.clone();
         if let Err(error) = begin_remote_send(
             app,
             remote,
@@ -1421,10 +1550,11 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
             payload.is_system,
             payload.system_reminder,
             payload.auto_retry,
-            0,
+            payload.retry_attempts.saturating_add(1),
         )
         .await
         {
+            app.restore_failover_payload(recovery_payload);
             app.push_display_message(DisplayMessage::error(format!(
                 "Failed to resend after fallback switch: {}",
                 error
@@ -1610,6 +1740,8 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         // send while still compiling, so the comment marks why the take matters.
         let interleave_images = std::mem::take(&mut app.interleave_images);
         if !interleave_msg.trim().is_empty() {
+            app.automatic_failover_targets.clear();
+            app.automatic_failover_stopped = false;
             app.push_display_message(DisplayMessage {
                 role: "user".to_string(),
                 content: interleave_msg.clone(),
@@ -1638,13 +1770,21 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
                 )));
             }
         }
-    } else if !app.queued_messages.is_empty() {
-        let queued_messages = std::mem::take(&mut app.queued_messages);
+    } else if !app.queued_messages.is_empty() && !app.reload_recovery_blocks_queue() {
+        let mut queued_messages = std::mem::take(&mut app.queued_messages);
+        super::commands::drop_stale_incomplete_todo_pokes(app, &mut queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let (messages, reminder, display_system_messages) =
             super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
+        if messages.is_empty() && reminder.is_none() {
+            return;
+        }
         let combined = messages.join("\n\n");
         let preserve_visible_turn = super::commands::queued_messages_are_only_pokes(&messages);
+        if !messages.is_empty() && !preserve_visible_turn {
+            app.automatic_failover_targets.clear();
+            app.automatic_failover_stopped = false;
+        }
         let auto_retry = reminder.is_some() && messages.is_empty();
         for msg in display_system_messages {
             app.push_display_message(DisplayMessage::system(msg));
@@ -1688,6 +1828,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         }
     } else if !app.hidden_queued_system_messages.is_empty() || app.has_pending_cloud_recovery() {
         let reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        app.reload_recovery_dispatch_pending = false;
         let combined = reminders.join("\n\n");
         if begin_remote_send(
             app,
@@ -1920,6 +2061,12 @@ async fn handle_debug_command(app: &mut App, cmd: &str, remote: &mut RemoteConne
     if cmd == "state" {
         return serde_json::json!({
             "processing": app.is_processing,
+            "processing_status": format!("{:?}", app.status),
+            "current_message_id": app.current_message_id,
+            "pending_soft_interrupts": app.pending_soft_interrupts.len(),
+            "pending_soft_interrupt_requests": app.pending_soft_interrupt_requests.len(),
+            "pending_queued_dispatch": app.pending_queued_dispatch,
+            "remote_session_id": app.remote_session_id,
             "messages": app.messages.len(),
             "display_messages": app.display_messages.len(),
             "input": app.input,
@@ -2025,6 +2172,9 @@ fn queue_message_for_reconnect(app: &mut App) {
 
     let prepared = input::take_prepared_input(app);
     app.queued_messages.push(prepared.expanded);
+    if crate::tui::is_ssh_remote() {
+        crate::tui::request_immediate_ssh_reconnect();
+    }
 
     let queued_count = app.queued_messages.len();
     app.set_status_notice(format!(

@@ -23,158 +23,8 @@ pub(super) async fn wait_for_session_env_launch_gate(session_id: &str) {
     }
 }
 
-#[tokio::test]
-async fn session_env_foreground_sessions_are_isolated() {
-    use crate::session_env::{remove_session_env, set_session_env};
-    for (sid, value) in [("env-bash-a", "proxy-a"), ("env-bash-b", "proxy-b")] {
-        set_session_env(
-            sid,
-            std::collections::HashMap::from([("HTTPS_PROXY".into(), value.into())]),
-        )
-        .unwrap();
-    }
-    let mut a = make_ctx(None);
-    a.session_id = "env-bash-a".into();
-    let mut b = make_ctx(None);
-    b.session_id = "env-bash-b".into();
-    let tool = BashTool::new();
-    let command = json!({"command": "printf '%s:%s' \"$HTTPS_PROXY\" \"$JCODE_SESSION_ID\""});
-    let (a, b) = tokio::join!(tool.execute(command.clone(), a), tool.execute(command, b));
-    let a = a.unwrap().output;
-    let b = b.unwrap().output;
-    assert!(a.contains("proxy-a:env-bash-a"), "{a}");
-    assert!(!a.contains("proxy-b"));
-    assert!(b.contains("proxy-b:env-bash-b"), "{b}");
-    assert!(!b.contains("proxy-a"));
-    remove_session_env("env-bash-a");
-    remove_session_env("env-bash-b");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn session_env_reload_persistable_command_receives_overrides() {
-    let mut ctx = make_agent_ctx(jcode_agent_runtime::InterruptSignal::new());
-    ctx.session_id = "env-bash-detached".into();
-    crate::session_env::set_session_env(
-        &ctx.session_id,
-        std::collections::HashMap::from([("HTTPS_PROXY".into(), "proxy-detached".into())]),
-    )
-    .unwrap();
-    let result = BashTool::new()
-        .execute(
-            json!({"command": "printf '%s:%s' \"$HTTPS_PROXY\" \"$JCODE_SESSION_ID\""}),
-            ctx,
-        )
-        .await
-        .unwrap();
-    assert!(
-        result.output.contains("proxy-detached:env-bash-detached"),
-        "{}",
-        result.output
-    );
-    crate::session_env::remove_session_env("env-bash-detached");
-}
-
-#[tokio::test]
-async fn session_env_updates_affect_only_new_launches_and_invalid_updates_keep_bash_working() {
-    use crate::session_env::{remove_session_env, set_session_env};
-    let sid = "env-bash-updates";
-    let mut ctx = make_ctx(None);
-    ctx.session_id = sid.into();
-    let tool = BashTool::new();
-    let input = json!({"command": "printf '%s' \"${SESSION_ENV_REGRESSION_PROBE-unset}\""});
-    for value in ["first", "second"] {
-        set_session_env(
-            sid,
-            std::collections::HashMap::from([(
-                "SESSION_ENV_REGRESSION_PROBE".into(),
-                value.into(),
-            )]),
-        )
-        .unwrap();
-        assert!(
-            set_session_env(
-                sid,
-                std::collections::HashMap::from([(
-                    "SESSION_ENV_REGRESSION_PROBE".into(),
-                    "invalid\0value".into()
-                ),])
-            )
-            .is_err()
-        );
-        let result = tool.execute(input.clone(), ctx.clone()).await.unwrap();
-        assert!(result.output.contains(value), "{}", result.output);
-    }
-    set_session_env(sid, std::collections::HashMap::new()).unwrap();
-    let result = tool.execute(input, ctx).await.unwrap();
-    assert!(result.output.contains("unset"), "{}", result.output);
-    remove_session_env(sid);
-}
-
-#[tokio::test]
-async fn session_env_background_snapshots_before_deferred_launch() {
-    use crate::session_env::{remove_session_env, set_session_env};
-    for clear in [false, true] {
-        let sid = format!("env-bash-race-{clear}");
-        let original =
-            std::collections::HashMap::from([("HTTPS_PROXY".into(), "proxy-original".into())]);
-        set_session_env(&sid, original).unwrap();
-        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        SESSION_ENV_LAUNCH_GATES
-            .lock()
-            .unwrap()
-            .insert(sid.clone(), (reached_tx, release_rx));
-        let mut ctx = make_ctx(None);
-        ctx.session_id = sid.clone();
-        let result = BashTool::new()
-            .execute(
-                json!({
-                    "command": "printf '%s:%s\\n' \"$HTTPS_PROXY\" \"$JCODE_SESSION_ID\"",
-                    "run_in_background": true, "notify": false,
-                }),
-                ctx,
-            )
-            .await
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), reached_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        if clear {
-            set_session_env(&sid, std::collections::HashMap::new()).unwrap();
-        } else {
-            set_session_env(
-                &sid,
-                std::collections::HashMap::from([("HTTPS_PROXY".into(), "proxy-replaced".into())]),
-            )
-            .unwrap();
-        }
-        // Teardown must not erase the snapshot of this already-accepted job.
-        remove_session_env(&sid);
-        release_tx.send(()).unwrap();
-        let metadata = result.metadata.unwrap();
-        let task_id = metadata["task_id"].as_str().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let status = crate::background::global().status(task_id).await.unwrap();
-                if status.status != BackgroundTaskStatus::Running {
-                    assert_eq!(status.status, BackgroundTaskStatus::Completed);
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let output = crate::background::global().output(task_id).await.unwrap();
-        assert!(
-            output.contains(&format!("proxy-original:{sid}")),
-            "{output}"
-        );
-        assert!(!output.contains("proxy-replaced"));
-    }
-}
+#[path = "bash_tests/session_environment.rs"]
+mod session_environment;
 
 #[cfg(not(windows))]
 #[test]
@@ -456,94 +306,33 @@ async fn test_basic_command_with_unused_stdin_channel() {
 }
 
 #[tokio::test]
-async fn test_stdin_forwarding_single_line() {
+async fn test_stdin_reader_gets_eof_immediately() {
     let (tx, mut rx) = mpsc::unbounded_channel::<StdinInputRequest>();
     let tool = BashTool::new();
 
-    // "head -n1" reads one line from stdin and prints it
-    let input = json!({"command": "head -n1", "timeout": 10000});
+    // Commands are non-interactive: a stdin reader sees EOF right away, and no
+    // input request is ever raised.
+    let input =
+        json!({"command": "if read -r line; then echo got; else echo eof_ok; fi", "timeout": 5000});
     let ctx = make_ctx(Some(tx));
-
-    // Spawn the tool execution
-    let tool_handle = tokio::spawn(async move { tool.execute(input, ctx).await });
-
-    // Wait for the stdin request to arrive
-    let req = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("timed out waiting for stdin request")
-        .expect("channel closed");
-
-    assert!(req.request_id.starts_with("stdin-test-call-"));
-    assert!(!req.is_password);
-
-    // Send the response
-    req.response_tx.send("test_input_line".to_string()).unwrap();
-
-    // Wait for tool to finish
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), tool_handle)
-        .await
-        .expect("tool timed out")
-        .expect("tool panicked")
-        .expect("tool errored");
-
-    assert!(
-        result.output.contains("test_input_line"),
-        "output should contain the input we sent: {}",
-        result.output
-    );
+    let started = std::time::Instant::now();
+    let result = tool.execute(input, ctx).await.unwrap();
+    assert!(result.output.contains("eof_ok"), "{}", result.output);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(rx.try_recv().is_err(), "no stdin request should be raised");
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn test_stdin_forwarding_multiple_lines() {
-    let (tx, mut rx) = mpsc::unbounded_channel::<StdinInputRequest>();
+async fn test_command_has_no_controlling_tty_and_no_prompt_env() {
     let tool = BashTool::new();
-
-    // "head -n2" reads two lines
-    let input = json!({"command": "head -n2", "timeout": 15000});
-    let ctx = make_ctx(Some(tx));
-
-    let tool_handle = tokio::spawn(async move { tool.execute(input, ctx).await });
-
-    // First line
-    let req1 = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("timed out waiting for first stdin request")
-        .expect("channel closed");
-    assert!(
-        req1.request_id.ends_with("-1"),
-        "first request should end with -1: {}",
-        req1.request_id
-    );
-    req1.response_tx.send("line_one".to_string()).unwrap();
-
-    // Second line
-    let req2 = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("timed out waiting for second stdin request")
-        .expect("channel closed");
-    assert!(
-        req2.request_id.ends_with("-2"),
-        "second request should end with -2: {}",
-        req2.request_id
-    );
-    req2.response_tx.send("line_two".to_string()).unwrap();
-
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), tool_handle)
-        .await
-        .expect("tool timed out")
-        .expect("tool panicked")
-        .expect("tool errored");
-
-    assert!(
-        result.output.contains("line_one"),
-        "missing line_one in: {}",
-        result.output
-    );
-    assert!(
-        result.output.contains("line_two"),
-        "missing line_two in: {}",
-        result.output
-    );
+    let input = json!({
+        "command": "(exec 3</dev/tty) 2>/dev/null && echo has_tty || echo no_tty; echo GTP=$GIT_TERMINAL_PROMPT",
+        "timeout": 5000
+    });
+    let result = tool.execute(input, make_ctx(None)).await.unwrap();
+    assert!(result.output.contains("no_tty"), "{}", result.output);
+    assert!(result.output.contains("GTP=0"), "{}", result.output);
 }
 
 #[tokio::test]
@@ -570,10 +359,9 @@ async fn test_command_timeout_with_stdin_channel() {
     let (tx, _rx) = mpsc::unbounded_channel::<StdinInputRequest>();
     let tool = BashTool::new();
 
-    // `cat` blocks forever on stdin. With a short timeout and no stdin response,
-    // the command should be promoted to the background (kept running), not killed
-    // with an error.
-    let input = json!({"command": "cat", "timeout": 1000});
+    // A long-running command with a stdin channel present should be promoted
+    // to the background (kept running) on timeout, not killed with an error.
+    let input = json!({"command": "sleep 30", "timeout": 1000});
     let ctx = make_ctx(Some(tx));
 
     let result = tool
@@ -1134,15 +922,9 @@ async fn test_background_command_without_timeout_keeps_running_past_default_fore
 #[cfg(unix)]
 #[tokio::test]
 async fn process_group_kill_guard_terminates_descendants() {
+    // build_shell_command runs the child in its own session (setsid), which
+    // also makes it a process group leader.
     let mut cmd = build_shell_command("sleep 60 & echo $!; wait");
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
     cmd.kill_on_drop(true).stdout(Stdio::piped());
 
     let mut child = cmd.spawn().expect("spawn process group probe");

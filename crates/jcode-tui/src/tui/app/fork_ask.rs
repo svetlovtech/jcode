@@ -104,6 +104,22 @@ impl App {
 }
 
 impl ForkAskOps<'_> {
+    /// Feed one key press to the open modal. No-op without a modal: the
+    /// caller checks `fork_ask.modal.is_some()` before routing.
+    pub(super) fn modal_key(
+        &mut self,
+        code: ratatui::crossterm::event::KeyCode,
+        modifiers: ratatui::crossterm::event::KeyModifiers,
+    ) {
+        super::fork_ask_modal::handle_modal_key(self.app, code, modifiers);
+    }
+
+    /// Route a terminal paste into the modal's own-answer draft (no-op
+    /// without a modal).
+    pub(super) fn modal_paste(&mut self, text: &str) {
+        self.app.fork_ask.modal_paste(text);
+    }
+
     /// Handle an ask_user question arriving from the daemon (textual fallback:
     /// no structured spec, the next typed message becomes the answer).
     pub(super) fn on_ask_prompt(&mut self, request_id: String, prompt: String) {
@@ -124,17 +140,6 @@ impl ForkAskOps<'_> {
     ) {
         self.on_ask_prompt(request_id.clone(), prompt);
         self.app.fork_ask.modal = Some(AskModal::new(request_id, spec));
-    }
-
-    /// Feed one key press to the open modal. Returns `true` when the key was
-    /// consumed (a modal is open). Submissions stage an answer and arm the
-    /// followup dispatcher; the async flusher sends it.
-    pub(super) fn modal_key(
-        &mut self,
-        code: ratatui::crossterm::event::KeyCode,
-        modifiers: ratatui::crossterm::event::KeyModifiers,
-    ) -> bool {
-        super::fork_ask_modal::handle_modal_key(self.app, code, modifiers)
     }
 
     /// Send the staged answer, if any. Returns `true` when an answer went out

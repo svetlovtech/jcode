@@ -12,7 +12,7 @@ fn complete_blocker_pauses_auto_pokes_until_cleared_but_not_independent_work() {
         let mut app = waiting_dependency_test_app();
         let mut blocked = dependency_todo("licensed-sdk", "unused");
         blocked.waiting_on.clear();
-        blocked.completely_blocked = Some(crate::todo::TodoCompleteBlocker {
+        blocked.requires_user_auth = Some(crate::todo::TodoUserAuth {
             reason: "Only the user can authorize the license".into(),
         });
         crate::todo::save_todos(&app.session.id, &[blocked.clone()]).unwrap();
@@ -32,26 +32,29 @@ fn complete_blocker_pauses_auto_pokes_until_cleared_but_not_independent_work() {
         independent.waiting_on.clear();
         crate::todo::save_todos(&app.session.id, &[blocked.clone(), independent]).unwrap();
         assert!(app.schedule_turn_end_followups());
-        assert!(app.queued_messages[0].contains("- independent:"));
-        assert!(!app.queued_messages[0].contains("- licensed-sdk:"));
+        assert!(app.queued_messages[0].contains("- \"Finish independent\""));
+        assert!(!app.queued_messages[0].contains("- \"Finish licensed-sdk\""));
 
-        blocked.completely_blocked = None;
+        blocked.requires_user_auth = None;
         crate::todo::save_todos(&app.session.id, &[blocked]).unwrap();
         assert!(reloaded.schedule_turn_end_followups());
-        assert!(reloaded.queued_messages[0].contains("- licensed-sdk:"));
+        assert!(reloaded.queued_messages[0].contains("- \"Finish licensed-sdk\""));
     });
 }
 
 #[test]
-fn external_blocker_pauses_pokes_survives_reload_and_expires_without_completion() {
+fn goal_that_cannot_complete_pauses_its_pokes_survives_reload_and_resumes_when_cleared() {
     with_temp_jcode_home(|| {
         let mut app = waiting_dependency_test_app();
         let mut todo = dependency_todo("acceptance", "unused");
         todo.waiting_on.clear();
-        todo.external_blocker = Some(crate::todo::TodoExternalBlocker {
-            reason: "Coordinator acceptance of frozen source".into(),
-            review_at: chrono::Utc::now() + chrono::Duration::minutes(10),
-        });
+        todo.group = Some("migration".into());
+        let mut goals = vec![crate::todo::TodoGoal {
+            group: Some("migration".into()),
+            cannot_complete: Some("Source data was deleted upstream".into()),
+            ..Default::default()
+        }];
+        crate::todo::save_goals(&app.session.id, &goals).unwrap();
         crate::todo::save_todos(&app.session.id, std::slice::from_ref(&todo)).unwrap();
         app.auto_poke_attempts = crate::todo::INCOMPLETE_TODO_MAX_ATTEMPTS;
         assert!(!app.schedule_turn_end_followups());
@@ -65,13 +68,11 @@ fn external_blocker_pauses_pokes_survives_reload_and_expires_without_completion(
         independent.waiting_on.clear();
         crate::todo::save_todos(&app.session.id, &[todo.clone(), independent]).unwrap();
         assert!(app.schedule_auto_poke_followup_if_needed());
-        assert!(app.queued_messages[0].contains("- independent:"));
-        assert!(!app.queued_messages[0].contains("- acceptance:"));
-        todo.external_blocker.as_mut().unwrap().review_at =
-            chrono::Utc::now() - chrono::Duration::seconds(1);
-        assert!(!reloaded.todo_is_paused_for_auto_followup(&todo));
+        assert!(app.queued_messages[0].contains("- \"Finish independent\""));
+        assert!(!app.queued_messages[0].contains("- \"Finish acceptance\""));
+        goals[0].cannot_complete = None;
+        crate::todo::save_goals(&app.session.id, &goals).unwrap();
         assert_eq!(todo.status, "pending");
-        todo.external_blocker = None;
         assert!(!reloaded.todo_is_paused_for_auto_followup(&todo));
     });
 }
@@ -142,11 +143,12 @@ fn await_dependency_suppresses_pokes_and_survives_reload_until_terminal_or_timeo
 fn dependency_todo(id: &str, task_id: &str) -> crate::todo::TodoItem {
     crate::todo::TodoItem {
         id: id.into(),
+        // Public names are stored in content and intentionally differ from internal IDs.
         content: format!("Finish {id}"),
         status: "pending".into(),
         priority: "high".into(),
-        external_blocker: None,
-        completely_blocked: None,
+        waiting_reason: None,
+        requires_user_auth: None,
         waiting_on: vec![task_id.into()],
         ..Default::default()
     }
@@ -212,7 +214,7 @@ fn background_dependency_waiting_only_suppresses_review_and_resets_budget() {
 }
 
 #[test]
-fn background_dependency_mixed_poke_targets_only_actionable_ids() {
+fn background_dependency_mixed_poke_targets_only_actionable_names() {
     with_temp_jcode_home(|| {
         let mut app = waiting_dependency_test_app();
         let task = format!("tui-wait-{}", app.session.id);
@@ -228,7 +230,8 @@ fn background_dependency_mixed_poke_targets_only_actionable_ids() {
         assert!(app.schedule_auto_poke_followup_if_needed());
         assert_eq!(app.queued_messages.len(), 1);
         assert!(super::commands::is_poke_message(&app.queued_messages[0]));
-        assert!(app.queued_messages[0].contains("- ready-id:"));
+        assert!(app.queued_messages[0].contains("- \"Finish ready-id\""));
+        assert!(!app.queued_messages[0].contains("- ready-id:"));
         assert!(!app.queued_messages[0].contains("waiting-id"));
         assert_eq!(app.auto_poke_attempts, 1);
     });

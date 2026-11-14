@@ -288,7 +288,7 @@ pub(crate) fn dim_command_color(color: Option<Color>) -> Color {
 }
 
 pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
-    if app.login_input_hint().is_some() {
+    if app.login_input_hint().is_some() || app.voice_composer_preview().is_some() {
         return 1;
     }
     // Command suggestions render as an overlay (see
@@ -352,7 +352,8 @@ pub(super) fn wrapped_input_line_count(
 
     let num_str = next_prompt.to_string();
     let (prompt_char, caret_color) = input_prompt(app);
-    let (lines, _, _) = wrap_input_text_with_images(
+    let preview = app.voice_composer_preview();
+    let (lines, _, _) = wrap_input_text_with_ghost(
         app.input(),
         app.cursor_pos(),
         line_width,
@@ -361,6 +362,7 @@ pub(super) fn wrapped_input_line_count(
         caret_color,
         prompt_len,
         &|number| app.input_image_attached(number),
+        voice_ghost(preview.as_ref()),
     );
     lines.len().max(1)
 }
@@ -821,7 +823,9 @@ fn live_status_snapshot(app: &dyn TuiState, elapsed: f32) -> crate::protocol::Sw
 
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
     if app.status_notice().as_deref() == Some(crate::telemetry::OAUTH_ACCOUNT_NOTICE_TEXT) {
-        crate::tui::app::oauth_telemetry::note_status_render(area);
+        if !super::secondary_render_active() {
+            crate::tui::app::oauth_telemetry::note_status_render(area);
+        }
         frame.render_widget(
             Paragraph::new(crate::telemetry::OAUTH_ACCOUNT_NOTICE_TEXT)
                 .style(Style::default().fg(accent_color())),
@@ -1109,6 +1113,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         }
     };
 
+    let line = status_with_background_tasks(
+        line,
+        app.background_task_rows(),
+        area.width as usize,
+        app.is_processing(),
+    );
+
     crate::memory::check_staleness();
 
     if app.centered_mode() {
@@ -1116,6 +1127,46 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         return;
     }
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Background launches finish their tool call immediately, but the work and
+/// its intent must remain visible while the agent moves on to another tool.
+fn status_with_background_tasks(
+    foreground: Line<'static>,
+    tasks: &[crate::tui::BackgroundTaskRow],
+    width: usize,
+    processing: bool,
+) -> Line<'static> {
+    use crate::tui::BackgroundTaskRowStatus;
+    use jcode_tui_render::truncate_line_with_ellipsis_to_width as fit;
+
+    let running: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.status == BackgroundTaskRowStatus::Running)
+        .collect();
+    if running.is_empty() {
+        return fit(&foreground, width);
+    }
+    let labels = running
+        .iter()
+        .map(|task| task.label.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let background = Line::from(Span::styled(
+        format!("bg {}: {}", running.len(), labels),
+        Style::default().fg(ai_color()),
+    ));
+    // Idle tips must not displace actual work. While processing, reserve space
+    // for both activities rather than letting a long foreground intent hide bg.
+    if !processing || foreground.width() == 0 || width < 24 {
+        return fit(&background, width);
+    }
+    let background_width = background.width().min(width / 2);
+    let mut line = fit(&foreground, width.saturating_sub(background_width + 3));
+    line.spans
+        .push(Span::styled(" · ", Style::default().fg(dim_color())));
+    line.spans.extend(fit(&background, background_width).spans);
+    line
 }
 
 fn running_tool_header_spans(
@@ -1320,18 +1371,15 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
             && cache_info.expiry_notification_active()
         {
             if cache_info.is_cold {
-                let tokens_str = cache_info
-                    .cached_tokens
-                    .map(|t| {
-                        if t >= 1_000_000 {
-                            format!(" ({:.1}M tok)", t as f64 / 1_000_000.0)
-                        } else if t >= 1_000 {
-                            format!(" ({}K tok)", t / 1000)
-                        } else {
-                            format!(" ({} tok)", t)
-                        }
-                    })
-                    .unwrap_or_default();
+                let tokens_str = cache_info.cached_tokens.map_or_else(String::new, |t| {
+                    if t >= 1_000_000 {
+                        format!(" ({:.1}M tok)", t as f64 / 1_000_000.0)
+                    } else if t >= 1_000 {
+                        format!(" ({}K tok)", t / 1000)
+                    } else {
+                        format!(" ({} tok)", t)
+                    }
+                });
                 push_sep(&mut spans);
                 spans.push(Span::styled(
                     format!("🧊 cache cold{}", tokens_str),
@@ -1346,16 +1394,13 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
                     Style::default().fg(dim_color()),
                 ));
             } else if cache_info.expiring_soon() {
-                let tokens_str = cache_info
-                    .cached_tokens
-                    .map(|t| {
-                        if t >= 1_000 {
-                            format!(" {}K", t / 1000)
-                        } else {
-                            format!(" {}", t)
-                        }
-                    })
-                    .unwrap_or_default();
+                let tokens_str = cache_info.cached_tokens.map_or_else(String::new, |t| {
+                    if t >= 1_000 {
+                        format!(" {}K", t / 1000)
+                    } else {
+                        format!(" {}", t)
+                    }
+                });
                 // Above a minute, a raw seconds count is hard to read at a
                 // glance; show minutes granularity instead.
                 let remaining = cache_info.remaining_secs;
@@ -1477,13 +1522,13 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| app.provider_name());
     let facts = OverscrollFacts {
-        machine: crate::tui::ssh_remote_host(),
+        machine: app.remote_machine(),
         dir: overscroll_directory_transition(
             data.original_working_dir.as_deref(),
             app.working_dir().as_deref(),
         ),
         branch: overscroll_git_branch(&data),
-        git: data.git_info.clone(),
+        git: overscroll_git_info(&data).cloned(),
         context: overscroll_context_usage(&data),
         account_remaining: overscroll_account_remaining(&data),
         auth: overscroll_auth_label(data.auth_method),
@@ -1513,18 +1558,31 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
 
 /// Render only the supplied session facts. Unlike the live adapter this never
 /// falls back to the current App, process directory, SSH host or credentials.
+#[cfg(test)]
 pub(crate) fn preview_overscroll_line(
     data: &crate::tui::info_widget::InfoWidgetData,
     width: u16,
 ) -> Line<'static> {
+    preview_overscroll_line_for_host(data, width, None)
+}
+
+/// The host belongs to the selected preview, never the attached live session.
+#[cfg(test)]
+pub(crate) fn preview_overscroll_line_for_host(
+    data: &crate::tui::info_widget::InfoWidgetData,
+    width: u16,
+    host: Option<&str>,
+) -> Line<'static> {
     let facts = OverscrollFacts {
-        machine: None,
+        machine: host
+            .filter(|host| !host.trim().is_empty())
+            .map(str::to_owned),
         dir: overscroll_directory_transition(
             data.original_working_dir.as_deref(),
             data.working_dir.as_deref(),
         ),
         branch: overscroll_git_branch(data),
-        git: data.git_info.clone(),
+        git: overscroll_git_info(data).cloned(),
         context: overscroll_context_usage(data),
         account_remaining: overscroll_account_remaining(data),
         auth: overscroll_auth_label(data.auth_method),
@@ -1544,7 +1602,17 @@ pub(crate) fn preview_overscroll_line(
             .and_then(overscroll_short_reasoning)
             .map(str::to_string),
     };
-    Line::from(overscroll_fit_facts(&facts, width as usize).0).alignment(Alignment::Right)
+    let label = if data.historical_context {
+        "saved · "
+    } else {
+        ""
+    };
+    let label_width = unicode_width::UnicodeWidthStr::width(label);
+    let mut spans = overscroll_fit_facts(&facts, (width as usize).saturating_sub(label_width)).0;
+    if !label.is_empty() && width as usize > label_width {
+        spans.insert(0, Span::styled(label, Style::default().fg(dim_color())));
+    }
+    Line::from(spans).alignment(Alignment::Right)
 }
 
 /// Model name color on the overscroll status line.
@@ -1819,10 +1887,23 @@ fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec
 }
 
 /// Format a working dir path home-relative (~/foo/bar), keeping the last 2 segments.
+/// Git facts for the status line. Cloud sessions keep their repository in
+/// `dual_git_info.cloud`, so prefer that over the (absent) local `git_info`.
+fn overscroll_git_info(
+    data: &crate::tui::info_widget::InfoWidgetData,
+) -> Option<&crate::tui::info_widget::GitInfo> {
+    if let Some(dual) = &data.dual_git_info
+        && let crate::tui::cloud_git::RepoState::Ready(info) = &dual.cloud
+    {
+        return Some(info);
+    }
+    data.git_info.as_ref()
+}
+
 /// Compact git branch label for the status line and fact stack. Truncated so
 /// long branch names cannot crowd out the other facts.
 fn overscroll_git_branch(data: &crate::tui::info_widget::InfoWidgetData) -> Option<String> {
-    let branch = data.git_info.as_ref()?.branch.trim();
+    let branch = overscroll_git_info(data)?.branch.trim();
     if branch.is_empty() {
         return None;
     }
@@ -2050,6 +2131,31 @@ fn overscroll_context_percentage(used: usize, limit: usize) -> Span<'static> {
     };
     Span::styled(format!("{}%", pct), Style::default().fg(fill_color).bold())
 }
+
+/// The idle resume composer uses the live input wrapper, but never reads the
+/// currently open session's draft, queue, selection, or cursor state.
+#[cfg(test)]
+pub(crate) fn draw_preview_input(frame: &mut Frame, area: Rect, next_prompt: usize) {
+    let number = next_prompt.to_string();
+    let prompt = "> ";
+    let prompt_len = number.len() + prompt.len();
+    let line_width = (area.width as usize).saturating_sub(prompt_len);
+    if area.height == 0 || line_width == 0 {
+        return;
+    }
+    let (lines, _, _) = wrap_input_text_with_images(
+        "",
+        0,
+        line_width,
+        &number,
+        prompt,
+        user_color(),
+        prompt_len,
+        &|_| false,
+    );
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 pub(super) fn draw_input(
     frame: &mut Frame,
     app: &dyn TuiState,
@@ -2076,7 +2182,8 @@ pub(super) fn draw_input(
         return None;
     }
 
-    let (all_lines, cursor_line, cursor_col) = wrap_input_text_with_images(
+    let voice_preview = app.voice_composer_preview();
+    let (all_lines, cursor_line, cursor_col) = wrap_input_text_with_ghost(
         input_text,
         cursor_pos,
         line_width,
@@ -2085,12 +2192,18 @@ pub(super) fn draw_input(
         caret_color,
         prompt_len,
         &|number| app.input_image_attached(number),
+        voice_ghost(voice_preview.as_ref()),
     );
 
     let mut lines: Vec<Line> = Vec::new();
     let mut hint_shown = false;
     let mut hint_line: Option<String> = None;
-    if let Some(hint) = app.login_input_hint() {
+    if let Some(preview) = voice_preview.as_ref() {
+        hint_shown = true;
+        let line = voice_waveform_line(preview, area.width as usize);
+        hint_line = Some(line.spans.iter().map(|s| s.content.as_ref()).collect());
+        lines.push(line);
+    } else if let Some(hint) = app.login_input_hint() {
         hint_shown = true;
         hint_line = Some(hint.to_string());
         lines.push(Line::from(Span::styled(
@@ -2146,7 +2259,11 @@ pub(super) fn draw_input(
     let total_input_lines = all_lines.len();
     let visible_height = area.height as usize;
 
-    let scroll_offset = if total_input_lines + suggestions_offset <= visible_height {
+    let scroll_offset = if let Some(scroll) = app.input_drag_scroll_offset() {
+        // Selection scrolling is independent of the editing caret.
+        let available = visible_height.saturating_sub(suggestions_offset).max(1);
+        scroll.min(total_input_lines.saturating_sub(available))
+    } else if total_input_lines + suggestions_offset <= visible_height {
         0
     } else {
         let available_for_input = visible_height.saturating_sub(suggestions_offset);
@@ -2269,8 +2386,13 @@ pub(super) fn draw_input(
     };
 
     let cursor = Position::new(cursor_x, cursor_y);
-    frame.set_cursor_position(cursor);
     draw_send_mode_indicator(frame, app, area);
+    if app.input_drag_scroll_offset().is_some() {
+        return None;
+    }
+    if !super::secondary_render_active() {
+        frame.set_cursor_position(cursor);
+    }
     Some(cursor)
 }
 
@@ -2532,6 +2654,7 @@ pub(crate) fn wrap_input_text<'a>(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn wrap_input_text_with_images<'a>(
     input: &str,
@@ -2543,6 +2666,48 @@ fn wrap_input_text_with_images<'a>(
     prompt_len: usize,
     attached: &dyn Fn(usize) -> bool,
 ) -> (Vec<Line<'a>>, usize, usize) {
+    wrap_input_text_with_ghost(
+        input,
+        cursor_pos,
+        line_width,
+        num_str,
+        prompt_char,
+        caret_color,
+        prompt_len,
+        attached,
+        None,
+    )
+}
+
+/// Like [`wrap_input_text_with_images`], with an optional live voice
+/// transcript appended as ghost text. The ghost wraps with the input but is
+/// never editable, so the cursor stays at its real position.
+#[allow(clippy::too_many_arguments)]
+fn wrap_input_text_with_ghost<'a>(
+    input: &str,
+    cursor_pos: usize,
+    line_width: usize,
+    num_str: &str,
+    prompt_char: &'a str,
+    caret_color: Color,
+    prompt_len: usize,
+    attached: &dyn Fn(usize) -> bool,
+    ghost: Option<(&str, Style)>,
+) -> (Vec<Line<'a>>, usize, usize) {
+    let ghost_start = input.chars().count();
+    let combined;
+    let (input, ghost_style) = match ghost.filter(|(text, _)| !text.is_empty()) {
+        Some((text, style)) => {
+            let sep = if input.is_empty() || input.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                " "
+            };
+            combined = format!("{input}{sep}{text}");
+            (combined.as_str(), Some(style))
+        }
+        None => (input, None),
+    };
     let image_ranges: Vec<(std::ops::Range<usize>, bool)> = input
         .match_indices("[image ")
         .filter_map(|(start, _)| {
@@ -2552,7 +2717,7 @@ fn wrap_input_text_with_images<'a>(
                 return None;
             }
             let char_start = input[..start].chars().count();
-            let present = suffix[..digits].parse::<usize>().ok().is_some_and(attached);
+            let present = suffix[..digits].parse::<usize>().is_ok_and(attached);
             Some((char_start..char_start + 8 + digits, present))
         })
         .collect();
@@ -2588,7 +2753,9 @@ fn wrap_input_text_with_images<'a>(
         let mut previous_style = Style::default();
         for (offset, ch) in segment.text.chars().enumerate() {
             let position = segment.start_char + offset;
-            let style = if let Some((_, present)) = image_ranges
+            let style = if let Some(ghost_style) = ghost_style.filter(|_| position >= ghost_start) {
+                ghost_style
+            } else if let Some((_, present)) = image_ranges
                 .iter()
                 .find(|(range, _)| range.contains(&position))
             {
@@ -2622,6 +2789,136 @@ fn wrap_input_text_with_images<'a>(
     }
 
     (lines, cursor_line, cursor_col)
+}
+
+/// Ghost text for the live voice transcript: italic and dim while
+/// recording, accent colored while the final pass runs.
+fn voice_ghost(preview: Option<&crate::tui::VoiceComposerPreview>) -> Option<(&str, Style)> {
+    let preview = preview?;
+    let color = if preview.recording {
+        rgb(200, 200, 210)
+    } else {
+        rgb(140, 200, 255)
+    };
+    Some((
+        preview.live.as_str(),
+        Style::default().fg(dim_color_of(color)).italic(),
+    ))
+}
+
+fn dim_color_of(color: Color) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => rgb(
+            (r as u16 * 3 / 4) as u8,
+            (g as u16 * 3 / 4) as u8,
+            (b as u16 * 3 / 4) as u8,
+        ),
+        other => other,
+    }
+}
+
+/// Truncate to `width` terminal cells, ending in `…` when cut.
+fn truncate_cells(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w + 1 > width {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
+}
+
+/// Smooth level to a 0..=1 bar height. Speech RMS sits around 0.02 to 0.2,
+/// so the curve is compressed to keep normal speech visibly moving.
+fn voice_level_height(level: f32) -> f32 {
+    (level.max(0.0) * 4.0).sqrt().min(1.0)
+}
+
+/// Header row above the composer while voice input is active:
+/// `● 0:07 ▁▂▅▇▆▃▂▁▂▄… · Ctrl+Space send · Esc cancel`. The waveform fills the
+/// width left after the label and hint, newest sample on the right, colored
+/// by loudness. Never wraps: the hint is dropped first, then the waveform
+/// shrinks.
+fn voice_waveform_line(preview: &crate::tui::VoiceComposerPreview, width: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if !preview.recording {
+        let dots = ["◌", "◍", "●", "◍"];
+        let phase = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() / 250)
+            .unwrap_or(0)
+            % dots.len() as u128) as usize;
+        let mut text = format!("  {} Transcribing…", dots[phase]);
+        if !preview.hint.is_empty() {
+            text.push_str(" · ");
+            text.push_str(&preview.hint);
+        }
+        let text = truncate_cells(&text, width);
+        spans.push(Span::styled(
+            text,
+            Style::default().fg(rgb(140, 200, 255)).bold(),
+        ));
+        return Line::from(spans);
+    }
+    let label = format!(
+        "  ● {}:{:02} ",
+        preview.elapsed_secs / 60,
+        preview.elapsed_secs % 60
+    );
+    let hint = if preview.hint.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", preview.hint)
+    };
+    let label_w = label.width();
+    let mut hint_w = hint.width();
+    if label_w + hint_w + 8 > width {
+        hint_w = 0;
+    }
+    let wave_w = width.saturating_sub(label_w + hint_w).min(48);
+    spans.push(Span::styled(
+        truncate_cells(&label, width),
+        Style::default().fg(rgb(255, 110, 110)).bold(),
+    ));
+    if wave_w > 0 {
+        let levels = &preview.levels;
+        let start = levels.len().saturating_sub(wave_w);
+        let pad = wave_w.saturating_sub(levels.len() - start);
+        if pad > 0 {
+            spans.push(Span::styled(
+                "·".repeat(pad),
+                Style::default().fg(rgb(70, 70, 80)),
+            ));
+        }
+        for level in &levels[start..] {
+            let h = voice_level_height(*level);
+            let glyph = BARS[(h * 7.0).round() as usize];
+            // Quiet bars recede, loud bars glow warm.
+            let color = rgb(
+                (110.0 + 145.0 * h) as u8,
+                (150.0 - 40.0 * h) as u8,
+                (190.0 - 80.0 * h) as u8,
+            );
+            spans.push(Span::styled(glyph.to_string(), Style::default().fg(color)));
+        }
+    }
+    if hint_w > 0 {
+        spans.push(Span::styled(hint, Style::default().fg(dim_color())));
+    }
+    Line::from(spans)
 }
 
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {

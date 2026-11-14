@@ -4,15 +4,16 @@ use super::{
     remove_session_channel_subscriptions, remove_session_from_swarm,
     remove_session_interrupt_queue, unregister_session_event_sender, update_member_status,
 };
+#[cfg(test)]
 use crate::agent::Agent;
 use anyhow::Result;
 use jcode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::sync::{RwLock, broadcast, mpsc};
 
-type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+use super::SessionAgents;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 const RELOAD_DISCONNECT_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
@@ -114,6 +115,7 @@ pub(super) async fn cleanup_client_connection(
     sessions: &SessionAgents,
     client_session_id: &str,
     client_is_processing: bool,
+    continue_on_disconnect: bool,
     processing_task: &mut Option<tokio::task::JoinHandle<()>>,
     event_handle: tokio::task::JoinHandle<()>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -151,6 +153,9 @@ pub(super) async fn cleanup_client_connection(
     } else {
         false
     };
+    if disposition == DisconnectDisposition::Closed {
+        crate::agents_status::session_closed(client_session_id);
+    }
     let originally_registered = swarm_members.read().await.contains_key(client_session_id);
 
     record_transport_closed(client_session_id, client_connection_id, client_connections).await;
@@ -164,6 +169,18 @@ pub(super) async fn cleanup_client_connection(
         swarm_members,
     )
     .await;
+
+    if continue_on_disconnect {
+        // Remote continuation is a session lifetime policy, not merely a
+        // promise to finish the current turn. Idle coordinators must remain
+        // addressable for worker reports and future wake turns after EOF.
+        // Only transport-owned state was released above.
+        if processing_task.is_some() {
+            return Ok(Some(event_handle));
+        }
+        event_handle.abort();
+        return Ok(None);
+    }
 
     if allow_reconnect {
         // Empty roots intentionally have no snapshot. A replacement UI/SDK

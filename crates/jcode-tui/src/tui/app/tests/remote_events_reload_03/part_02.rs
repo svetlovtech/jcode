@@ -35,6 +35,8 @@ fn compacted_prompt_marker_hydrates_remote_stub_and_composer_numbering() {
             tool_calls: None,
             tool_data: None,
             response_stats: None,
+            timestamp: None,
+            tool_duration_ms: None,
         })
         .collect();
         assert!(app.handle_server_event(
@@ -765,6 +767,7 @@ fn test_delta_history_rebuilds_transcript_from_advertised_prefix() {
             count: 2,
             fingerprint: 0,
             images_fingerprint: None,
+            recent_messages: None,
         },
         prefix: Some(prefix),
         images: Some(vec![crate::session::RenderedImage {
@@ -782,6 +785,8 @@ fn test_delta_history_rebuilds_transcript_from_advertised_prefix() {
         content: "new since reload".to_string(),
         tool_calls: None,
         tool_data: None,
+        timestamp: None,
+        tool_duration_ms: None,
     }];
     let mut event = delta_history_event("ses_delta", tail, Some(2));
     if let crate::protocol::ServerEvent::History {

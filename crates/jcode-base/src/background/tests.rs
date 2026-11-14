@@ -4,6 +4,31 @@ use anyhow::anyhow;
 use tempfile::tempdir;
 use tokio::time::{Duration, sleep};
 
+#[tokio::test]
+async fn silent_background_task_still_publishes_started_activity() {
+    let mut events = Bus::global().subscribe();
+    BackgroundTaskManager::publish_task_started_activity(
+        "silent-start",
+        "bash",
+        Some("silent work"),
+        "silent-session",
+        false,
+    );
+    let activity = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(BusEvent::UiActivity(activity)) = events.recv().await {
+                if activity.session_id.as_deref() == Some("silent-session") {
+                    break activity;
+                }
+            }
+        }
+    })
+    .await
+    .expect("silent start must be published");
+    assert!(activity.message.contains("`silent-start`"));
+    assert!(activity.message.contains("`silent work`"));
+}
+
 struct SignalDrop(Option<tokio::sync::oneshot::Sender<()>>);
 
 impl Drop for SignalDrop {
@@ -980,5 +1005,39 @@ async fn disarm_stall_watchdog_clears_state() -> Result<()> {
     assert_eq!(status.stall_wake_seconds, None);
 
     manager.cancel(&info.task_id).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sweep_counts_tasks_and_skips_settled_files() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    assert_eq!(manager.sweep().await, 0);
+
+    let handle = tokio::spawn(async move {
+        std::future::pending::<()>().await;
+        Ok(jcode_tool_types::ToolOutput::new("unreachable"))
+    });
+    let info = manager.adopt("bash", "session-count", handle).await;
+    // Output files and unrelated files in the directory are not tasks.
+    std::fs::write(tmp.path().join("notes.txt"), "x")?;
+
+    assert_eq!(manager.sweep().await, manager.list().await.len());
+    assert_eq!(manager.sweep().await, 1);
+    // A running task is re-examined on every pass.
+    assert!(manager.settled.lock().await.is_empty());
+
+    manager.cancel(&info.task_id).await?;
+    assert_eq!(manager.sweep().await, 1);
+    assert_eq!(
+        manager.settled.lock().await.len(),
+        1,
+        "a finished task must not be read again"
+    );
+
+    // Cleaned-up files leave the cache instead of growing it forever.
+    std::fs::remove_file(&info.status_file)?;
+    assert_eq!(manager.sweep().await, 0);
+    assert!(manager.settled.lock().await.is_empty());
     Ok(())
 }
