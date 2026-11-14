@@ -6,7 +6,7 @@ use super::*;
 /// provider token, reasoning effort, context bar, and (when available) session
 /// cost and total tokens. Unavailable pieces are omitted instead of rendered
 /// as placeholders.
-pub(super) fn overscroll_advanced_spans(
+pub(crate) fn overscroll_advanced_spans(
     app: &dyn TuiState,
     data: &crate::tui::info_widget::InfoWidgetData,
 ) -> Vec<Span<'static>> {
@@ -92,7 +92,16 @@ pub(super) fn overscroll_advanced_spans(
                 Style::default().fg(rgb(140, 140, 150)),
             ),
         );
-        spans.extend(overscroll_context_bar(used, limit, 10));
+        // Reuse the info widget's limit-bar renderer (AGENTS rule: one bar
+        // glyph, color, and used/remaining convention).
+        let left_pct = if limit == 0 {
+            0
+        } else {
+            (((limit - used) as f64 / limit as f64) * 100.0).round().clamp(0.0, 100.0) as u8
+        };
+        spans.extend(crate::tui::info_widget::render_inline_limit_bar(
+            left_pct, 10, true,
+        ));
     }
 
     if let Some(usage) = data.usage_info.as_ref() {

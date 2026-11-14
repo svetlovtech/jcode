@@ -1,6 +1,8 @@
 #[path = "ui_input/command_suggestions.rs"]
 mod command_suggestions;
 use command_suggestions::*;
+#[path = "advanced_footer.rs"]
+pub(crate) mod advanced_footer;
 
 use super::inline_interactive_ui::format_elapsed;
 use super::selection_highlight::highlight_line_selection;
@@ -1548,6 +1550,17 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
     } else {
         Alignment::Right
     };
+    // Fork: display.footer_style = "advanced" replaces the classic fact line
+    // with the compact left-hugging info block (dir · branch · model (provider)
+    // · context bar · Σ tokens · session time · chat availability).
+    if crate::config::config().display.footer_style_advanced() {
+        let spans = advanced_footer::overscroll_advanced_spans(app, &data);
+        if !spans.is_empty() {
+            let line = Line::from(spans).alignment(Alignment::Left);
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
+    }
     let (spans, _) = overscroll_fit_facts(&facts, area.width as usize);
     if spans.is_empty() {
         return;

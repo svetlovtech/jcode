@@ -56,6 +56,9 @@ pub(super) struct SessionJournalMeta {
     pub(super) is_debug: bool,
     pub(super) saved: bool,
     pub(super) save_label: Option<String>,
+    /// Sessions that never moved omit the field (snapshot skip-if-zero), so
+    /// absence means epoch 0 rather than a corrupt entry.
+    #[serde(default)]
     pub(super) migration_epoch: u64,
 }
 
