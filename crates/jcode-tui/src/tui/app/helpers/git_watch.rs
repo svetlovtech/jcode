@@ -351,6 +351,8 @@ mod imp {
 
         #[test]
         fn fires_on_worktree_and_git_changes_but_not_ignored_dirs() {
+            // Spawning `git` races with tests that swap the process-global PATH.
+            let _lock = crate::storage::lock_test_env();
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().to_path_buf();
             let git = |args: &[&str]| {

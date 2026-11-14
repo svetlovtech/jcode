@@ -138,6 +138,8 @@ mod tests {
 
     #[test]
     fn git_probe_preserves_counts_across_refresh_and_edit() {
+        // Spawning `git` races with tests that swap the process-global PATH.
+        let _lock = crate::storage::lock_test_env();
         let dir = tempfile::tempdir().unwrap();
         let status = std::process::Command::new("git")
             .args(["init", "-q"])

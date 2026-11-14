@@ -71,16 +71,21 @@ mod tests {
 
     #[test]
     fn helper_that_exits_successfully_counts_as_a_copy() {
+        // Serialize with the StubPath tests below: they swap the process-global
+        // PATH, and a parallel spawn of `cat` would resolve against the stub dir.
+        let _lock = crate::storage::lock_test_env();
         assert!(copy_via_clipboard_helper("cat", &[], "hello"));
     }
 
     #[test]
     fn helper_that_exits_nonzero_falls_through() {
+        let _lock = crate::storage::lock_test_env();
         assert!(!copy_via_clipboard_helper("false", &[], "hello"));
     }
 
     #[test]
     fn missing_helper_binary_falls_through() {
+        let _lock = crate::storage::lock_test_env();
         assert!(!copy_via_clipboard_helper(
             "jcode-nonexistent-clipboard-helper",
             &[],
@@ -92,6 +97,7 @@ mod tests {
     /// and must not block the UI thread for its whole lifetime.
     #[test]
     fn long_lived_helper_counts_as_a_copy_without_blocking() {
+        let _lock = crate::storage::lock_test_env();
         let start = std::time::Instant::now();
         assert!(copy_via_clipboard_helper("sleep", &["30"], "hello"));
         assert!(
