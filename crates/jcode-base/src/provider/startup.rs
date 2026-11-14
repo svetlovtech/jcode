@@ -452,11 +452,67 @@ impl MultiProvider {
         }
     }
 
+    /// Configured default route spec (`<profile>:<model>`) when
+    /// `default_provider` names an OpenAI-compatible profile and
+    /// `default_model` is an available route on it. `None` for every other
+    /// default-provider shape: built-in providers and dual-auth keys keep
+    /// their existing pool/preference semantics.
+    fn configured_openai_compatible_default_route(&self) -> Option<String> {
+        let cfg = crate::config::config();
+        let provider = cfg.provider.default_provider.as_deref()?.trim();
+        if provider.is_empty() || !cfg.providers.contains_key(provider) {
+            return None;
+        }
+        let model = cfg.provider.default_model.as_deref()?.trim();
+        if model.is_empty() {
+            return None;
+        }
+        // An already-prefixed default model (`profile:model`,
+        // `claude-api:...`, ...) is a complete spec; a bare id binds to the
+        // configured profile.
+        let spec = if Self::named_provider_profile_model_prefix(model)
+            .is_some()
+            || Self::openai_compatible_model_prefix(model).is_some()
+            || explicit_model_provider_prefix(model).is_some()
+            || model
+                .split_once(':')
+                .is_some_and(|(method, _)| {
+                    jcode_provider_core::oauth_account_label(method).is_some()
+                })
+        {
+            model.to_string()
+        } else {
+            format!("{provider}:{model}")
+        };
+        let available = self.model_routes().into_iter().any(|route| {
+            route.available
+                && route.api_method == format!("openai-compatible:{provider}")
+                && RouteSelection::from_model_route(&route).routed_model_spec() == spec
+        });
+        available.then_some(spec)
+    }
+
     /// Bind the first ready pool route and return its spec (None if nothing bound).
     fn compute_fresh_session_pool_route(
         &self,
         pool: crate::auth::account_pool::AccountPool,
     ) -> Option<String> {
+        // A configured `default_provider` that names an OpenAI-compatible
+        // profile (catalog profile or user-defined `[providers.<name>]`) owns
+        // fresh-session routing when its `default_model` has a live route.
+        // These routes are not pool accounts: `login_providers()` has no entry
+        // for them, so `is_failover_route_pool_approved` rejects them and the
+        // pool scan below would silently bind an unrelated OAuth/API login
+        // instead of the configured default. The config default stays a
+        // preference within pool accounts (sorted first below), but a named
+        // profile is an explicit endpoint choice, not a billing identity, so
+        // it wins outright. A missing key or unavailable route falls through
+        // to the normal pool scan.
+        if let Some(configured_spec) = self.configured_openai_compatible_default_route() {
+            if self.set_model(&configured_spec).is_ok() {
+                return Some(configured_spec);
+            }
+        }
         let routes: Vec<_> = self
             .model_routes()
             .into_iter()

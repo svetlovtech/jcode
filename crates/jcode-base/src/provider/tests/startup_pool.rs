@@ -311,3 +311,105 @@ fn startup_pool_never_uses_excluded_or_unenrolled_metered_keys() {
         assert_eq!(router.credential_mode(), CredentialMode::OAuth);
     });
 }
+
+#[test]
+fn startup_pool_named_profile_config_default_wins_over_pool_accounts() {
+    // A `default_provider` naming a user-defined `[providers.<name>]` profile
+    // with a `default_model` route must own fresh-session routing. Named
+    // profiles are not pool accounts (`is_failover_route_pool_approved`
+    // rejects them), so before this fix the pool scan silently bound an
+    // unrelated OAuth login instead of the configured default.
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _guard = runtime.enter();
+        // Pool fixture with ready OAuth accounts that would otherwise win.
+        let mut pool = startup_pool_fixture();
+        pool.save().unwrap();
+
+        let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+        std::fs::write(
+            std::path::PathBuf::from(jcode_home).join("config.toml"),
+            format!(
+                r#"
+[provider]
+default_provider = "zai-gateway"
+default_model = "glm-test-flash"
+
+[providers.zai-gateway]
+type = "openai-compatible"
+base_url = "https://gateway.example.test/v1"
+auth = "none"
+default_model = "glm-test-flash"
+
+[[providers.zai-gateway.models]]
+id = "glm-test-flash"
+reasoning = true
+context_window = 200000
+input = ["text"]
+
+[pool]
+members = [{}]
+"#,
+                pool.members
+                    .iter()
+                    .map(|m| format!("\"{m}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .expect("write test config.toml");
+        crate::config::invalidate_config_cache();
+
+        let router = MultiProvider::new_fast();
+        assert_eq!(
+            ProviderRegistry::new(&router).active_compatible_profile_id(),
+            Some("zai-gateway".to_string()),
+            "configured named profile must be the active fresh-session route"
+        );
+        assert_eq!(router.model(), "glm-test-flash");
+        assert_eq!(router.active_provider(), ActiveProvider::OpenRouter);
+        assert_eq!(
+            router.oauth_account_label(),
+            None,
+            "named profile default must not fall through to a pool OAuth login"
+        );
+    });
+}
+
+#[test]
+fn startup_pool_named_profile_default_without_route_falls_back_to_pool() {
+    // When the configured default model has no route on the profile (missing
+    // key, unreachable endpoint declaration, removed model), the pool scan
+    // keeps working instead of leaving sessions unbound.
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _guard = runtime.enter();
+        let mut pool = startup_pool_fixture();
+        pool.save().unwrap();
+
+        let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+        std::fs::write(
+            std::path::PathBuf::from(jcode_home).join("config.toml"),
+            r#"
+[provider]
+default_provider = "empty-gateway"
+default_model = "gone-model"
+
+[providers.empty-gateway]
+type = "openai-compatible"
+base_url = "https://gateway.example.test/v1"
+auth = "none"
+default_model = "gone-model"
+"#,
+        )
+        .expect("write test config.toml");
+        crate::config::invalidate_config_cache();
+
+        let router = MultiProvider::new_fast();
+        assert_eq!(
+            router.oauth_account_label().as_deref(),
+            Some("openai-otter"),
+            "pool binding must survive an unusable named profile default"
+        );
+    });
+}
