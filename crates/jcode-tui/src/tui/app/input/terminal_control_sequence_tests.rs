@@ -1,25 +1,9 @@
 use super::{normalize_paste_newlines, strip_terminal_control_sequences};
 
 /// CR line breaks from bracketed paste must survive as newlines (the bug
-/// where pasted text collapsed into "one line of mush").
-#[test]
-fn converts_carriage_returns_to_newlines() {
-    for (input, expected) in [
-        ("a\r\nb\r\nc", "a\nb\nc"),
-        ("a\rb\rc", "a\nb\nc"),
-        // A lone trailing CR from a terminal that appends the Enter byte.
-        ("hello\r", "hello\n"),
-        // Mixed separators still collapse to single breaks.
-        ("a\r\n\rb", "a\n\nb"),
-    ] {
-        assert_eq!(
-            strip_terminal_control_sequences(input),
-            expected,
-            "input {input:?} should keep CR breaks as newlines"
-        );
-    }
-}
-
+/// where pasted text collapsed into "one line of mush"). CR normalization
+/// lives in `normalize_paste_newlines` (the paste pipeline runs it before
+/// insert_input_text), so the strip boundary only drops other C0 controls.
 #[test]
 fn normalize_paste_newlines_converts_and_trims_trailing_break() {
     for (input, expected) in [
