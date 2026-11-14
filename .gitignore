@@ -21,3 +21,6 @@ captures/
 /*.avif
 /*.mp4
 /*.png
+
+# Playwright MCP browser session artifacts (console logs, page snapshots, screenshots).
+.playwright-mcp/
