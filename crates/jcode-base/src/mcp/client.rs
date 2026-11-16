@@ -493,6 +493,9 @@ impl McpClient {
         // Remote servers get the newest revision we speak; older servers
         // answer with the version they support, which is fine because jcode
         // only uses methods common to every revision.
+        // 2026-07-28 (stateless core): servers compliant with that revision
+        // must still accept an older initialize handshake, so offering
+        // 2025-06-18 stays correct until jcode migrates fully stateless.
         let protocol_version = match &self.backend {
             Backend::Stdio(_) => "2024-11-05",
             Backend::Remote(connection) if connection.is_legacy() => "2024-11-05",
@@ -518,9 +521,13 @@ impl McpClient {
                 .context("MCP initialize response has no result")?;
             let init_result: InitializeResult = serde_json::from_value(result)?;
             if let Backend::Remote(connection) = &self.backend {
+                // 2026-07-28 accepted: servers declaring it remain
+                // wire-compatible for tools/list and tools/call; ttlMs and
+                // resultType fields are additive (serde ignores unknown fields
+                // and older servers never send them).
                 if !matches!(
                     init_result.protocol_version.as_str(),
-                    "2024-11-05" | "2025-03-26" | "2025-06-18"
+                    "2024-11-05" | "2025-03-26" | "2025-06-18" | "2026-07-28"
                 ) {
                     anyhow::bail!(
                         "MCP server negotiated unsupported protocol version: {}",

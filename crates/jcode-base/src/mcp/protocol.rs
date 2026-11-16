@@ -143,6 +143,13 @@ pub struct McpToolDef {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolsListResult {
     pub tools: Vec<McpToolDef>,
+    /// MCP 2026-07-28 (SEP-2549 CacheableResult): freshness hint in ms.
+    /// Additive; absent on older revisions. Currently informational.
+    #[serde(rename = "ttlMs", default)]
+    pub ttl_ms: Option<u64>,
+    /// MCP 2026-07-28: "public" | "private". Additive; informational.
+    #[serde(rename = "cacheScope", default)]
+    pub cache_scope: Option<String>,
 }
 
 /// tools/call params
