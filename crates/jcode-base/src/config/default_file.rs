@@ -972,6 +972,31 @@ desktop_notifications = true
 # See https://jcode.sh/discovery-tools
 # enabled = false
 # endpoint = "https://api.jcode.sh/v1/discovery"
+
+# [chat] # Fork: AABEE chat integration (Telegram relay via services.aabee.tech).
+# Enables the chat_notify / ask_user / inbox_* agent tools and the swarm
+# attention relay (failed/blocked agents ping Telegram).
+# url = "https://services.aabee.tech"
+# token_env = "OPENCODE_CHAT_SERVICE_TOKEN"   # Bearer token; env var wins
+# timeout_secs = 600                          # Default wait for ask_user answers
+
+# [permissions] # Fork: tool permission gate (opt-in; default off). When off,
+# every tool call runs exactly as without this section. Rules are evaluated
+# in order; the first match wins; unmatched calls use default_action.
+# Actions: "allow" (run), "ask" (blocking human approval via the TUI ask
+# modal AND a Telegram card; first answer wins; no chat config = deny),
+# "deny" (refuse with a reason the model sees).
+# enabled = false
+# default_action = "allow"
+# timeout_secs = 600
+# Example rules:
+# rules = [
+#   { tool = "bash", pattern = "git push*", action = "ask" },
+#   { tool = "bash", pattern = "cargo publish*", action = "deny" },
+#   { tool = "mcp", pattern = "playwright/*", action = "ask" },   # specific MCP tools only
+#   { tool = "mcp:*", action = "allow" },                        # other MCP servers pass
+#   { tool = "apply_patch", action = "allow" },
+# ]
 	"##;
 
         // Substitute platform-specific defaults from the keybinding registry.
