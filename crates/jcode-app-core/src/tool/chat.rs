@@ -29,6 +29,13 @@ fn client_from_config() -> Result<crate::chat::ChatServiceClient> {
     crate::chat::ChatServiceClient::new(&chat.url, &token, chat.resolved_timeout_secs())
 }
 
+/// Fork: chat client for the permission gate, which unlike ask_user has no
+/// dedicated [permissions.chat] section and falls back to the global [chat]
+/// integration. Lives here so the gate module stays self-contained.
+pub(crate) fn client_from_permissions_fallback() -> Result<crate::chat::ChatServiceClient> {
+    client_from_config()
+}
+
 // ── chat_notify ─────────────────────────────────────────────────────────────
 
 pub struct ChatNotifyTool;

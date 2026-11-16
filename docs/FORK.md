@@ -50,6 +50,18 @@ Rough current sizes (lines, fork modules vs fork-touched upstream files):
   delegates in one `let spans = ...` expression.
 - `crates/jcode-tui/src/tui/app/quick_prompts.rs` - quick-prompt expansion and
   palette fingerprint/interning (see below).
+- `crates/jcode-tui/src/tui/chat_attention.rs` - swarm attention transitions
+  (failed/blocked/crashed) relayed to the chat integration (Telegram notify),
+  dedup by (session, status) with a 30 min TTL; wired into the
+  `ServerEvent::SwarmStatus` handler.
+- `crates/jcode-app-core/src/tool/permissions_gate.rs` - `[permissions]` tool
+  gate: ordered rules (tool glob + optional value glob) with allow/ask/deny,
+  wired into `ToolRegistry::execute` before the pre_tool hook. `ask` races
+  the TUI ask modal against a Telegram permission card (first answer wins);
+  fail closed. Config types in `jcode-config-types` (`PermissionsConfig`,
+  `PermissionRule`); the single hook site is the `// Fork:` block in
+  `tool/mod.rs` after `drop(tools)`. The chat helper lives in
+  `tool/chat.rs` (`client_from_permissions_fallback`).
 
 Fork-local test files live next to their modules (`tests/mcp_command.rs`,
 `tests/quick_prompts.rs`, `ui_tests/advanced_footer.rs`).

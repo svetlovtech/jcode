@@ -2555,6 +2555,10 @@ fn handle_server_event_inner(
                     if let Some(notice) = swarm_status_transition_notice(&prev, &next) {
                         app.set_status_notice(notice);
                     }
+                    // Fork: relay new attention transitions (failed/blocked/
+                    // crashed/waiting_network) to the chat integration so a
+                    // stuck agent reaches Telegram, not just the TUI dock.
+                    crate::tui::chat_attention::relay_attention_transitions(&prev, &next);
                 }
                 app.remote_swarm_members = members;
                 app.remote_swarm_members_received_at = Some(std::time::Instant::now());

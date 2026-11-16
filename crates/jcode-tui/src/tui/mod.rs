@@ -30,6 +30,7 @@ pub struct BackgroundTaskRow {
 pub mod backend;
 pub mod herdr;
 pub(crate) mod chat_status;
+pub(crate) mod chat_attention;
 mod cloud_git;
 mod cloud_latency;
 mod cloud_status;

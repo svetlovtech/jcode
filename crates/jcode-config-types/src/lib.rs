@@ -1016,6 +1016,58 @@ impl ChatConfig {
     }
 }
 
+/// Fork: tool permission gate ([permissions] in config.toml; opt-in, default
+/// off). When enabled, each tool call is matched against ordered rules; the
+/// first matching rule wins and no match falls back to `default_action`.
+/// Actions: "allow", "ask", "deny".
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PermissionsConfig {
+    /// Master switch. Off keeps upstream behavior (no gating at all).
+    pub enabled: bool,
+    /// Action for tool calls no rule matches: "allow" (default), "ask",
+    /// or "deny".
+    pub default_action: String,
+    /// Rules evaluated in order; first match wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<PermissionRule>,
+    /// Seconds to wait for a human answer to an "ask" (default: 600).
+    pub timeout_secs: u64,
+}
+
+impl PermissionsConfig {
+    /// Normalized action for unmatched calls.
+    pub fn resolved_default_action(&self) -> &str {
+        match self.default_action.trim().to_ascii_lowercase().as_str() {
+            "ask" => "ask",
+            "deny" | "blocked" => "deny",
+            _ => "allow",
+        }
+    }
+
+    /// Seconds to wait for a human answer before denying.
+    pub fn resolved_timeout_secs(&self) -> u64 {
+        if self.timeout_secs > 0 {
+            self.timeout_secs
+        } else {
+            600
+        }
+    }
+}
+
+/// Fork: one permission rule. `tool` is an exact tool name ("bash"), a
+/// prefix glob ("mcp:*"), or "*". The optional `pattern` glob is matched
+/// against the call's primary value (bash command, file path, URL, MCP
+/// server/tool). First matching rule wins.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct PermissionRule {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// "allow", "ask", or "deny".
+    pub action: String,
+}
+
 /// Quick prompts: named text snippets insertable into the composer via the
 /// slash palette (`/name` shows an insertion entry). Two sources:
 ///   1. Inline TOML keys under `[prompts]` in config.toml:

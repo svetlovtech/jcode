@@ -42,6 +42,7 @@ mod name_suggestions;
 mod open;
 mod panel;
 mod patch;
+pub(crate) mod permissions_gate;
 mod read;
 pub mod remote_exec;
 pub(crate) mod sdk;
@@ -1135,6 +1136,25 @@ impl Registry {
 
         // Drop the lock before executing
         drop(tools);
+
+        // Fork: [permissions] tool gate (opt-in, default off). Runs before
+        // the external pre_tool hook so built-in rules and dual-surface asks
+        // (TUI modal + Telegram card) apply even when no hook is configured.
+        if let crate::tool::permissions_gate::GateOutcome::Deny(reason) =
+            crate::tool::permissions_gate::check(
+                &ctx.session_id,
+                resolved_name,
+                &input,
+                ctx.stdin_request_tx.as_ref(),
+            )
+            .await
+        {
+            let mut fields =
+                Self::tool_lifecycle_fields("blocked", name, resolved_name, &input, &ctx);
+            fields.push(("block_reason".to_string(), reason.clone()));
+            crate::logging::event_warn("TOOL_LIFECYCLE", fields);
+            return Err(anyhow::anyhow!(reason));
+        }
 
         let working_dir = ctx
             .working_dir

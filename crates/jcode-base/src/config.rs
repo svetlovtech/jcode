@@ -10,7 +10,8 @@ pub use jcode_config_types::{
     FeatureConfig, GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
     LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MenubarConfig, NamedProviderAuth,
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
-    NotificationsConfig, PowerConfig, ProviderConfig, QuickPromptsConfig, ReasoningDisplayMode,
+    NotificationsConfig, PermissionRule, PermissionsConfig, PowerConfig, ProviderConfig,
+    QuickPromptsConfig, ReasoningDisplayMode,
     ResumeOpenElsewhere, ResumeTimeMode, SafetyConfig, SessionConfig, SessionPickerResumeAction,
     SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
     WebSearchConfig, WebSearchEngine,
@@ -709,6 +710,10 @@ pub struct Config {
     /// AABEE chat integration for chat_notify / ask_user agent tools (and the
     /// fallback source for permission "ask" when [permissions] chat is unset)
     pub chat: ChatConfig,
+
+    /// Fork: tool permission gate (opt-in; see PermissionsConfig). Default
+    /// off keeps upstream behavior.
+    pub permissions: PermissionsConfig,
 
     /// Quick prompts: named snippets insertable into the composer via the
     /// slash palette
