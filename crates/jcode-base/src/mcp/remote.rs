@@ -250,15 +250,34 @@ impl RemoteState {
 struct Outbound {
     id: Option<u64>,
     method: Option<String>,
+    // `params.name` (tools/call) or `params.uri` (resources/read, prompts/get).
+    // Mirrored into the required `Mcp-Name` header on Streamable HTTP per the
+    // 2026-07-28 spec; legacy servers ignore the extra header.
+    target_name: Option<String>,
 }
 
 fn outbound_info(body: &str) -> Outbound {
     let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let params = value.get("params");
     Outbound {
         id: value.get("id").and_then(Value::as_u64),
         method: value
             .get("method")
             .and_then(Value::as_str)
+            .map(str::to_string),
+        target_name: params
+            .and_then(|p| {
+                p.get("name")
+                    .or_else(|| p.get("uri"))
+                    .and_then(Value::as_str)
+            })
+            // RFC 9110 field values only; anything else rides in the body.
+            .filter(|name| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| (0x21..=0x7e).contains(&b) || b == b' ' || b == b'\t')
+            })
             .map(str::to_string),
     }
 }
@@ -598,13 +617,20 @@ async fn send_post(
     url: reqwest::Url,
     body: &str,
 ) -> reqwest::Result<reqwest::Response> {
-    state
+    let info = outbound_info(body);
+    let mut builder = state
         .request(reqwest::Method::POST, url)
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "application/json, text/event-stream")
-        .body(body.to_string())
-        .send()
-        .await
+        // 2026-07-28 standard request headers. Legacy servers ignore them;
+        // modern servers require them (Mcp-Method on every request, Mcp-Name
+        // on tools/call and resources/read).
+        .header("Mcp-Method", info.method.as_deref().unwrap_or(""))
+        .body(body.to_string());
+    if let Some(name) = info.target_name {
+        builder = builder.header("Mcp-Name", name);
+    }
+    builder.send().await
 }
 
 async fn streamable_post_inner(
